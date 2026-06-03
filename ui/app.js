@@ -3222,6 +3222,7 @@ let appSettings = {
   accordionTree: true,
   confirmDelete: true,
   noDuplicateUrls: false,
+  uiFontSize:    13,
   // Рисунок
   thumbWidth:    1280,
   thumbHeight:   800,
@@ -3250,6 +3251,7 @@ function applySettings(save = true) {
   }
   applyColWidth(appSettings.listColWidth ?? 42, false);
   applySidebarWidth(appSettings.sidebarWidth ?? 230, false);
+  document.documentElement.style.setProperty('--ui-font', (appSettings.uiFontSize || 13) + 'px');
   if (save) saveAppSettings();
 }
 
@@ -3348,6 +3350,11 @@ function applyColWidth(pct, persist = true) {
     document.getElementById('stab-' + tab.dataset.tab)?.classList.add('active');
   }));
 
+  // ── Font size slider ──
+  const fontSlider = document.getElementById('s-font-size');
+  const fontVal    = document.getElementById('s-font-size-val');
+  fontSlider.addEventListener('input', () => { fontVal.textContent = fontSlider.value; });
+
   // ── Open dialog: populate fields ──
   window.openSettingsDialog = function() {
     // Show actual DB path
@@ -3366,6 +3373,8 @@ function applyColWidth(pct, persist = true) {
     document.getElementById('s-accordion').checked   = appSettings.accordionTree;
     document.getElementById('s-confirm-del').checked  = appSettings.confirmDelete;
     document.getElementById('s-no-dupes').checked     = appSettings.noDuplicateUrls;
+    fontSlider.value = appSettings.uiFontSize || 13;
+    fontVal.textContent = fontSlider.value;
     // Рисунок
     document.getElementById('s-thumb-w').value       = appSettings.thumbWidth;
     document.getElementById('s-thumb-h').value       = appSettings.thumbHeight;
@@ -3388,6 +3397,7 @@ function applyColWidth(pct, persist = true) {
     appSettings.accordionTree   = document.getElementById('s-accordion').checked;
     appSettings.confirmDelete   = document.getElementById('s-confirm-del').checked;
     appSettings.noDuplicateUrls = document.getElementById('s-no-dupes').checked;
+    appSettings.uiFontSize      = parseInt(fontSlider.value) || 13;
     // Рисунок
     appSettings.thumbWidth   = parseInt(document.getElementById('s-thumb-w').value)   || 1280;
     appSettings.thumbHeight  = parseInt(document.getElementById('s-thumb-h').value)   || 800;
