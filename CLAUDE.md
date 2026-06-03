@@ -283,12 +283,19 @@ CREATE TABLE nodes (
 - [x] Контекстное меню для папок в правой панели — реализовано
 - [x] Proxy settings — вкладка удалена (системный WARP, незачем)
 - [x] Импорт из другой базы — реализован (Перенос → Из другой базы...)
+- [x] Настройка размера шрифта — реализована (ползунок 8–18px, `--ui-font` + calc)
+- [ ] **DnD в корень** — `move_node` принимает `i64`, нужно `Option<i64>` + drop-зона для корня в дереве (~15–20 строк Rust+JS). **Следующая задача.**
 - [ ] Drag & drop сортировка внутри папки (сейчас только кнопки вверх/вниз)
 - [ ] `thumb` хранит абсолютный путь в DB → перейти на filename как у `favicon` (при переносе папки скриншоты ломаются)
 - [ ] Browser import (`import_chromium`, `import_firefox`) → добавить `parent_id` (сейчас всегда в корень)
 - [ ] Favicon: очистка orphaned файлов из `Data/favicons/` при удалении закладок
 - [ ] Массовое выделение / batch operations
 - [ ] Favicon: force refresh / TTL (YAGNI пока)
+
+### DnD — состояние (проверено 2026-06-03)
+- Защита от циклов: **двойная** — JS `_isDragValid` (walk up через `allNodes`) + Rust `move_node` (walk up через БД). Потеря данных невозможна.
+- Сохранение в БД: `UPDATE nodes SET parent = ?1` при каждом drop — персистируется.
+- Drop в корень (parent = NULL): **не реализован** — `move_node` принимает `i64`, не `Option<i64>`; нет drop-зоны для корня.
 
 ---
 
@@ -453,6 +460,11 @@ CREATE TABLE nodes (
     - **UI:** диалог `#import-db-overlay` со статистикой; select назначения (корневые папки из allNodes + "Корень" + "Создать новую папку..."); при выборе "новая папка" — `invoke('create_folder')` → id → `execute_import_db`; alert с итогом + `refreshTree()`.
     - **Дедуп:** по нормализованному URL (не по домену) — `site.com/page1` и `site.com/page2` считаются разными.
     - **Поля Tauri → JS:** snake_case (source_path, new_count, etc.) — Tauri не конвертирует в camelCase на выходе.
+
+39. **Настройка размера шрифта интерфейса** — ползунок 8–18px в Настройки → Общие:
+    - **CSS:** переменная `--ui-font: 13px` на `:root`; все `font-size: 12px` → `calc(var(--ui-font) - 1px)`, `11px` → `-2px`, `10px` → `-3px`, `13px` → `var(--ui-font)`; нетронуты: 7–9px (иконки/стрелки), 14px, 16px (×), 20px
+    - **JS:** `appSettings.uiFontSize = 13`; в `applySettings` — `document.documentElement.style.setProperty('--ui-font', size + 'px')`; ползунок с live-label в IIFE настроек
+    - **Сохранение:** в `settings.json` через существующий `save_settings`; Rust не менялся
 
 ### Сессия 6 (2026-05-19) — Багфиксы
 27. **Fix: favicon не появлялись после batch-загрузки** — `_finishFaviconBatch` теперь вызывает `renderTree()` + `loadFolderContents(activeFolderId)` после завершения. Ранее `updateFaviconInDOM` обновлял DOM, но WebView2 не перерисовывал без явного reload.
