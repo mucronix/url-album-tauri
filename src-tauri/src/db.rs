@@ -699,3 +699,164 @@ pub fn import_sync_nodes(
     conn.execute_batch("COMMIT")?;
     Ok(count)
 }
+
+// ── Import from another DB ────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct ImportAnalysis {
+    pub source_path:     String,
+    pub total_bookmarks: usize,
+    pub new_count:       usize,
+    pub duplicate_count: usize,
+    pub total_folders:   usize,
+}
+
+pub struct SrcNode {
+    pub id:     i64,
+    pub parent: Option<i64>,
+    pub kind:   String,
+    pub title:  String,
+    pub url:    Option<String>,
+    pub note:   Option<String>,
+}
+
+fn normalize_url_for_dedup(url: &str) -> String {
+    let lower = url.trim().to_lowercase();
+    let without_scheme = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .unwrap_or(&lower);
+    let without_www = without_scheme.strip_prefix("www.").unwrap_or(without_scheme);
+    without_www.trim_end_matches('/').to_string()
+}
+
+pub fn collect_urls(conn: &Connection) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT url FROM nodes WHERE kind='bookmark' AND url IS NOT NULL AND url != ''"
+    )?;
+    let result: Result<std::collections::HashSet<String>> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .map(|r| r.map(|u| normalize_url_for_dedup(&u)))
+        .collect();
+    result
+}
+
+pub fn read_src_nodes(src: &Connection) -> Result<Vec<SrcNode>> {
+    let mut stmt = src.prepare(
+        "SELECT id, parent, kind, title, url, note FROM nodes ORDER BY id"
+    )?;
+    let result: Result<Vec<SrcNode>> = stmt.query_map([], |r| Ok(SrcNode {
+        id:     r.get(0)?,
+        parent: r.get(1)?,
+        kind:   r.get(2)?,
+        title:  r.get(3)?,
+        url:    r.get(4)?,
+        note:   r.get(5)?,
+    }))?.collect();
+    result
+}
+
+pub fn analyze_import_db(
+    nodes: &[SrcNode],
+    current_urls: &std::collections::HashSet<String>,
+    source_path: String,
+) -> ImportAnalysis {
+    let total_folders = nodes.iter().filter(|n| n.kind == "folder").count();
+    let mut total_bookmarks = 0usize;
+    let mut new_count = 0usize;
+    let mut duplicate_count = 0usize;
+
+    for n in nodes.iter().filter(|n| n.kind == "bookmark") {
+        let Some(url) = &n.url else { continue };
+        if url.is_empty() { continue }
+        total_bookmarks += 1;
+        if current_urls.contains(&normalize_url_for_dedup(url)) {
+            duplicate_count += 1;
+        } else {
+            new_count += 1;
+        }
+    }
+
+    ImportAnalysis { source_path, total_bookmarks, new_count, duplicate_count, total_folders }
+}
+
+pub fn execute_import_from_nodes(
+    dest: &Connection,
+    nodes: &[SrcNode],
+    dest_parent: Option<i64>,
+    current_urls: &std::collections::HashSet<String>,
+) -> Result<usize> {
+    let new_bm_ids: std::collections::HashSet<i64> = nodes.iter()
+        .filter(|n| n.kind == "bookmark")
+        .filter(|n| n.url.as_deref()
+            .map(|u| !u.is_empty() && !current_urls.contains(&normalize_url_for_dedup(u)))
+            .unwrap_or(false))
+        .map(|n| n.id)
+        .collect();
+
+    if new_bm_ids.is_empty() { return Ok(0); }
+
+    let node_map: std::collections::HashMap<i64, &SrcNode> =
+        nodes.iter().map(|n| (n.id, n)).collect();
+
+    // Collect ancestor folder IDs needed by new bookmarks
+    let mut needed_folders: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for &bm_id in &new_bm_ids {
+        let mut cur = node_map.get(&bm_id).and_then(|n| n.parent);
+        while let Some(pid) = cur {
+            if !needed_folders.insert(pid) { break; }
+            cur = node_map.get(&pid).and_then(|n| n.parent);
+        }
+    }
+
+    // Build parent→children map for BFS (None key = attach to dest_parent)
+    let mut children_of: std::collections::HashMap<Option<i64>, Vec<i64>> =
+        std::collections::HashMap::new();
+    for &fid in &needed_folders {
+        if let Some(node) = node_map.get(&fid) {
+            let key = node.parent.filter(|p| needed_folders.contains(p));
+            children_of.entry(key).or_default().push(fid);
+        }
+    }
+
+    dest.execute_batch("BEGIN")?;
+    let mut id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut sort_idx = 0i64;
+
+    // BFS: insert folders top-down
+    let mut queue: std::collections::VecDeque<i64> =
+        children_of.get(&None).cloned().unwrap_or_default().into();
+    while let Some(fid) = queue.pop_front() {
+        if let Some(node) = node_map.get(&fid) {
+            let new_parent = node.parent
+                .and_then(|p| id_map.get(&p).copied())
+                .or(dest_parent);
+            dest.execute(
+                "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1,?2,?3,?4)",
+                params![new_parent, &node.kind, &node.title, sort_idx],
+            )?;
+            id_map.insert(fid, dest.last_insert_rowid());
+            sort_idx += 1;
+            if let Some(children) = children_of.get(&Some(fid)) {
+                queue.extend(children);
+            }
+        }
+    }
+
+    // Insert new bookmarks
+    let mut count = 0usize;
+    for node in nodes.iter().filter(|n| new_bm_ids.contains(&n.id)) {
+        let new_parent = node.parent
+            .and_then(|p| id_map.get(&p).copied())
+            .or(dest_parent);
+        dest.execute(
+            "INSERT INTO nodes (parent, kind, title, url, note, sort_idx) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![new_parent, &node.kind, &node.title, &node.url, &node.note, sort_idx],
+        )?;
+        sort_idx += 1;
+        count += 1;
+    }
+
+    dest.execute_batch("COMMIT")?;
+    Ok(count)
+}

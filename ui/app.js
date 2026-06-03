@@ -2093,17 +2093,13 @@ const MENU_DATA = [
   {
     id: 'file', label: 'Файл',
     items: [
-      { label: 'Создать базу',   icon: 'db',     action: 'new-db'    },
-      { label: 'Открыть базу',   icon: 'db',     action: 'open-db'   },
-      { label: 'Последние базы', icon: 'db',     sub: [], _dynamic: true },
-      { label: 'Закрыть базу',   icon: 'db',     action: 'close-db'  },
+      { label: 'Создать базу...',  icon: 'db',     action: 'new-db'    },
+      { label: 'Открыть базу...',  icon: 'db',     action: 'open-db'   },
+      { label: 'Последние базы',   icon: 'db',     sub: [], _dynamic: true },
+      { label: 'Закрыть базу',     icon: 'db',     action: 'close-db'  },
       '---',
-      { label: 'Резервная копия', icon: 'backup', sub: [
-        { label: 'Создать без рисунков',         icon: 'backup', action: 'backup-without'  },
-        { label: 'Создать с рисунками',          icon: 'backup', action: 'backup-with'     },
-        '---',
-        { label: 'Восстановить резервную копию', icon: 'open',   action: 'backup-restore'  },
-      ]},
+      { label: 'Создать резервную копию...',             icon: 'backup', action: 'backup-without' },
+      { label: 'Создать резервную копию с рисунками...', icon: 'backup', action: 'backup-with'    },
       '---',
       { label: 'Свойства базы',  icon: 'props',  action: 'db-properties' },
       '---',
@@ -2137,6 +2133,7 @@ const MENU_DATA = [
     items: [
       { label: 'Импорт', icon: 'import', sub: [
         { label: 'Из браузера...',          icon: 'browser', action: 'import-from-browser' },
+        { label: 'Из другой базы...',       icon: 'db',      action: 'import-from-db'      },
         '---',
         { label: 'Из файла HTML',           icon: 'import',  action: 'import-html'         },
         { label: 'Из файла TXT',            icon: 'import',  action: 'import-txt-lines'    },
@@ -2333,6 +2330,84 @@ function tbMoveItem(dir) {
       if (errEl) errEl.textContent = e;
       else console.error('open_db:', e);
     }
+  };
+})();
+
+// ── Import from another DB dialog ─────────────────────────────────────────────
+
+(function() {
+  const overlay       = document.getElementById('import-db-overlay');
+  const destSelect    = document.getElementById('import-db-dest');
+  const newFolderRow  = document.getElementById('import-db-new-folder-row');
+  const newFolderName = document.getElementById('import-db-new-folder-name');
+  let _analysis = null;
+
+  function close() { overlay.classList.add('hidden'); _analysis = null; }
+
+  document.getElementById('import-db-x').onclick      = close;
+  document.getElementById('import-db-cancel').onclick  = close;
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  destSelect.addEventListener('change', () => {
+    const isNew = destSelect.value === 'new';
+    newFolderRow.classList.toggle('hidden', !isNew);
+    if (isNew) newFolderName.focus();
+  });
+
+  document.getElementById('import-db-ok').onclick = async () => {
+    if (!_analysis) return;
+    const okBtn = document.getElementById('import-db-ok');
+    okBtn.disabled = true;
+    try {
+      let destParent = null;
+      const sel = destSelect.value;
+      if (sel === 'new') {
+        const name = newFolderName.value.trim();
+        if (!name) { newFolderName.focus(); okBtn.disabled = false; return; }
+        destParent = await invoke('create_folder', { parentId: null, title: name });
+      } else if (sel !== 'root') {
+        destParent = parseInt(sel);
+      }
+      const count = await invoke('execute_import_db', {
+        path: _analysis.source_path,
+        destParent,
+      });
+      close();
+      if (count > 0) {
+        await refreshTree();
+        alert(`Импортировано ${count} ссылок`);
+      } else {
+        alert('Нет новых ссылок для импорта');
+      }
+    } catch(e) {
+      if (e !== 'Отменено') alert('Ошибка импорта: ' + e);
+    } finally {
+      okBtn.disabled = false;
+    }
+  };
+
+  window.openImportDbDialog = function(analysis) {
+    _analysis = analysis;
+    document.getElementById('import-db-path').textContent    = analysis.source_path;
+    document.getElementById('import-db-folders').textContent = analysis.total_folders;
+    document.getElementById('import-db-total').textContent   = analysis.total_bookmarks;
+    document.getElementById('import-db-new').textContent     = analysis.new_count;
+    document.getElementById('import-db-dupes').textContent   = analysis.duplicate_count;
+
+    destSelect.innerHTML = '';
+    const addOpt = (val, label) => {
+      const o = document.createElement('option');
+      o.value = val; o.textContent = label;
+      destSelect.appendChild(o);
+    };
+    addOpt('root', 'Корень');
+    allNodes.filter(n => n.kind === 'folder' && n.parent === null)
+            .forEach(f => addOpt(String(f.id), f.title));
+    addOpt('new', '— Создать новую папку...');
+
+    newFolderRow.classList.add('hidden');
+    newFolderName.value = '';
+    raiseOverlay(overlay);
   };
 })();
 
@@ -2931,10 +3006,6 @@ function handleMenuAction(action) {
       break;
 
     // ── Database ──
-    case 'backup-restore':
-      // Restoring a backup is the same as opening a database file
-      raiseOverlay(document.getElementById('open-db-overlay'));
-      break;
     case 'open-db':
       raiseOverlay(document.getElementById('open-db-overlay'));
       break;
@@ -2974,6 +3045,12 @@ function handleMenuAction(action) {
 
     case 'manage-browsers':
       openBrowsersDialog();
+      break;
+
+    case 'import-from-db':
+      invoke('analyze_import_db')
+        .then(a => openImportDbDialog(a))
+        .catch(e => { if (e !== 'Отменено') alert('Ошибка: ' + e); });
       break;
 
     case 'refresh-favicons-folder': {

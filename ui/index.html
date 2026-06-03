@@ -421,6 +421,46 @@
     </div>
   </div>
 
+  <!-- Import from another DB dialog -->
+  <div id="import-db-overlay" class="dlg-overlay hidden">
+    <div class="win-dlg" style="width:380px">
+      <div class="dlg-title">
+        <span>Импорт из другой базы</span>
+        <button class="dlg-close" id="import-db-x">×</button>
+      </div>
+      <div class="dlg-body dlg-form">
+        <div class="form-row"><label class="form-label">Источник</label>
+          <span class="props-ro form-field" id="import-db-path" style="word-break:break-all;font-size:10px;font-family:monospace"></span>
+        </div>
+        <div class="props-sep"></div>
+        <div class="form-row"><label class="form-label">Папок</label>
+          <span class="props-ro" id="import-db-folders"></span>
+        </div>
+        <div class="form-row"><label class="form-label">Закладок</label>
+          <span class="props-ro" id="import-db-total"></span>
+        </div>
+        <div class="form-row"><label class="form-label">Новых</label>
+          <span class="props-ro" id="import-db-new" style="color:var(--accent);font-weight:600"></span>
+        </div>
+        <div class="form-row"><label class="form-label">Дубликатов</label>
+          <span class="props-ro" id="import-db-dupes" style="color:var(--text-dim)"></span>
+        </div>
+        <div class="props-sep"></div>
+        <div class="form-row"><label class="form-label">Импортировать в</label>
+          <select class="dlg-input form-field" id="import-db-dest" style="height:24px"></select>
+        </div>
+        <div class="form-row hidden" id="import-db-new-folder-row">
+          <label class="form-label">Название папки</label>
+          <input type="text" class="dlg-input form-field" id="import-db-new-folder-name" autocomplete="off">
+        </div>
+      </div>
+      <div class="dlg-footer">
+        <button class="win-btn win-btn-default" id="import-db-ok">Импортировать</button>
+        <button class="win-btn" id="import-db-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
   <!-- New folder / new link dialog -->
   <div id="new-item-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:340px">

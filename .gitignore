@@ -27,6 +27,9 @@ desktop.ini
 # Build output
 dist/
 
+# Dated temp screenshots (vitrine PNGs without date prefix are kept)
+screenshots/20*.png
+
 # Dev / editor
 .claude/
 *.log

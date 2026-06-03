@@ -1736,6 +1736,69 @@ async fn import_uadat_pick(state: tauri::State<'_, AppState>, window: tauri::Win
     db::import(&conn, &nodes, &data_dir, parent_id).map_err(|e| e.to_string())
 }
 
+// ── Import from another DB ───────────────────────────────────────────────────
+
+#[tauri::command]
+async fn analyze_import_db(
+    state: tauri::State<'_, AppState>,
+    window: tauri::Window,
+) -> Result<db::ImportAnalysis, String> {
+    let file = rfd::AsyncFileDialog::new()
+        .set_parent(&window)
+        .set_title("Выбрать базу для импорта")
+        .add_filter("База данных", &["db"])
+        .pick_file().await.ok_or("Отменено")?;
+    let src_path = file.path().to_path_buf();
+    let src_path_str = src_path.to_string_lossy().to_string();
+
+    let current_path = state.db_path.lock().map_err(|e| e.to_string())?.clone();
+    if src_path == current_path {
+        return Err("Выбранный файл является текущей базой данных".to_string());
+    }
+
+    let current_urls = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::collect_urls(&conn).map_err(|e| e.to_string())?
+    };
+
+    let nodes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<db::SrcNode>, String> {
+        let src = Connection::open_with_flags(
+            &src_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).map_err(|e| e.to_string())?;
+        db::read_src_nodes(&src).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())??;
+
+    Ok(db::analyze_import_db(&nodes, &current_urls, src_path_str))
+}
+
+#[tauri::command]
+async fn execute_import_db(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    dest_parent: Option<i64>,
+) -> Result<usize, String> {
+    let src_path = std::path::PathBuf::from(&path);
+
+    let current_path = state.db_path.lock().map_err(|e| e.to_string())?.clone();
+    if src_path == current_path {
+        return Err("Выбранный файл является текущей базой данных".to_string());
+    }
+
+    let nodes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<db::SrcNode>, String> {
+        let src = Connection::open_with_flags(
+            &src_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).map_err(|e| e.to_string())?;
+        db::read_src_nodes(&src).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())??;
+
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let current_urls = db::collect_urls(&conn).map_err(|e| e.to_string())?;
+    db::execute_import_from_nodes(&conn, &nodes, dest_parent, &current_urls)
+        .map_err(|e| e.to_string())
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
@@ -1839,6 +1902,8 @@ fn main() {
             get_recent_dbs,
             get_db_properties,
             get_pending_url,
+            analyze_import_db,
+            execute_import_db,
         ])
         .on_window_event(|_window, event| {
             // Checkpoint WAL into main file on every window close so data
