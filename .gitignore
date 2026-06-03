@@ -24,6 +24,9 @@ default.jpg
 License.rtf
 desktop.ini
 
+# Build output
+dist/
+
 # Dev / editor
 .claude/
 *.log
