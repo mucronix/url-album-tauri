@@ -3145,12 +3145,6 @@ let appSettings = {
   accordionTree: true,
   confirmDelete: true,
   noDuplicateUrls: false,
-  // Прокси
-  proxyEnabled:  false,
-  proxyHost:     '',
-  proxyPort:     '',
-  proxyUser:     '',
-  proxyPass:     '',
   // Рисунок
   thumbWidth:    1280,
   thumbHeight:   800,
@@ -3277,14 +3271,6 @@ function applyColWidth(pct, persist = true) {
     document.getElementById('stab-' + tab.dataset.tab)?.classList.add('active');
   }));
 
-  // ── Proxy: enable/disable fields ──
-  const proxyEnEl   = document.getElementById('s-proxy-en');
-  const proxyFields = ['s-proxy-host','s-proxy-port','s-proxy-user','s-proxy-pass'];
-  function syncProxyFields() {
-    proxyFields.forEach(id => { document.getElementById(id).disabled = !proxyEnEl.checked; });
-  }
-  proxyEnEl.addEventListener('change', syncProxyFields);
-
   // ── Open dialog: populate fields ──
   window.openSettingsDialog = function() {
     // Show actual DB path
@@ -3303,13 +3289,6 @@ function applyColWidth(pct, persist = true) {
     document.getElementById('s-accordion').checked   = appSettings.accordionTree;
     document.getElementById('s-confirm-del').checked  = appSettings.confirmDelete;
     document.getElementById('s-no-dupes').checked     = appSettings.noDuplicateUrls;
-    // Прокси
-    proxyEnEl.checked = appSettings.proxyEnabled;
-    document.getElementById('s-proxy-host').value = appSettings.proxyHost;
-    document.getElementById('s-proxy-port').value = appSettings.proxyPort;
-    document.getElementById('s-proxy-user').value = appSettings.proxyUser;
-    document.getElementById('s-proxy-pass').value = appSettings.proxyPass;
-    syncProxyFields();
     // Рисунок
     document.getElementById('s-thumb-w').value       = appSettings.thumbWidth;
     document.getElementById('s-thumb-h').value       = appSettings.thumbHeight;
@@ -3332,12 +3311,6 @@ function applyColWidth(pct, persist = true) {
     appSettings.accordionTree   = document.getElementById('s-accordion').checked;
     appSettings.confirmDelete   = document.getElementById('s-confirm-del').checked;
     appSettings.noDuplicateUrls = document.getElementById('s-no-dupes').checked;
-    // Прокси
-    appSettings.proxyEnabled = proxyEnEl.checked;
-    appSettings.proxyHost    = document.getElementById('s-proxy-host').value.trim();
-    appSettings.proxyPort    = document.getElementById('s-proxy-port').value.trim();
-    appSettings.proxyUser    = document.getElementById('s-proxy-user').value.trim();
-    appSettings.proxyPass    = document.getElementById('s-proxy-pass').value;
     // Рисунок
     appSettings.thumbWidth   = parseInt(document.getElementById('s-thumb-w').value)   || 1280;
     appSettings.thumbHeight  = parseInt(document.getElementById('s-thumb-h').value)   || 800;

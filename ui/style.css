@@ -1183,7 +1183,7 @@ body {
   color: var(--text); padding: 1px 4px; border-radius: 2px; cursor: pointer;
 }
 
-/* Settings form rows (proxy, thumb) */
+/* Settings form rows (thumb) */
 .sform { display: flex; flex-direction: column; gap: 6px; }
 .sform-row { display: flex; align-items: center; gap: 8px; }
 .sform-label { width: 110px; font-size: 12px; flex-shrink: 0; }

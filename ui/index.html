@@ -335,7 +335,6 @@
       </div>
       <div class="settings-tabs" id="settings-tabs">
         <div class="stab active" data-tab="general">Общие</div>
-        <div class="stab" data-tab="proxy">Прокси</div>
         <div class="stab" data-tab="thumb">Рисунок</div>
       </div>
       <div class="settings-content">
@@ -365,34 +364,6 @@
             <div class="settings-row" style="margin-top:6px;flex-direction:column;align-items:flex-start;gap:2px">
               <span style="font-size:10px;color:var(--text-dim)">Файл базы данных:</span>
               <span id="s-db-path" style="font-size:10px;font-family:monospace;color:var(--text);word-break:break-all;user-select:all"></span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Прокси -->
-        <div class="stab-panel" id="stab-proxy">
-          <div class="settings-group">
-            <label class="settings-row">
-              <input type="checkbox" id="s-proxy-en"> Использовать прокси
-            </label>
-          </div>
-          <div class="sform" id="proxy-form">
-            <div class="sform-row">
-              <span class="sform-label">Адрес</span>
-              <input type="text" id="s-proxy-host" class="dlg-input sform-field" autocomplete="off" spellcheck="false">
-            </div>
-            <div class="sform-row">
-              <span class="sform-label">Порт</span>
-              <input type="number" id="s-proxy-port" class="dlg-input sform-short" min="1" max="65535" placeholder="8080">
-            </div>
-            <div class="sform-sep"></div>
-            <div class="sform-row">
-              <span class="sform-label">Пользователь</span>
-              <input type="text" id="s-proxy-user" class="dlg-input sform-field" autocomplete="off">
-            </div>
-            <div class="sform-row">
-              <span class="sform-label">Пароль</span>
-              <input type="password" id="s-proxy-pass" class="dlg-input sform-field">
             </div>
           </div>
         </div>
