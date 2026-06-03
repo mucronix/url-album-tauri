@@ -17,10 +17,10 @@
 ## Структура проекта
 
 ```
-C:\Projects\url-album-2\
+C:\Projects\url-album-tauri\
 ├── src-tauri\               ← Rust/Tauri backend
 │   ├── src\
-│   │   ├── main.rs          ← все Tauri-команды (~1600+ строк)
+│   │   ├── main.rs          ← все Tauri-команды (~1700+ строк)
 │   │   ├── db.rs            ← SQLite схема, запросы, экспорт/импорт
 │   │   └── importer.rs      ← парсер ua.dat (Windows-1251)
 │   ├── Cargo.toml
@@ -49,7 +49,7 @@ C:\Projects\url-album-2\
 Простой перезапуск exe без rebuild = старый встроенный frontend.
 
 ```powershell
-# Рабочая директория: C:\Projects\url-album-2\src-tauri
+# Рабочая директория: C:\Projects\url-album-tauri\src-tauri
 
 # ⚠️ Сначала убить процесс — иначе cargo не может заменить exe (access denied)
 Stop-Process -Name "url-album" -Force -ErrorAction SilentlyContinue
@@ -130,6 +130,10 @@ Portable-файлы рядом с exe (в `target\debug\`):
 - `load_settings / save_settings` — portable settings.json
 - `load_toolbar_config / save_toolbar_config` — portable toolbar.json
 - `normalize_url(url)` — добавляет https:// если нет схемы (только при открытии, не в БД)
+- `analyze_import_db(window)` → `ImportAnalysis` — открывает File Dialog, читает исходную БД read-only, считает новые/дубли по нормализованному URL; **не меняет текущую БД**
+- `execute_import_db(path, dest_parent?)` → `usize` — вставляет только новые ссылки, воссоздаёт нужные папки BFS top-down с перемаппингом id
+- `db::collect_urls(conn)` — HashSet нормализованных URL текущей БД
+- `db::normalize_url_for_dedup(url)` — убирает схему, www., trailing slash, lowercase; используется для дедупликации
 
 ### Favicon helpers (Rust / main.rs)
 - `extract_domain(url)` — извлечь домен, убрать www.
@@ -247,7 +251,8 @@ CREATE TABLE nodes (
 - "Свойства папки": OK / Отмена
 - "Дубликаты ссылок" — full-screen двухпанельный finder
 - "Браузер-менеджер" — portable browsers.json
-- "Настройки" — вкладки: Общие, Прокси, Рисунок (кнопка "По умолчанию": 1280×800, 30сек)
+- "Настройки" — вкладки: Общие, Рисунок (кнопка "По умолчанию": 1280×800, 15сек)
+- "Импорт из другой базы" — диалог статистики (папок/закладок/новых/дубликатов) + select назначения
 
 **Сохраняемые настройки (settings.json):**
 - `theme` — light/dark
@@ -257,7 +262,7 @@ CREATE TABLE nodes (
 - `accordionTree` — accordion режим дерева
 - `confirmDelete` — подтверждение удаления
 - `noDuplicateUrls` — проверка дублей при добавлении
-- `thumbWidth` / `thumbHeight` / `thumbTimeout` — настройки скриншота (дефолт: 1280×800, 30сек)
+- `thumbWidth` / `thumbHeight` / `thumbTimeout` — настройки скриншота (дефолт: 1280×800, 15сек)
 
 ---
 
@@ -274,14 +279,16 @@ CREATE TABLE nodes (
 - `allNodes` — полная перезагрузка при каждом изменении через `invoke('get_tree')`
 - `thumb` хранит полный абсолютный путь в DB (legacy, в отличие от `favicon` который хранит только filename)
 
-### Что НЕ сделано
+### Что НЕ сделано / очередь
 - [x] Контекстное меню для папок в правой панели — реализовано
-- [ ] Drag & drop сортировка внутри папки
-- [ ] Восстановление из backup (restore)
-- [ ] Proxy settings — UI есть, функционал не реализован
+- [x] Proxy settings — вкладка удалена (системный WARP, незачем)
+- [x] Импорт из другой базы — реализован (Перенос → Из другой базы...)
+- [ ] Drag & drop сортировка внутри папки (сейчас только кнопки вверх/вниз)
+- [ ] `thumb` хранит абсолютный путь в DB → перейти на filename как у `favicon` (при переносе папки скриншоты ломаются)
+- [ ] Browser import (`import_chromium`, `import_firefox`) → добавить `parent_id` (сейчас всегда в корень)
+- [ ] Favicon: очистка orphaned файлов из `Data/favicons/` при удалении закладок
 - [ ] Массовое выделение / batch operations
 - [ ] Favicon: force refresh / TTL (YAGNI пока)
-- [ ] Favicon: очистка orphaned файлов из Data/favicons/
 
 ---
 
@@ -393,11 +400,12 @@ CREATE TABLE nodes (
 
 ### Сессия 5 (2026-05-19) — Реструктуризация меню
 22. **Новая архитектура меню** — принцип "НАД ЧЕМ":
-    - **Файл** = только lifecycle БД: Создать/Открыть/Последние базы▶/Закрыть/Резервная копия▶/Свойства базы/Настройки/Выход
+    - **Файл** = lifecycle БД: Создать.../Открыть.../Последние базы▶/Закрыть / Создать резервную копию.../с рисунками... / Свойства базы/Настройки/Выход
     - **Ссылки** = только операции над ссылками (без Import/Export/Backup/Sort)
-    - **Перенос** = новое меню: Импорт▶/Экспорт▶/Браузеры
+    - **Перенос** = новое меню: Импорт▶ (браузер, другая база, HTML, TXT, sync, ua.dat) / Экспорт▶ / Браузеры
     - **Поиск** = только "Найти" (дубликаты перенесены в Ссылки)
     - **Вид** — без изменений
+    - Пункт "Восстановить резервную копию" удалён (дублировал "Открыть базу")
 23. **Новые Rust команды:**
     - `close_db` — checkpoint WAL, JS показывает welcome screen
     - `get_recent_dbs()` — список последних баз из `recent_dbs.txt` (max 10)
@@ -435,6 +443,16 @@ CREATE TABLE nodes (
     - `dist/URL-Album-2\README.txt`: то же
     - GitHub release: описание и ZIP обновлены
     - Минимальная поддерживаемая ОС: **Windows 10**
+
+### Сессия 9 (2026-06-03) — Чистка, новая фича импорта
+35. **Репозиторий** — проект переехал в `url-album-tauri` (чистая папка), новый GitHub-репо `skljar/url-album-tauri`, релиз v2.0-beta опубликован. Topics: bookmark-manager, tauri, rust, windows, sqlite, desktop-app.
+36. **Удалена вкладка "Прокси"** из настроек — была заглушкой (proxy-поля сохранялись в settings.json но нигде не применялись). Системный WARP покрывает эту задачу. Удалено: HTML-блок `#stab-proxy`, таб, 5 полей в `appSettings`, `syncProxyFields`, populate/save код (~57 строк).
+37. **Меню "Файл" перестроено** — плоский список вместо подменю "Резервная копия▶": `Создать резервную копию...` (backup_db) и `Создать резервную копию с рисунками...` (backup_db_with_data) вынесены на верхний уровень. Удалён дублирующий пункт "Восстановить резервную копию" (открывал тот же диалог что и "Открыть базу"). Мёртвый `case 'backup-restore'` удалён из handler.
+38. **Фича "Импорт из другой базы"** (Перенос → Импорт → Из другой базы...):
+    - **Rust:** `analyze_import_db` — read-only Connection к исходной БД, сравнение URL через `normalize_url_for_dedup` (убирает схему/www./trailing slash/регистр), возвращает `ImportAnalysis { source_path, total_bookmarks, new_count, duplicate_count, total_folders }`. `execute_import_db` — читает исходные ноды в память (spawn_blocking), затем BFS-обход needed_folders (только предки новых закладок), INSERT с перемаппингом old_id→new_id, INSERT новых закладок.
+    - **UI:** диалог `#import-db-overlay` со статистикой; select назначения (корневые папки из allNodes + "Корень" + "Создать новую папку..."); при выборе "новая папка" — `invoke('create_folder')` → id → `execute_import_db`; alert с итогом + `refreshTree()`.
+    - **Дедуп:** по нормализованному URL (не по домену) — `site.com/page1` и `site.com/page2` считаются разными.
+    - **Поля Tauri → JS:** snake_case (source_path, new_count, etc.) — Tauri не конвертирует в camelCase на выходе.
 
 ### Сессия 6 (2026-05-19) — Багфиксы
 27. **Fix: favicon не появлялись после batch-загрузки** — `_finishFaviconBatch` теперь вызывает `renderTree()` + `loadFolderContents(activeFolderId)` после завершения. Ранее `updateFaviconInDOM` обновлял DOM, но WebView2 не перерисовывал без явного reload.
