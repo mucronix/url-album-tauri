@@ -284,7 +284,7 @@ CREATE TABLE nodes (
 - [x] Proxy settings — вкладка удалена (системный WARP, незачем)
 - [x] Импорт из другой базы — реализован (Перенос → Из другой базы...)
 - [x] Настройка размера шрифта — реализована (ползунок 8–18px, `--ui-font` + calc)
-- [ ] **DnD в корень** — `move_node` принимает `i64`, нужно `Option<i64>` + drop-зона для корня в дереве (~15–20 строк Rust+JS). **Следующая задача.**
+- [x] **DnD в корень** — `move_node(Option<i64>)`, `#tree-root-drop` drop-зона (position: absolute, body.is-dragging), `virtualRootId` для legacy-обёртки
 - [ ] Drag & drop сортировка внутри папки (сейчас только кнопки вверх/вниз)
 - [ ] `thumb` хранит абсолютный путь в DB → перейти на filename как у `favicon` (при переносе папки скриншоты ломаются)
 - [ ] Browser import (`import_chromium`, `import_firefox`) → добавить `parent_id` (сейчас всегда в корень)
@@ -292,10 +292,13 @@ CREATE TABLE nodes (
 - [ ] Массовое выделение / batch operations
 - [ ] Favicon: force refresh / TTL (YAGNI пока)
 
-### DnD — состояние (проверено 2026-06-03)
+### DnD — состояние (проверено 2026-06-04)
 - Защита от циклов: **двойная** — JS `_isDragValid` (walk up через `allNodes`) + Rust `move_node` (walk up через БД). Потеря данных невозможна.
 - Сохранение в БД: `UPDATE nodes SET parent = ?1` при каждом drop — персистируется.
-- Drop в корень (parent = NULL): **не реализован** — `move_node` принимает `i64`, не `Option<i64>`; нет drop-зоны для корня.
+- Drop в корень: **реализован** — `move_node(Option<i64>)`, `WHERE parent IS ?1` (SQLite IS для NULL), `#tree-root-drop` drop-зона.
+- **Важно: `#tree-root-drop` — `position: absolute`**, не в потоке. Если сделать `display: block` в нормальном потоке во время `dragstart`, sidebar reflow сдвигает drag-source → Chromium/WebView2 отменяет drag немедленно.
+- `virtualRootId` (JS) — ID папки-обёртки legacy-баз; если есть, drop в корень → эта папка, иначе `parent = NULL`.
+- `body.is-dragging` — класс на `<body>` при активном drag (dragstart/dragend всех трёх источников: tree-item, grid-row, grid-card). Управляет видимостью `#tree-root-drop` через CSS.
 
 ---
 
@@ -465,6 +468,14 @@ CREATE TABLE nodes (
     - **CSS:** переменная `--ui-font: 13px` на `:root`; все `font-size: 12px` → `calc(var(--ui-font) - 1px)`, `11px` → `-2px`, `10px` → `-3px`, `13px` → `var(--ui-font)`; нетронуты: 7–9px (иконки/стрелки), 14px, 16px (×), 20px
     - **JS:** `appSettings.uiFontSize = 13`; в `applySettings` — `document.documentElement.style.setProperty('--ui-font', size + 'px')`; ползунок с live-label в IIFE настроек
     - **Сохранение:** в `settings.json` через существующий `save_settings`; Rust не менялся
+
+### Сессия 10 (2026-06-04) — DnD в корень
+40. **DnD в корень** — перетаскивание узлов на верхний уровень дерева:
+    - **Rust:** `move_node(id: i64, new_parent: Option<i64>)` — guards (`self-parent`, `circular ref`) только при `Some(np)`; `WHERE parent IS ?1` вместо `= ?1` (SQLite IS корректно работает с NULL); UPDATE работает с `Option<i64>` через rusqlite::params!.
+    - **JS:** `virtualRootId` (let, обновляется в `buildTree`) — если в БД есть legacy-обёртка, drop в корень → обёртка; иначе → NULL. `_doDrop(null)` корректно проходит `_isDragValid` (null target). Guard `if (targetFolderId !== null)` в `_doDrop` — пропускает auto-expand для корня.
+    - **UI:** `#tree-root-drop` (HTML) — `position: absolute; top:0; left:0; right:0; z-index:10; background: var(--bg2)`. Видим только при `body.is-dragging`. `body.is-dragging` выставляется в `dragstart` всех трёх источников (tree-item, grid-row, grid-card), снимается в `dragend`.
+    - **`_clearDragOver()`** — расширен: чистит `.drag-over` с root-зоны. `dragend` у всех трёх источников рефакторнут: инлайновый cleanup → `_clearDragOver()`.
+    - **Fix: reflow отменял drag из дерева** — `display: block` в нормальном потоке во время `dragstart` сдвигало tree-items, Chromium/WebView2 немедленно отменял drag (firing `dragend`). Фикс: `position: absolute` убирает зону из потока, layout не меняется, drag инициализируется нормально. DnD из грида не был затронут (источник в другой панели).
 
 ### Сессия 6 (2026-05-19) — Багфиксы
 27. **Fix: favicon не появлялись после batch-загрузки** — `_finishFaviconBatch` теперь вызывает `renderTree()` + `loadFolderContents(activeFolderId)` после завершения. Ранее `updateFaviconInDOM` обновлял DOM, но WebView2 не перерисовывал без явного reload.
