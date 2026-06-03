@@ -300,6 +300,7 @@ body {
   overflow: hidden;
   min-width: 120px;
   max-width: 600px;
+  position: relative;
 }
 
 #splitter {
@@ -325,6 +326,28 @@ body {
 #splitter.dragging { background: var(--accent); }
 
 
+
+#tree-root-drop {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  padding: 3px 8px;
+  font-size: calc(var(--ui-font) - 2px);
+  color: var(--text-dim);
+  background: var(--bg2);
+  border-bottom: 1px dashed var(--border);
+  cursor: default;
+  user-select: none;
+}
+body.is-dragging #tree-root-drop { display: block; }
+#tree-root-drop.drag-over {
+  background: var(--accent);
+  color: #fff;
+  border-bottom-color: transparent;
+}
 
 #tree {
   flex: 1;

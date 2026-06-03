@@ -3598,9 +3598,11 @@ async function _doDrop(targetFolderId) {
     allFolders = allNodes.filter(n => n.kind === 'folder');
     renderTree();
     restoreOpenState(openIds);
-    const ti = treeEl.querySelector(`.tree-item[data-id="${targetFolderId}"]`);
-    const ch = ti?.parentElement?.querySelector(':scope > .tree-children');
-    if (ti && ch) { ch.classList.add('open'); ti.classList.add('open'); }
+    if (targetFolderId !== null) {
+      const ti = treeEl.querySelector(`.tree-item[data-id="${targetFolderId}"]`);
+      const ch = ti?.parentElement?.querySelector(':scope > .tree-children');
+      if (ti && ch) { ch.classList.add('open'); ti.classList.add('open'); }
+    }
     if (activeFolderId != null) await loadFolderContents(activeFolderId);
   } catch(e) { console.error('move_node:', e); }
 }
@@ -3610,10 +3612,27 @@ async function _doDrop(targetFolderId) {
 function _clearDragOver() {
   treeEl.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
   gridEl.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+  document.getElementById('tree-root-drop').classList.remove('drag-over');
   clearTimeout(_dragExpandTimer); _dragExpandTimer = null;
 }
 
 function _initDragDrop() {
+  // ── Root drop zone ────────────────────────────────────────────────────────
+  const rootZone = document.getElementById('tree-root-drop');
+  rootZone.addEventListener('dragover', (e) => {
+    if (!_dragNode) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    rootZone.classList.add('drag-over');
+  });
+  rootZone.addEventListener('dragleave', () => rootZone.classList.remove('drag-over'));
+  rootZone.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    rootZone.classList.remove('drag-over');
+    // Use wrapper folder ID when present; otherwise drop to literal root (parent = NULL)
+    await _doDrop(virtualRootId !== null ? virtualRootId : null);
+  });
+
   // ── Tree drop target ──────────────────────────────────────────────────────
   treeEl.addEventListener('dragover', (e) => {
     if (!_dragNode) return;
@@ -3677,6 +3696,11 @@ function _initDragDrop() {
 function _makeFolderDropTarget(_el, _folderId, _childrenEl) {}
 
 // ── Tree ──────────────────────────────────────────────────────────────────
+
+// When the DB has a legacy single-root wrapper folder ("Закладки!!!"), its ID is
+// stored here so the root drop zone targets that folder instead of NULL.
+let virtualRootId = null;
+
 function buildTree() {
   const map = new Map();
   for (const n of allNodes) map.set(n.id, { ...n, children: [] });
@@ -3695,10 +3719,13 @@ function buildTree() {
   roots.sort(foldersFirst);
   for (const node of map.values()) node.children.sort(foldersFirst);
 
-  // Skip the single root wrapper node (the old "Закладки!!!" node)
+  // Skip the single root wrapper node (the old "Закладки!!!" node).
+  // Track its ID so the root drop zone can target it directly.
   if (roots.length === 1 && roots[0].kind === "folder" && roots[0].children.length > 0) {
+    virtualRootId = roots[0].id;
     return roots[0].children;
   }
+  virtualRootId = null;
   return roots;
 }
 
@@ -3727,12 +3754,13 @@ function createTreeNode(node, depth) {
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', String(node.id));
     item.classList.add('dragging');
+    document.body.classList.add('is-dragging');
   });
   item.addEventListener('dragend', () => {
     _dragNode = null;
     item.classList.remove('dragging');
-    treeEl.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-    clearTimeout(_dragExpandTimer); _dragExpandTimer = null;
+    document.body.classList.remove('is-dragging');
+    _clearDragOver();
   });
 
   wrap.appendChild(item);
@@ -4361,12 +4389,13 @@ function createFolderRow(node) {
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', String(node.id));
     row.classList.add('dragging');
+    document.body.classList.add('is-dragging');
   });
   row.addEventListener('dragend', () => {
     _dragNode = null;
     row.classList.remove('dragging');
-    treeEl.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-    clearTimeout(_dragExpandTimer); _dragExpandTimer = null;
+    document.body.classList.remove('is-dragging');
+    _clearDragOver();
   });
 
   // Drop target (drop onto this folder to move items into it)
@@ -4406,12 +4435,13 @@ function createCard(b) {
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', String(b.id));
     card.classList.add('dragging');
+    document.body.classList.add('is-dragging');
   });
   card.addEventListener('dragend', () => {
     _dragNode = null;
     card.classList.remove('dragging');
-    treeEl.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-    clearTimeout(_dragExpandTimer); _dragExpandTimer = null;
+    document.body.classList.remove('is-dragging');
+    _clearDragOver();
   });
 
   const dot = document.createElement("span");

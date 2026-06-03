@@ -1036,28 +1036,33 @@ fn save_toolbar_config(json: String) -> Result<(), String> {
 // ── Move node (drag & drop) ──────────────────────────────────────────────────
 
 #[tauri::command]
-fn move_node(state: tauri::State<AppState>, id: i64, new_parent: i64) -> Result<(), String> {
+fn move_node(state: tauri::State<AppState>, id: i64, new_parent: Option<i64>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
 
-    // Guard: cannot move into self
-    if id == new_parent {
-        return Err("Cannot move a folder into itself".into());
+    // Guard: cannot move into self (only meaningful when target is a real node)
+    if let Some(np) = new_parent {
+        if id == np {
+            return Err("Cannot move a folder into itself".into());
+        }
     }
 
     // Guard: circular reference — walk up from new_parent, reject if we hit id
-    let mut cur_opt: Option<i64> = Some(new_parent);
-    while let Some(cur) = cur_opt {
-        if cur == id { return Err("Circular reference detected".into()); }
-        cur_opt = conn
-            .query_row("SELECT parent FROM nodes WHERE id = ?1", [cur], |r| r.get::<_, Option<i64>>(0))
-            .ok()
-            .flatten();
+    // Root (None) has no ancestors, so no circular ref is possible.
+    if let Some(np) = new_parent {
+        let mut cur_opt: Option<i64> = Some(np);
+        while let Some(cur) = cur_opt {
+            if cur == id { return Err("Circular reference detected".into()); }
+            cur_opt = conn
+                .query_row("SELECT parent FROM nodes WHERE id = ?1", [cur], |r| r.get::<_, Option<i64>>(0))
+                .ok()
+                .flatten();
+        }
     }
 
-    // Place at end of new parent's children
+    // Place at end of new parent's children (IS handles NULL correctly in SQLite)
     let max: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(sort_idx), -1) FROM nodes WHERE parent = ?1",
-        [new_parent], |r| r.get(0),
+        "SELECT COALESCE(MAX(sort_idx), -1) FROM nodes WHERE parent IS ?1",
+        rusqlite::params![new_parent], |r| r.get(0),
     ).unwrap_or(-1);
 
     conn.execute(
