@@ -285,6 +285,8 @@ CREATE TABLE nodes (
 - [x] Импорт из другой базы — реализован (Перенос → Из другой базы...)
 - [x] Настройка размера шрифта — реализована (ползунок 8–18px, `--ui-font` + calc)
 - [x] **DnD в корень** — `move_node(Option<i64>)`, `#tree-root-drop` drop-зона (position: absolute, body.is-dragging), `virtualRootId` для legacy-обёртки
+- [x] **Статусбар** — `#statusbar` (flex, 20px, `var(--bg2)`, снизу окна). Левая часть: `Папок: N · Ссылок: M · В папке: K · [name.db]`; при поиске — `Найдено: X`. Правая часть: временные сообщения (3с, `.sb-temp`) и sticky-прогресс (`.sb-sticky`, акцент). API: `setStatus(text, {sticky})`, `clearStatus()`, `updateStatusLeft()`. Интегрирован в: `showApp`, `showImportScreen`, `renderTree`, `loadFolderContents`, `renderSearchResults`, `clearSearchUI`, favicon/thumb batch, импорт из базы (замена alert). `currentDbName` устанавливается в `updateWindowTitle()`.
+- [ ] **Выход через меню "Файл → Выход" оставляет пустую рамку** — `window.close()` в WebView2 уводит на `about:blank` вместо закрытия OS-окна. **РЕШЕНИЕ**: добавить Rust-команду `quit_app(app: AppHandle) { app.exit(0); }` и вызывать её вместо `window.close()`. **ПРОВЕРИТЬ ПЕРЕД ПРАВКОЙ**: делает ли закрытие крестиком (X) checkpoint_db / сброс WAL — чтобы не потерять данные при обычном закрытии окна. Альтернатива: убрать пункт "Выход" совсем, закрытие только через ×.
 - [ ] Drag & drop сортировка внутри папки (сейчас только кнопки вверх/вниз)
 - [ ] `thumb` хранит абсолютный путь в DB → перейти на filename как у `favicon` (при переносе папки скриншоты ломаются)
 - [ ] Browser import (`import_chromium`, `import_firefox`) → добавить `parent_id` (сейчас всегда в корень)
@@ -468,6 +470,14 @@ CREATE TABLE nodes (
     - **CSS:** переменная `--ui-font: 13px` на `:root`; все `font-size: 12px` → `calc(var(--ui-font) - 1px)`, `11px` → `-2px`, `10px` → `-3px`, `13px` → `var(--ui-font)`; нетронуты: 7–9px (иконки/стрелки), 14px, 16px (×), 20px
     - **JS:** `appSettings.uiFontSize = 13`; в `applySettings` — `document.documentElement.style.setProperty('--ui-font', size + 'px')`; ползунок с live-label в IIFE настроек
     - **Сохранение:** в `settings.json` через существующий `save_settings`; Rust не менялся
+
+### Сессия 11 (2026-06-04) — Статусбар
+41. **Статусбар** (`#statusbar`, HTML + CSS + JS):
+    - **HTML:** `<div id="statusbar"><div id="sb-left"/><div id="sb-right"/></div>` — sibling к `#app` в `body` (body уже flex-column, никакой реструктуризации не потребовалось). Скрыт по умолчанию (`.hidden`).
+    - **CSS:** `height: 20px`, `background: var(--bg2)`, `border-top: 1px solid var(--border)`, `font-size: calc(var(--ui-font) - 3px)`. `#sb-left` — flex:1, ellipsis. `#sb-right` — max-width:50%, ellipsis; `.sb-temp` (белый, 3с), `.sb-sticky` (акцент, пока не заменено).
+    - **JS API:** `setStatus(text, {sticky=false})` — sticky остаётся до следующего вызова, temp гаснет через 3с. `clearStatus()` — сбросить. `updateStatusLeft()` — пересчитать `Папок/Ссылок/В папке|Найдено/[name.db]`.
+    - **Интеграция:** `showApp()` (`await updateWindowTitle()` → `currentDbName`, показать бар), `showImportScreen()` (скрыть бар), `renderTree()` (updateStatusLeft), `loadFolderContents()` (`_sbInFolderCount`), `renderSearchResults()` (`_sbSearchCount`), `clearSearchUI()` (сброс `_sbSearchCount`). Favicon/thumb batch: sticky прогресс → temp "Готово". Импорт: `alert(...)` → `setStatus(...)` для успехов.
+    - **Баг обнаружен (не исправлен):** `window.close()` в WebView2 уводит на `about:blank` вместо закрытия. Пункт меню "Выход" оставляет пустую рамку. Фикс: Rust `app.exit(0)`. Требует проверки WAL-checkpoint при закрытии крестиком.
 
 ### Сессия 10 (2026-06-04) — DnD в корень
 40. **DnD в корень** — перетаскивание узлов на верхний уровень дерева:
