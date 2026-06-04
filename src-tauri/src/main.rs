@@ -312,8 +312,8 @@ async fn refresh_thumb(
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
-    let path = data_dir.join(format!("{ts}.png"));
+        .as_millis();
+    let path = data_dir.join(format!("{id}_{ts}.png"));
     let path_str = path.to_string_lossy().into_owned();
 
     let w = width.unwrap_or(1280);

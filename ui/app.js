@@ -458,6 +458,15 @@ function _finishThumbBatch() {
   document.getElementById('tp-label').textContent = 'Готово';
   setStatus(`Обновлено ${_thumbDone} рисунков`);
   setTimeout(hideThumbPanel, 2000);
+  if (activeFolderId != null) loadFolderContents(activeFolderId);
+  if (activeBookmarkNode) {
+    const fresh = allNodes.find(n => n.id === activeBookmarkNode.id);
+    if (fresh?.thumb) {
+      detailImgEl.src = convertFileSrc(fresh.thumb) + '?t=' + Date.now();
+      detailImgEl.style.display = '';
+      detailNoImgEl.style.display = 'none';
+    }
+  }
 }
 
 document.getElementById('tp-cancel-btn').addEventListener('click', () => {
@@ -2078,7 +2087,6 @@ const ICONS = {
   check:  `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.5l3 3L11.5 4"/></svg>`,
   search: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="3.5"/><path d="M9 9l3.5 3.5"/></svg>`,
   dupes:  `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="1" y="4.5" width="8" height="7.5" rx="1"/><path d="M5 4.5V2H13v7.5h-2"/></svg>`,
-  quit:    `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h3a1 1 0 011 1v8a1 1 0 01-1 1H9M5 4.5L2.5 7 5 9.5M2.5 7H10"/></svg>`,
   sort:    `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 4h10M4 7h6M6 10h2"/></svg>`,
   image:   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="1" y="2.5" width="12" height="9" rx="1"/><path d="M1 9l3.5-3 3 3 2-2 4.5 4.5"/><circle cx="4.5" cy="5.5" r="1.1" fill="currentColor" stroke="none"/></svg>`,
   refresh: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 7A4.5 4.5 0 013 5.5M3 2.5v3h3"/></svg>`,
@@ -2110,7 +2118,6 @@ const MENU_DATA = [
       { label: 'Свойства базы',  icon: 'props',  action: 'db-properties' },
       '---',
       { label: 'Настройки',      icon: 'gear',   action: 'settings'   },
-      { label: 'Выход',          icon: 'quit',   shortcut: 'Alt+F4',  action: 'quit' },
     ]
   },
   {
@@ -3038,10 +3045,6 @@ function handleMenuAction(action) {
     case 'customize-toolbar':
       openToolbarCustomizeDialog();
       break;
-    case 'quit':
-      invoke('checkpoint_db').catch(() => {}).finally(() => window.close());
-      break;
-
     case 'close-db':
       invoke('close_db').catch(console.error);
       showImportScreen();
@@ -3213,7 +3216,7 @@ let _faviconTotal     = 0;
 let _faviconDone      = 0;
 
 // ── Thumb batch state ─────────────────────────────────────────────────────
-const MAX_THUMB_CONCURRENCY = 3;
+const MAX_THUMB_CONCURRENCY = 1;
 let _thumbQueue     = [];   // Array<{id, url, title}>
 let _thumbActive    = 0;
 let _thumbCancelled = false;
@@ -4719,7 +4722,9 @@ function _runThumbWorker() {
       if (!newPath) return;
       _applyThumbToCard(item.id, item.title, newPath);
     })
-    .catch(() => {})
+    .catch(err => {
+      setStatus('Ошибка рисунка: ' + (err?.message ?? String(err)));
+    })
     .finally(() => {
       _thumbDone++;
       _thumbActive--;

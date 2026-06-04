@@ -286,7 +286,7 @@ CREATE TABLE nodes (
 - [x] Настройка размера шрифта — реализована (ползунок 8–18px, `--ui-font` + calc)
 - [x] **DnD в корень** — `move_node(Option<i64>)`, `#tree-root-drop` drop-зона (position: absolute, body.is-dragging), `virtualRootId` для legacy-обёртки
 - [x] **Статусбар** — `#statusbar` (flex, 20px, `var(--bg2)`, снизу окна). Левая часть: `Папок: N · Ссылок: M · В папке: K · [name.db]`; при поиске — `Найдено: X`. Правая часть: временные сообщения (3с, `.sb-temp`) и sticky-прогресс (`.sb-sticky`, акцент). API: `setStatus(text, {sticky})`, `clearStatus()`, `updateStatusLeft()`. Интегрирован в: `showApp`, `showImportScreen`, `renderTree`, `loadFolderContents`, `renderSearchResults`, `clearSearchUI`, favicon/thumb batch, импорт из базы (замена alert). `currentDbName` устанавливается в `updateWindowTitle()`.
-- [ ] **Выход через меню "Файл → Выход" оставляет пустую рамку** — `window.close()` в WebView2 уводит на `about:blank` вместо закрытия OS-окна. **РЕШЕНИЕ**: добавить Rust-команду `quit_app(app: AppHandle) { app.exit(0); }` и вызывать её вместо `window.close()`. **ПРОВЕРИТЬ ПЕРЕД ПРАВКОЙ**: делает ли закрытие крестиком (X) checkpoint_db / сброс WAL — чтобы не потерять данные при обычном закрытии окна. Альтернатива: убрать пункт "Выход" совсем, закрытие только через ×.
+- [x] **Пункт "Файл → Выход" удалён** — `window.close()` в WebView2 уводил на `about:blank`, оставляя пустую рамку. Закрытие только через ×/Alt+F4. WAL-безопасность подтверждена: `PRAGMA synchronous=FULL` гарантирует fsync каждой записи в WAL; `sqlite3_close` при выходе автоматически делает финальный checkpoint (last-connection WAL merge — документированное поведение SQLite).
 - [ ] Drag & drop сортировка внутри папки (сейчас только кнопки вверх/вниз)
 - [ ] `thumb` хранит абсолютный путь в DB → перейти на filename как у `favicon` (при переносе папки скриншоты ломаются)
 - [ ] Browser import (`import_chromium`, `import_firefox`) → добавить `parent_id` (сейчас всегда в корень)
@@ -477,7 +477,10 @@ CREATE TABLE nodes (
     - **CSS:** `height: 20px`, `background: var(--bg2)`, `border-top: 1px solid var(--border)`, `font-size: calc(var(--ui-font) - 3px)`. `#sb-left` — flex:1, ellipsis. `#sb-right` — max-width:50%, ellipsis; `.sb-temp` (белый, 3с), `.sb-sticky` (акцент, пока не заменено).
     - **JS API:** `setStatus(text, {sticky=false})` — sticky остаётся до следующего вызова, temp гаснет через 3с. `clearStatus()` — сбросить. `updateStatusLeft()` — пересчитать `Папок/Ссылок/В папке|Найдено/[name.db]`.
     - **Интеграция:** `showApp()` (`await updateWindowTitle()` → `currentDbName`, показать бар), `showImportScreen()` (скрыть бар), `renderTree()` (updateStatusLeft), `loadFolderContents()` (`_sbInFolderCount`), `renderSearchResults()` (`_sbSearchCount`), `clearSearchUI()` (сброс `_sbSearchCount`). Favicon/thumb batch: sticky прогресс → temp "Готово". Импорт: `alert(...)` → `setStatus(...)` для успехов.
-    - **Баг обнаружен (не исправлен):** `window.close()` в WebView2 уводит на `about:blank` вместо закрытия. Пункт меню "Выход" оставляет пустую рамку. Фикс: Rust `app.exit(0)`. Требует проверки WAL-checkpoint при закрытии крестиком.
+    - **Баг обнаружен (не исправлен):** `window.close()` в WebView2 уводит на `about:blank` вместо закрытия. Пункт меню "Выход" оставляет пустую рамку. → Исправлено в сессии 12.
+
+### Сессия 12 (2026-06-04) — Удалён пункт "Выход"
+42. **Удалён пункт "Файл → Выход"** — `window.close()` в WebView2 уводил на `about:blank`, оставляя пустую рамку окна. Проверена WAL-безопасность: `PRAGMA synchronous=FULL` + `sqlite3_close` при выходе = автоматический финальный checkpoint (документированное поведение SQLite для last-connection). `on_window_event(Destroyed)` в main.rs — no-op, данные сохраняются через Connection::drop. Удалены: строка `MENU_DATA` и `case 'quit':` обработчик.
 
 ### Сессия 10 (2026-06-04) — DnD в корень
 40. **DnD в корень** — перетаскивание узлов на верхний уровень дерева:
