@@ -398,12 +398,14 @@ function showFaviconPanel(total) {
   document.getElementById('fv-bar-fill').style.width = '0%';
   document.getElementById('fv-domain').textContent   = '';
   document.getElementById('favicon-panel').classList.remove('hidden');
+  setStatus(`Загрузка favicon 0/${total}`, { sticky: true });
 }
 
 function _updateFaviconPanelProgress() {
   document.getElementById('fv-done').textContent = _faviconDone;
   const pct = _faviconTotal > 0 ? Math.round(_faviconDone / _faviconTotal * 100) : 0;
   document.getElementById('fv-bar-fill').style.width = pct + '%';
+  setStatus(`Загрузка favicon ${_faviconDone}/${_faviconTotal}`, { sticky: true });
 }
 
 function hideFaviconPanel() {
@@ -412,6 +414,7 @@ function hideFaviconPanel() {
 
 function _finishFaviconBatch() {
   document.getElementById('fv-domain').textContent = 'Готово';
+  setStatus(`Загружено ${_faviconDone} favicon`);
   renderTree();
   if (activeFolderId != null) loadFolderContents(activeFolderId);
   setTimeout(hideFaviconPanel, 2000);
@@ -437,12 +440,14 @@ function showThumbPanel(total) {
   document.getElementById('tp-bar-fill').style.width = '0%';
   document.getElementById('tp-label').textContent   = '';
   document.getElementById('thumb-panel').classList.remove('hidden');
+  setStatus(`Загрузка рисунков 0/${total}`, { sticky: true });
 }
 
 function _updateThumbPanelProgress() {
   document.getElementById('tp-done').textContent = _thumbDone;
   const pct = _thumbTotal > 0 ? Math.round(_thumbDone / _thumbTotal * 100) : 0;
   document.getElementById('tp-bar-fill').style.width = pct + '%';
+  setStatus(`Загрузка рисунков ${_thumbDone}/${_thumbTotal}`, { sticky: true });
 }
 
 function hideThumbPanel() {
@@ -451,6 +456,7 @@ function hideThumbPanel() {
 
 function _finishThumbBatch() {
   document.getElementById('tp-label').textContent = 'Готово';
+  setStatus(`Обновлено ${_thumbDone} рисунков`);
   setTimeout(hideThumbPanel, 2000);
 }
 
@@ -2375,9 +2381,9 @@ function tbMoveItem(dir) {
       close();
       if (count > 0) {
         await refreshTree();
-        alert(`Импортировано ${count} ссылок`);
+        setStatus(`Импортировано ${count} ссылок`);
       } else {
-        alert('Нет новых ссылок для импорта');
+        setStatus('Нет новых ссылок для импорта');
       }
     } catch(e) {
       if (e !== 'Отменено') alert('Ошибка импорта: ' + e);
@@ -3021,10 +3027,12 @@ function handleMenuAction(action) {
         activeFolderId = null;
         exitSearchMode();          // clear search state + UI
         hideDetailView();          // hide detail panel, reset activeBookmarkNode
-        renderTree();              // empty tree
+        renderTree();              // empty tree — also calls updateStatusLeft
         gridEl.innerHTML = '';
         emptyHint.classList.add('hidden');
         breadcrumb.textContent = '';
+        _sbInFolderCount = null;
+        updateStatusLeft();
       });
       break;
     case 'customize-toolbar':
@@ -3466,6 +3474,9 @@ async function showImportScreen() {
   importScreen.classList.remove("hidden");
   app.classList.add("hidden");
   toolbarEl.classList.add("hidden");
+  document.getElementById('statusbar').classList.add('hidden');
+  currentDbName = ''; _sbInFolderCount = null; _sbSearchCount = null;
+  clearStatus();
 }
 
 // "Создать новую базу" — save dialog then open empty app
@@ -3530,15 +3541,50 @@ importBtn.addEventListener("click", async () => {
   }
 });
 
+// ── Statusbar state ───────────────────────────────────────────────────────
+let _sbTimer         = null;   // auto-clear timer for temp messages
+let currentDbName    = '';     // basename of current DB file
+let _sbInFolderCount = null;   // item count in active folder; null = no folder selected
+let _sbSearchCount   = null;   // search result count; null = not in search mode
+
 // ── Window title ──────────────────────────────────────────────────────────
 async function updateWindowTitle() {
   try {
     const p = await invoke('get_db_path');
-    const name = p ? p.replace(/\\/g, '/').split('/').pop() : '';
-    const title = name ? `URL Album — ${name}` : 'URL Album';
+    currentDbName = p ? p.replace(/\\/g, '/').split('/').pop() : '';
+    const title = currentDbName ? `URL Album — ${currentDbName}` : 'URL Album';
     document.title = title;
     await invoke('set_window_title', { title });
-  } catch(_) {}
+  } catch(_) { currentDbName = ''; }
+}
+
+// ── Statusbar API ─────────────────────────────────────────────────────────
+
+// sticky=false → auto-clears after 3s; sticky=true → stays until replaced/cleared
+function setStatus(text, { sticky = false } = {}) {
+  const el = document.getElementById('sb-right');
+  clearTimeout(_sbTimer); _sbTimer = null;
+  el.textContent = text;
+  el.className   = sticky ? 'sb-sticky' : 'sb-temp';
+  if (!sticky && text) {
+    _sbTimer = setTimeout(() => { el.textContent = ''; el.className = ''; }, 3000);
+  }
+}
+
+function clearStatus() {
+  clearTimeout(_sbTimer); _sbTimer = null;
+  const el = document.getElementById('sb-right');
+  el.textContent = ''; el.className = '';
+}
+
+function updateStatusLeft() {
+  const nFolders = allFolders.length;
+  const nLinks   = allNodes.filter(n => n.kind === 'bookmark').length;
+  const parts    = [`Папок: ${nFolders}`, `Ссылок: ${nLinks}`];
+  if      (_sbSearchCount   !== null) parts.push(`Найдено: ${_sbSearchCount}`);
+  else if (_sbInFolderCount !== null) parts.push(`В папке: ${_sbInFolderCount}`);
+  if (currentDbName) parts.push(`[${currentDbName}]`);
+  document.getElementById('sb-left').textContent = parts.join(' · ');
 }
 
 // ── Main app ──────────────────────────────────────────────────────────────
@@ -3547,7 +3593,7 @@ async function showApp() {
   if (appSettings.showToolbar) toolbarEl.classList.remove("hidden");
   importScreen.classList.add("hidden");
 
-  updateWindowTitle();
+  await updateWindowTitle();
 
   // Full UI reset — clears artifacts from any previously open database
   activeFolderId = null;
@@ -3559,7 +3605,13 @@ async function showApp() {
 
   allNodes   = await invoke("get_tree");
   allFolders = allNodes.filter(n => n.kind === "folder");
+
+  _sbInFolderCount = null;
+  _sbSearchCount   = null;
+  document.getElementById('statusbar').classList.remove('hidden');
+
   renderTree();
+  updateStatusLeft();
 
   // Highlight first top-level folder without expanding it
   const roots    = allFolders.filter(f => f.parent === null);
@@ -3735,6 +3787,7 @@ function renderTree() {
   for (const node of roots) {
     treeEl.appendChild(createTreeNode(node, 0));
   }
+  updateStatusLeft();
 }
 
 function createTreeNode(node, depth) {
@@ -3950,6 +4003,8 @@ function clearSearchUI() {
   gridEl.classList.remove("hidden");
   searchResults    = [];
   activeResultIdx  = -1;
+  _sbSearchCount   = null;
+  updateStatusLeft();
 }
 
 // Clears search UI and reloads current folder.
@@ -4061,6 +4116,10 @@ async function doSearch(q, fields = { title: true, url: true, note: true }) {
 function renderSearchResults(q) {
   searchResultsEl.innerHTML = "";
   activeResultIdx = -1;
+
+  _sbSearchCount   = searchResults.length;
+  _sbInFolderCount = null;
+  updateStatusLeft();
 
   if (searchResults.length === 0) {
     const el = document.createElement("div");
@@ -4363,6 +4422,10 @@ async function loadFolderContents(folderId) {
 
   const subfolders = allNodes.filter(n => n.parent === folderId && n.kind === 'folder');
   const bookmarks  = allNodes.filter(n => n.parent === folderId && n.kind === 'bookmark');
+
+  _sbInFolderCount = subfolders.length + bookmarks.length;
+  _sbSearchCount   = null;
+  updateStatusLeft();
 
   if (subfolders.length === 0 && bookmarks.length === 0) {
     emptyHint.classList.remove("hidden");

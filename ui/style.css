@@ -1551,3 +1551,34 @@ body.is-dragging #tree-root-drop { display: block; }
 .dbprops-footer { justify-content: space-between; }
 .win-btn-danger { color: #c00; }
 .win-btn.win-btn-danger:not(:disabled):hover { background: #c00; color: #fff; border-color: #c00; }
+
+/* ── Status bar ─────────────────────────────────────────────────────────────── */
+#statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 20px;
+  padding: 0 8px;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  font-size: calc(var(--ui-font) - 3px);
+  color: var(--text-dim);
+  flex-shrink: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  gap: 8px;
+}
+#sb-left {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#sb-right {
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#sb-right.sb-temp   { color: var(--text); }
+#sb-right.sb-sticky { color: var(--accent); }
