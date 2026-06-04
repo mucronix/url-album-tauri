@@ -18,9 +18,11 @@
 
 ## ⬇ Скачать
 
-**[URL-Album-2.1-beta.zip (3.7 MB)](https://github.com/skljar/url-album-tauri/releases/latest/download/URL-Album-2.1-beta.zip)**
+**[URL-Album-2.1.1-beta.zip (3.7 MB)](https://github.com/skljar/url-album-tauri/releases/latest/download/URL-Album-2.1.1-beta.zip)**
 
 Требования: **Windows 10 / 11** (64-bit) — WebView2 уже встроен.
+
+**Обновление 2.1.1 (4 июня 2026):** исправлена путаница скриншотов при пакетном обновлении («Обновить рисунки» по папке) — теперь рисунки появляются сразу и каждый соответствует своей ссылке. Пункт «Файл → Выход» убран (закрытие через × в заголовке окна).
 
 ---
 
