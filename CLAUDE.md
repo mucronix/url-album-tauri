@@ -501,6 +501,13 @@ CREATE TABLE nodes (
     - **`_clearDragOver()`** — расширен: чистит `.drag-over` с root-зоны. `dragend` у всех трёх источников рефакторнут: инлайновый cleanup → `_clearDragOver()`.
     - **Fix: reflow отменял drag из дерева** — `display: block` в нормальном потоке во время `dragstart` сдвигало tree-items, Chromium/WebView2 немедленно отменял drag (firing `dragend`). Фикс: `position: absolute` убирает зону из потока, layout не меняется, drag инициализируется нормально. DnD из грида не был затронут (источник в другой панели).
 
+### Сессия 14 (2026-06-05) — Браузерное расширение
+49. **Рефакторинг `refresh_thumb` → `do_screenshot`** — логика скриншота вынесена в `async fn do_screenshot(data_dir, id, url, width, height, timeout)` без `tauri::State`. `refresh_thumb` стала тонкой обёрткой. Заодно исправлен UI-баг: `buildTree()` делал `{ ...n, children: [] }` (shallow copy) — мутации `allNodes[i].thumb` не проникали в замыкания click-обработчиков дерева. Фикс: `n.children = []; map.set(n.id, n)` — ссылки на оригинальные объекты.
+50. **HTTP-сервер** — добавлены `tiny_http = "0.12"`, `getrandom = "0.2"`. Токен генерируется при старте в `load_or_init_token()`, хранится в `settings.json` как `extensionToken`. JS: `appSettings.extensionToken = ''` чтобы токен выживал при `saveAppSettings()`. Константа `INBOX_FOLDER_NAME = "Входящие"`, хелпер `find_or_create_inbox_folder(conn)`.
+    - `SERVER_PORT = 27124`, `respond_json(req, status, body)`, `run_http_server(handle, token, port)` — `POST /api/v1/bookmarks`, проверка `X-UA-Token`, INSERT в "Входящие", два события: `bookmark-added` (сразу) и `thumb-updated` (после скриншота).
+    - JS: листенеры `bookmark-added` → `refreshTree()` и `thumb-updated` → `_applyThumbToCard`.
+    - **Fix компиляции:** `spawn_blocking` убран — `h2.state::<AppState>().db.lock()` inline в async-блоке. `dyn Read` trait object не требует `use std::io::Read` в scope (vtable dispatch). Протестировано curl: `POST /api/v1/bookmarks` → папка "Входящие", ссылка, скриншот — всё появляется в UI через события `bookmark-added` / `thumb-updated`.
+
 ### Сессия 6 (2026-05-19) — Багфиксы
 27. **Fix: favicon не появлялись после batch-загрузки** — `_finishFaviconBatch` теперь вызывает `renderTree()` + `loadFolderContents(activeFolderId)` после завершения. Ранее `updateFaviconInDOM` обновлял DOM, но WebView2 не перерисовывал без явного reload.
 28. **Fix: скриншоты зависали на недоступных сайтах** — `spawn()` + poll `try_wait()` каждые 250мс вместо `status()`. Если deadline превышен — `child.kill()` принудительно, браузер всегда завершается в срок.

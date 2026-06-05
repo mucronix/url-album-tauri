@@ -3238,6 +3238,8 @@ let appSettings = {
   thumbWidth:    1280,
   thumbHeight:   800,
   thumbTimeout:  15,
+  // Расширение браузера
+  extensionToken: '',
 };
 
 async function loadAppSettings() {
@@ -4861,6 +4863,17 @@ gridEl.addEventListener("contextmenu", (e) => {
     : { url: card.dataset.url, id: card.dataset.id, title: "",
         thumb: card.dataset.thumb || null };
   showContextMenu(e, node);
+});
+
+// ── Browser extension events ──────────────────────────────────────────────
+window.__TAURI__.event.listen('bookmark-added', () => {
+    refreshTree();
+});
+
+window.__TAURI__.event.listen('thumb-updated', (e) => {
+    const { id, path } = e.payload;
+    const node = allNodes.find(n => n.id === id);
+    if (node) _applyThumbToCard(id, node.title || '', path);
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────

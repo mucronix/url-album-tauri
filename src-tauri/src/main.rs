@@ -5,13 +5,15 @@ mod importer;
 
 use std::sync::Mutex;
 use rusqlite::Connection;
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 
 struct AppState {
     db:           Mutex<Connection>,
     db_path:      Mutex<std::path::PathBuf>,
     pending_open: Mutex<Option<(String, String)>>, // (url, title) from urlalbum:// scheme
 }
+
+const INBOX_FOLDER_NAME: &str = "Входящие";
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
@@ -297,7 +299,6 @@ async fn fetch_favicon(
 
 async fn do_screenshot(
     data_dir: std::path::PathBuf,
-    conn: &Mutex<Connection>,
     id: i64,
     url: String,
     width: Option<u32>,
@@ -373,11 +374,6 @@ async fn do_screenshot(
         return Err("Не удалось создать скриншот".to_string());
     }
 
-    conn.lock().map_err(|e| e.to_string())?.execute(
-        "UPDATE nodes SET thumb = ?1 WHERE id = ?2",
-        rusqlite::params![path_str, id],
-    ).map_err(|e| e.to_string())?;
-
     Ok(path_str)
 }
 
@@ -391,9 +387,16 @@ async fn refresh_thumb(
     timeout: Option<u32>,
 ) -> Result<String, String> {
     let url = normalize_url(&url);
-    let data_dir = state.db_path.lock().map_err(|e| e.to_string())?
-        .parent().ok_or("no parent dir")?.to_path_buf().join("Data");
-    do_screenshot(data_dir, &state.db, id, url, width, height, timeout).await
+    let data_dir = {
+        let p = state.db_path.lock().map_err(|e| e.to_string())?;
+        p.parent().ok_or("no parent dir")?.to_path_buf().join("Data")
+    };
+    let path_str = do_screenshot(data_dir, id, url, width, height, timeout).await?;
+    state.db.lock().map_err(|e| e.to_string())?.execute(
+        "UPDATE nodes SET thumb = ?1 WHERE id = ?2",
+        rusqlite::params![path_str, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(path_str)
 }
 
 #[tauri::command]
@@ -1109,6 +1112,26 @@ fn create_folder(state: tauri::State<AppState>, parent_id: Option<i64>, title: S
     Ok(conn.last_insert_rowid())
 }
 
+fn find_or_create_inbox_folder(conn: &Connection) -> Result<i64, String> {
+    use rusqlite::OptionalExtension;
+    if let Some(id) = conn.query_row(
+        "SELECT id FROM nodes WHERE kind='folder' AND title=?1 AND parent IS NULL LIMIT 1",
+        rusqlite::params![INBOX_FOLDER_NAME],
+        |r| r.get::<_, i64>(0),
+    ).optional().map_err(|e| e.to_string())? {
+        return Ok(id);
+    }
+    let max: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_idx),-1) FROM nodes WHERE parent IS NULL",
+        [], |r| r.get(0),
+    ).unwrap_or(-1);
+    conn.execute(
+        "INSERT INTO nodes (parent,kind,title,sort_idx) VALUES(NULL,'folder',?1,?2)",
+        rusqlite::params![INBOX_FOLDER_NAME, max + 1],
+    ).map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
 #[tauri::command]
 fn create_bookmark(
     state: tauri::State<AppState>,
@@ -1815,6 +1838,166 @@ async fn execute_import_db(
         .map_err(|e| e.to_string())
 }
 
+// ── Extension token ──────────────────────────────────────────────────────────
+
+fn gen_token() -> String {
+    let mut buf = [0u8; 16];
+    getrandom::getrandom(&mut buf).expect("OS RNG failed");
+    buf.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn load_or_init_token(exe_dir: &std::path::Path) -> String {
+    let path = exe_dir.join("settings.json");
+    let mut v: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+
+    if let Some(t) = v.get("extensionToken")
+        .and_then(|t| t.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return t.to_string();
+    }
+
+    let token = gen_token();
+    if let serde_json::Value::Object(ref mut map) = v {
+        map.insert("extensionToken".into(), serde_json::Value::String(token.clone()));
+    }
+    if let Ok(json) = serde_json::to_string_pretty(&v) {
+        std::fs::write(&path, json).ok();
+    }
+    token
+}
+
+// ── HTTP server ──────────────────────────────────────────────────────────────
+
+const SERVER_PORT: u16 = 27124;
+
+fn respond_json(req: tiny_http::Request, status: u16, body: &str) {
+    let ct = "Content-Type: application/json"
+        .parse::<tiny_http::Header>().unwrap();
+    req.respond(
+        tiny_http::Response::from_string(body)
+            .with_status_code(status)
+            .with_header(ct),
+    ).ok();
+}
+
+fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
+    let addr = format!("127.0.0.1:{port}");
+    let server = match tiny_http::Server::http(&addr) {
+        Ok(s)  => s,
+        Err(e) => { eprintln!("[HTTP] bind failed on {addr}: {e}"); return; }
+    };
+    eprintln!("[HTTP] listening on {addr}");
+
+    for mut req in server.incoming_requests() {
+        if req.method() != &tiny_http::Method::Post || req.url() != "/api/v1/bookmarks" {
+            respond_json(req, 404, r#"{"error":"not found"}"#);
+            continue;
+        }
+
+        let ok = req.headers().iter().any(|h| {
+            h.field.to_string().eq_ignore_ascii_case("x-ua-token")
+                && h.value.as_str().to_string() == token
+        });
+        if !ok {
+            respond_json(req, 403, r#"{"error":"unauthorized"}"#);
+            continue;
+        }
+
+        let mut body = String::new();
+        if req.as_reader().read_to_string(&mut body).is_err() {
+            respond_json(req, 400, r#"{"error":"bad request"}"#);
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(v)  => v,
+            Err(_) => { respond_json(req, 400, r#"{"error":"invalid json"}"#); continue; }
+        };
+
+        let url   = v["url"].as_str().unwrap_or("").trim().to_string();
+        let title = v["title"].as_str().unwrap_or("").trim().to_string();
+        let note_val: Option<String> = v["note"].as_str()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        if url.is_empty() {
+            respond_json(req, 400, r#"{"error":"url required"}"#);
+            continue;
+        }
+
+        // INSERT — conn and state dropped at end of block, before spawn
+        let bookmark_id: i64 = {
+            let state = handle.state::<AppState>();
+            let conn = match state.db.lock() {
+                Ok(c)  => c,
+                Err(e) => {
+                    respond_json(req, 500,
+                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")));
+                    continue;
+                }
+            };
+            let folder_id = match find_or_create_inbox_folder(&conn) {
+                Ok(id) => id,
+                Err(e) => {
+                    respond_json(req, 500,
+                        &format!(r#"{{"error":"{}"}}"#, e.replace('"', "\\\"")));
+                    continue;
+                }
+            };
+            let max: i64 = conn.query_row(
+                "SELECT COALESCE(MAX(sort_idx),-1) FROM nodes WHERE parent=?1",
+                [folder_id], |r| r.get(0),
+            ).unwrap_or(-1);
+            match conn.execute(
+                "INSERT INTO nodes (parent,kind,title,url,note,sort_idx) \
+                 VALUES(?1,'bookmark',?2,?3,?4,?5)",
+                rusqlite::params![folder_id, &title, &url, note_val, max + 1],
+            ) {
+                Ok(_)  => conn.last_insert_rowid(),
+                Err(e) => {
+                    respond_json(req, 500,
+                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")));
+                    continue;
+                }
+            }
+        };
+
+        // Respond immediately
+        respond_json(req, 200,
+            &format!(r#"{{"status":"ok","id":{bookmark_id}}}"#));
+
+        // Notify UI: new bookmark exists (no screenshot yet)
+        handle.emit("bookmark-added", serde_json::json!({ "id": bookmark_id })).ok();
+
+        // Fire-and-forget screenshot → emit thumb-updated when done
+        let h2   = handle.clone();
+        let url2 = normalize_url(&url);
+        tauri::async_runtime::spawn(async move {
+            let data_dir = {
+                let st = h2.state::<AppState>();
+                let p  = st.db_path.lock().unwrap();
+                p.parent().unwrap().join("Data")
+            };
+            match do_screenshot(data_dir, bookmark_id, url2, None, None, None).await {
+                Ok(path) => {
+                    if let Ok(conn) = h2.state::<AppState>().db.lock() {
+                        conn.execute(
+                            "UPDATE nodes SET thumb=?1 WHERE id=?2",
+                            rusqlite::params![&path, bookmark_id],
+                        ).ok();
+                    }
+                    h2.emit("thumb-updated",
+                        serde_json::json!({ "id": bookmark_id, "path": path })).ok();
+                }
+                Err(e) => eprintln!("[HTTP] screenshot failed for id={bookmark_id}: {e}"),
+            }
+        });
+    }
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
@@ -1825,6 +2008,9 @@ fn main() {
                 .parent()
                 .expect("exe has no parent dir")
                 .to_path_buf();
+
+            let token = load_or_init_token(&exe_dir);
+            println!("[URL Album] extension token: {token}");
 
             // Resume last session if the file still exists, else fall back to album.db.
             let db_path = load_last_db()
@@ -1851,6 +2037,15 @@ fn main() {
 
             // Register urlalbum:// protocol handler (idempotent)
             register_url_scheme();
+
+            // Spawn HTTP server for browser extension
+            {
+                let handle = app.handle().clone();
+                std::thread::Builder::new()
+                    .name("http-server".into())
+                    .spawn(move || run_http_server(handle, token, SERVER_PORT))
+                    .expect("failed to spawn HTTP server thread");
+            }
 
             Ok(())
         })
