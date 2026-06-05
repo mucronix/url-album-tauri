@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: system-ui, sans-serif; font-size: 13px;
+           width: 280px; margin: 0; padding: 10px 12px; }
+    #url-text { font-size: 11px; color: #666; white-space: nowrap;
+                overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px; }
+    #status { min-height: 16px; font-size: 12px; margin-bottom: 8px; }
+    #status.ok    { color: #2a7; }
+    #status.error { color: #c33; }
+    button { width: 100%; padding: 6px 8px; cursor: pointer; font-size: 13px; }
+    button:disabled { opacity: 0.5; cursor: default; }
+  </style>
+</head>
+<body>
+  <div id="url-text"></div>
+  <div id="status"></div>
+  <button id="btn-add">Добавить в URL Album</button>
+  <script src="popup.js"></script>
+</body>
+</html>

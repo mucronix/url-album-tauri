@@ -1873,15 +1873,33 @@ fn load_or_init_token(exe_dir: &std::path::Path) -> String {
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
 const SERVER_PORT: u16 = 27124;
+const ALLOWED_ORIGIN: &str = "chrome-extension://imekfalcnffmmmabcjapmihbocjabecf";
 
-fn respond_json(req: tiny_http::Request, status: u16, body: &str) {
-    let ct = "Content-Type: application/json"
-        .parse::<tiny_http::Header>().unwrap();
-    req.respond(
-        tiny_http::Response::from_string(body)
-            .with_status_code(status)
-            .with_header(ct),
-    ).ok();
+fn respond_json(req: tiny_http::Request, status: u16, body: &str, cors: Option<&str>) {
+    let mut resp = tiny_http::Response::from_string(body)
+        .with_status_code(status)
+        .with_header("Content-Type: application/json".parse::<tiny_http::Header>().unwrap());
+    if let Some(origin) = cors {
+        resp = resp.with_header(
+            format!("Access-Control-Allow-Origin: {origin}")
+                .parse::<tiny_http::Header>().unwrap(),
+        );
+    }
+    req.respond(resp).ok();
+}
+
+fn respond_cors_preflight(req: tiny_http::Request, origin: &str) {
+    let hdrs = [
+        format!("Access-Control-Allow-Origin: {origin}"),
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS".to_string(),
+        "Access-Control-Allow-Headers: Content-Type, X-UA-Token".to_string(),
+        "Access-Control-Max-Age: 86400".to_string(),
+    ];
+    let mut resp = tiny_http::Response::empty(204);
+    for h in hdrs {
+        resp = resp.with_header(h.parse::<tiny_http::Header>().unwrap());
+    }
+    req.respond(resp).ok();
 }
 
 fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
@@ -1893,28 +1911,62 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
     eprintln!("[HTTP] listening on {addr}");
 
     for mut req in server.incoming_requests() {
-        if req.method() != &tiny_http::Method::Post || req.url() != "/api/v1/bookmarks" {
-            respond_json(req, 404, r#"{"error":"not found"}"#);
+        // Validate Origin — only our extension is allowed
+        let origin = req.headers().iter()
+            .find(|h| h.field.to_string().eq_ignore_ascii_case("origin"))
+            .map(|h| h.value.as_str().to_string())
+            .unwrap_or_default();
+        let cors: Option<&str> = if origin == ALLOWED_ORIGIN { Some(ALLOWED_ORIGIN) } else { None };
+
+        // OPTIONS preflight
+        if req.method() == &tiny_http::Method::Options {
+            match cors {
+                Some(o) => respond_cors_preflight(req, o),
+                None    => respond_json(req, 403, r#"{"error":"forbidden"}"#, None),
+            }
             continue;
         }
 
+        // GET /api/v1/handshake — returns token to the extension (Origin-gated)
+        if req.method() == &tiny_http::Method::Post && req.url() == "/api/v1/handshake" {
+            match cors {
+                None    => respond_json(req, 403, r#"{"error":"forbidden"}"#, None),
+                Some(o) => respond_json(req, 200,
+                    &format!(r#"{{"token":"{}"}}"#, token), Some(o)),
+            }
+            continue;
+        }
+
+        // All other non-POST or wrong path
+        if req.method() != &tiny_http::Method::Post || req.url() != "/api/v1/bookmarks" {
+            respond_json(req, 404, r#"{"error":"not found"}"#, None);
+            continue;
+        }
+
+        // POST /api/v1/bookmarks — Origin check
+        if cors.is_none() {
+            respond_json(req, 403, r#"{"error":"forbidden"}"#, None);
+            continue;
+        }
+
+        // Token check
         let ok = req.headers().iter().any(|h| {
             h.field.to_string().eq_ignore_ascii_case("x-ua-token")
-                && h.value.as_str().to_string() == token
+                && h.value.as_str() == token
         });
         if !ok {
-            respond_json(req, 403, r#"{"error":"unauthorized"}"#);
+            respond_json(req, 401, r#"{"error":"unauthorized"}"#, cors);
             continue;
         }
 
         let mut body = String::new();
         if req.as_reader().read_to_string(&mut body).is_err() {
-            respond_json(req, 400, r#"{"error":"bad request"}"#);
+            respond_json(req, 400, r#"{"error":"bad request"}"#, cors);
             continue;
         }
         let v: serde_json::Value = match serde_json::from_str(&body) {
             Ok(v)  => v,
-            Err(_) => { respond_json(req, 400, r#"{"error":"invalid json"}"#); continue; }
+            Err(_) => { respond_json(req, 400, r#"{"error":"invalid json"}"#, cors); continue; }
         };
 
         let url   = v["url"].as_str().unwrap_or("").trim().to_string();
@@ -1924,7 +1976,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
             .filter(|s| !s.is_empty());
 
         if url.is_empty() {
-            respond_json(req, 400, r#"{"error":"url required"}"#);
+            respond_json(req, 400, r#"{"error":"url required"}"#, cors);
             continue;
         }
 
@@ -1935,7 +1987,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                 Ok(c)  => c,
                 Err(e) => {
                     respond_json(req, 500,
-                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")));
+                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), cors);
                     continue;
                 }
             };
@@ -1943,7 +1995,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                 Ok(id) => id,
                 Err(e) => {
                     respond_json(req, 500,
-                        &format!(r#"{{"error":"{}"}}"#, e.replace('"', "\\\"")));
+                        &format!(r#"{{"error":"{}"}}"#, e.replace('"', "\\\"")), cors);
                     continue;
                 }
             };
@@ -1959,7 +2011,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                 Ok(_)  => conn.last_insert_rowid(),
                 Err(e) => {
                     respond_json(req, 500,
-                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")));
+                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), cors);
                     continue;
                 }
             }
@@ -1967,7 +2019,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
 
         // Respond immediately
         respond_json(req, 200,
-            &format!(r#"{{"status":"ok","id":{bookmark_id}}}"#));
+            &format!(r#"{{"status":"ok","id":{bookmark_id}}}"#), cors);
 
         // Notify UI: new bookmark exists (no screenshot yet)
         handle.emit("bookmark-added", serde_json::json!({ "id": bookmark_id })).ok();

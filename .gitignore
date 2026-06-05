@@ -30,6 +30,9 @@ dist/
 # Dated temp screenshots (vitrine PNGs without date prefix are kept)
 screenshots/20*.png
 
+# Browser extension — generated keys (do not commit)
+extension-keys/
+
 # Dev / editor
 .claude/
 *.log
