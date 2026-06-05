@@ -295,18 +295,15 @@ async fn fetch_favicon(
     Ok(Some(filename))
 }
 
-#[tauri::command]
-async fn refresh_thumb(
-    state: tauri::State<'_, AppState>,
+async fn do_screenshot(
+    data_dir: std::path::PathBuf,
+    conn: &Mutex<Connection>,
     id: i64,
     url: String,
     width: Option<u32>,
     height: Option<u32>,
     timeout: Option<u32>,
 ) -> Result<String, String> {
-    let url = normalize_url(&url);
-    let data_dir = state.db_path.lock().map_err(|e| e.to_string())?
-        .parent().ok_or("no parent dir")?.to_path_buf().join("Data");
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
 
     let ts = std::time::SystemTime::now()
@@ -376,13 +373,27 @@ async fn refresh_thumb(
         return Err("Не удалось создать скриншот".to_string());
     }
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute(
+    conn.lock().map_err(|e| e.to_string())?.execute(
         "UPDATE nodes SET thumb = ?1 WHERE id = ?2",
         rusqlite::params![path_str, id],
     ).map_err(|e| e.to_string())?;
 
     Ok(path_str)
+}
+
+#[tauri::command]
+async fn refresh_thumb(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    url: String,
+    width: Option<u32>,
+    height: Option<u32>,
+    timeout: Option<u32>,
+) -> Result<String, String> {
+    let url = normalize_url(&url);
+    let data_dir = state.db_path.lock().map_err(|e| e.to_string())?
+        .parent().ok_or("no parent dir")?.to_path_buf().join("Data");
+    do_screenshot(data_dir, &state.db, id, url, width, height, timeout).await
 }
 
 #[tauri::command]

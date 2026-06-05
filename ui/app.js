@@ -3758,7 +3758,7 @@ let virtualRootId = null;
 
 function buildTree() {
   const map = new Map();
-  for (const n of allNodes) map.set(n.id, { ...n, children: [] });
+  for (const n of allNodes) { n.children = []; map.set(n.id, n); }
 
   const roots = [];
   for (const n of allNodes) {
