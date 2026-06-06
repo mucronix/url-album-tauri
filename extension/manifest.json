@@ -6,8 +6,19 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsDdaRHeHm+xzq14IkQAqHBYT8x+fSNTnsTGdBT3fap3m1K3Gnar2dVwFojMmKZvsZJLaJadyA50nat3JcW7oK+DYwvN8cmssrs5r8rtGfXjhYz5sZstSBysbeQ931h16p9opy0zxrTi8YN65Bnmhoq7pWyAHpJJH8thUKzhcVD888mhPyZ/KNyN8TjAFDPv46zIYhlQnSi134aIsqcbninHYimWryXbYQiSnOcBeHk4Qipadfp9IuIBBX55Rmwhxq2B2h47GQ+Nl7e8LxRb2dcyZ2QMXZvwNHVtzXDNDTwnXt4CCE7KNkdLucJnLc/zv9l2RiegGl8vLckthHo5FPwIDAQAB",
   "permissions": ["activeTab", "storage"],
   "host_permissions": ["http://127.0.0.1:27124/*"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Save to URL Album"
+    "default_title": "Save to URL Album",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
   }
 }
