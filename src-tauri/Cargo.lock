@@ -4398,7 +4398,7 @@ dependencies = [
 
 [[package]]
 name = "url-album"
-version = "2.1.1"
+version = "2.2.0-beta"
 dependencies = [
  "encoding_rs",
  "getrandom 0.2.17",
