@@ -31,7 +31,7 @@ dist/
 screenshots/20*.png
 
 # Browser extension — generated keys (do not commit)
-extension-keys/
+extension-keys*/
 
 # Dev / editor
 .claude/
