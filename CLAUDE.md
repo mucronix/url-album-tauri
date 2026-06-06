@@ -515,6 +515,16 @@ CREATE TABLE nodes (
     - **`extension/`**: `manifest.json` (MV3, `host_permissions: 127.0.0.1:27124`), `popup.html`, `popup.js`. При открытии popup: читает токен из storage → если нет, делает handshake → берёт url+title активной вкладки → кнопка "Добавить".
     - **Урок диагностики:** `eprintln!` не виден в GUI-сборке (`windows_subsystem = "windows"`); F12/DevTools в релизе отключены. Для отладки: писать в файл рядом с exe (`OpenOptions::append`), или смотреть DevTools popup расширения (правый клик на popup → Инспектировать → консоль, `location.origin` покажет реальный Origin).
 
+### Сессия 15 (2026-06-06) — Релиз v2.2.0-beta
+52. **Релиз v2.2.0-beta** — первый публичный релиз с браузерным расширением.
+    - Версия поднята до `2.2.0-beta` в `tauri.conf.json` и `Cargo.toml` (строгий semver для cargo).
+    - Архив `URL-Album-2.2.0-beta.zip` (3.8 MB): `URL-Album.exe` + `README.txt` (UTF-8) + папка `extension\` в корне.
+    - Тег `v2.2.0-beta`, помечен как **pre-release** на GitHub (`--prerelease`).
+    - **Раздача расширения через ZIP** — пользователь загружает "распакованное" в браузер. ID расширения одинаковый у всех (`"key"` в `manifest.json`), поэтому Origin-проверка проходит у каждого. В магазин пока не публикуем.
+    - **Ссылка в README — ПРЯМАЯ:** `/releases/download/v2.2.0-beta/URL-Album-2.2.0-beta.zip`, НЕ `/releases/latest/download/...` — `latest` не видит pre-release (даёт 404). При следующем релизе ссылку в README.md нужно обновлять вручную.
+    - **Приватный ключ** `extension-keys/private.key.pem` — не в git (`extension-keys*/` в `.gitignore`). Нужен для восстановления того же ID расширения — не терять.
+53. **Известный баг (живое дерево при bookmark-added):** ссылка из расширения сначала появляется в корне левой панели, а не в папке «Входящие»; папка «Входящие» со ссылкой появляется только после перезагрузки базы. Похоже на проблему живого обновления дерева (`refreshTree` не раскрывает нужную папку). Не критично, чинить в следующей сессии.
+
 ### Сессия 6 (2026-05-19) — Багфиксы
 27. **Fix: favicon не появлялись после batch-загрузки** — `_finishFaviconBatch` теперь вызывает `renderTree()` + `loadFolderContents(activeFolderId)` после завершения. Ранее `updateFaviconInDOM` обновлял DOM, но WebView2 не перерисовывал без явного reload.
 28. **Fix: скриншоты зависали на недоступных сайтах** — `spawn()` + poll `try_wait()` каждые 250мс вместо `status()`. Если deadline превышен — `child.kill()` принудительно, браузер всегда завершается в срок.
