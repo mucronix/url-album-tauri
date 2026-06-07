@@ -558,6 +558,7 @@ CREATE TABLE nodes (
     - Скриншот в фоне и событие `bookmark-added` — не тронуты.
 58. **Версия → 2.2.1-beta:** `Cargo.toml`, `tauri.conf.json` → `2.2.1-beta`; `extension/manifest.json` → `2.2.1` (Chrome не поддерживает `-beta` в версии манифеста).
     - **Известный баг (живое дерево при `bookmark-added`) — не исправлен:** ссылка из расширения появляется в корне, а не в нужной папке; правильно отображается после перезагрузки базы.
+59. **Fix: дерево сворачивалось после обновления favicon.** `_finishFaviconBatch()` вызывал `renderTree()` напрямую, без сохранения состояния раскрытых папок → все папки схлопывались. Исправлено: обёрнуто в `saveOpenState()` / `restoreOpenState()`, как в `refreshTree()`. (`_finishThumbBatch` дерево не трогает — там проблемы не было.) Архив релиза v2.2.1-beta перевыпущен с фиксом, релиз помечен Latest (снят флаг prerelease).
 
 ### Сессия 6 (2026-05-19) — Багфиксы
 27. **Fix: favicon не появлялись после batch-загрузки** — `_finishFaviconBatch` теперь вызывает `renderTree()` + `loadFolderContents(activeFolderId)` после завершения. Ранее `updateFaviconInDOM` обновлял DOM, но WebView2 не перерисовывал без явного reload.
