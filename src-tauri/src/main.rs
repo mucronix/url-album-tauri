@@ -13,7 +13,7 @@ struct AppState {
     pending_open: Mutex<Option<(String, String)>>, // (url, title) from urlalbum:// scheme
 }
 
-const INBOX_FOLDER_NAME: &str = "Входящие";
+const INBOX_FOLDER_NAME: &str = "Новые ссылки";
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
@@ -1937,6 +1937,59 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
             continue;
         }
 
+        // GET /api/v1/folders — list root folders (Token gated; Origin allowed if absent or matching)
+        if req.method() == &tiny_http::Method::Get && req.url() == "/api/v1/folders" {
+            if !origin.is_empty() && cors.is_none() {
+                respond_json(req, 403, r#"{"error":"forbidden"}"#, None);
+                continue;
+            }
+            let ok = req.headers().iter().any(|h| {
+                h.field.to_string().eq_ignore_ascii_case("x-ua-token")
+                    && h.value.as_str() == token
+            });
+            if !ok {
+                respond_json(req, 401, r#"{"error":"unauthorized"}"#, Some(ALLOWED_ORIGIN));
+                continue;
+            }
+            let state = handle.state::<AppState>();
+            let conn = match state.db.lock() {
+                Ok(c)  => c,
+                Err(e) => {
+                    respond_json(req, 500,
+                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), Some(ALLOWED_ORIGIN));
+                    continue;
+                }
+            };
+            let mut stmt = match conn.prepare(
+                "SELECT id, title FROM nodes \
+                 WHERE kind='folder' AND parent IS NULL ORDER BY sort_idx"
+            ) {
+                Ok(s)  => s,
+                Err(e) => {
+                    respond_json(req, 500,
+                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), Some(ALLOWED_ORIGIN));
+                    continue;
+                }
+            };
+            let rows = match stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            }) {
+                Ok(r)  => r,
+                Err(e) => {
+                    respond_json(req, 500,
+                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), Some(ALLOWED_ORIGIN));
+                    continue;
+                }
+            };
+            let arr: serde_json::Value = serde_json::Value::Array(
+                rows.filter_map(|r| r.ok())
+                    .map(|(id, title)| serde_json::json!({"id": id, "title": title}))
+                    .collect()
+            );
+            respond_json(req, 200, &arr.to_string(), Some(ALLOWED_ORIGIN));
+            continue;
+        }
+
         // All other non-POST or wrong path
         if req.method() != &tiny_http::Method::Post || req.url() != "/api/v1/bookmarks" {
             respond_json(req, 404, r#"{"error":"not found"}"#, None);
@@ -1991,12 +2044,24 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                     continue;
                 }
             };
-            let folder_id = match find_or_create_inbox_folder(&conn) {
-                Ok(id) => id,
-                Err(e) => {
-                    respond_json(req, 500,
-                        &format!(r#"{{"error":"{}"}}"#, e.replace('"', "\\\"")), cors);
-                    continue;
+            let folder_id = {
+                let requested = v["folder_id"].as_i64();
+                let validated = requested.and_then(|id| {
+                    conn.query_row(
+                        "SELECT id FROM nodes WHERE id=?1 AND kind='folder'",
+                        [id], |r| r.get::<_, i64>(0),
+                    ).ok()
+                });
+                match validated {
+                    Some(id) => id,
+                    None => match find_or_create_inbox_folder(&conn) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            respond_json(req, 500,
+                                &format!(r#"{{"error":"{}"}}"#, e.replace('"', "\\\"")), cors);
+                            continue;
+                        }
+                    },
                 }
             };
             let max: i64 = conn.query_row(

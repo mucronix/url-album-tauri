@@ -7,6 +7,8 @@
            width: 280px; margin: 0; padding: 10px 12px; }
     #url-text { font-size: 11px; color: #666; white-space: nowrap;
                 overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px; }
+    #folder-row { margin-bottom: 8px; }
+    #folder-select { width: 100%; font-size: 12px; padding: 3px 4px; box-sizing: border-box; }
     #status { min-height: 16px; font-size: 12px; margin-bottom: 8px; }
     #status.ok    { color: #2a7; }
     #status.error { color: #c33; }
@@ -16,6 +18,9 @@
 </head>
 <body>
   <div id="url-text"></div>
+  <div id="folder-row" style="display:none">
+    <select id="folder-select"></select>
+  </div>
   <div id="status"></div>
   <button id="btn-add">Добавить в URL Album</button>
   <script src="popup.js"></script>
