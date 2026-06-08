@@ -328,13 +328,10 @@ body {
 
 
 #tree-root-drop {
-  display: none;
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 10;
-  padding: 3px 8px;
+  opacity: 0;
+  pointer-events: none;
+  padding: 5px 8px;
+  line-height: 1.4;
   font-size: calc(var(--ui-font) - 2px);
   color: var(--text-dim);
   background: var(--bg2);
@@ -342,7 +339,7 @@ body {
   cursor: default;
   user-select: none;
 }
-body.is-dragging #tree-root-drop { display: block; }
+body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 #tree-root-drop.drag-over {
   background: var(--accent);
   color: #fff;
