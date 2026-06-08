@@ -1,6 +1,6 @@
 [package]
 name = "url-album"
-version = "2.2.1-beta"
+version = "2.2.2-beta"
 edition = "2021"
 
 [build-dependencies]

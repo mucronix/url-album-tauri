@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "URL Album",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "Save current tab to URL Album",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsDdaRHeHm+xzq14IkQAqHBYT8x+fSNTnsTGdBT3fap3m1K3Gnar2dVwFojMmKZvsZJLaJadyA50nat3JcW7oK+DYwvN8cmssrs5r8rtGfXjhYz5sZstSBysbeQ931h16p9opy0zxrTi8YN65Bnmhoq7pWyAHpJJH8thUKzhcVD888mhPyZ/KNyN8TjAFDPv46zIYhlQnSi134aIsqcbninHYimWryXbYQiSnOcBeHk4Qipadfp9IuIBBX55Rmwhxq2B2h47GQ+Nl7e8LxRb2dcyZ2QMXZvwNHVtzXDNDTwnXt4CCE7KNkdLucJnLc/zv9l2RiegGl8vLckthHo5FPwIDAQAB",
   "permissions": ["activeTab", "storage"],
