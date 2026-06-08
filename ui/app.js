@@ -3632,6 +3632,8 @@ async function showApp() {
 
 let _dragNode        = null;  // { id, kind, parent }
 let _dragExpandTimer = null;
+let _scrollRafId     = null;
+let _scrollDir       = 0;     // -1 up / 0 stop / +1 down
 
 function _isDragValid(targetFolderId) {
   if (!_dragNode) return false;
@@ -3675,6 +3677,11 @@ function _clearDragOver() {
   clearTimeout(_dragExpandTimer); _dragExpandTimer = null;
 }
 
+function _stopAutoScroll() {
+  _scrollDir = 0;
+  if (_scrollRafId) { cancelAnimationFrame(_scrollRafId); _scrollRafId = null; }
+}
+
 function _initDragDrop() {
   // ── Root drop zone ────────────────────────────────────────────────────────
   const rootZone = document.getElementById('tree-root-drop');
@@ -3688,6 +3695,7 @@ function _initDragDrop() {
   rootZone.addEventListener('drop', async (e) => {
     e.preventDefault();
     rootZone.classList.remove('drag-over');
+    _stopAutoScroll();
     // Use wrapper folder ID when present; otherwise drop to literal root (parent = NULL)
     await _doDrop(virtualRootId !== null ? virtualRootId : null);
   });
@@ -3695,6 +3703,23 @@ function _initDragDrop() {
   // ── Tree drop target ──────────────────────────────────────────────────────
   treeEl.addEventListener('dragover', (e) => {
     if (!_dragNode) return;
+
+    // ── Auto-scroll ───────────────────────────────────────────────────────
+    const ZONE = 40;
+    const rect = treeEl.getBoundingClientRect();
+    const newDir = e.clientY < rect.top + ZONE ? -1 : e.clientY > rect.bottom - ZONE ? 1 : 0;
+    if (newDir !== _scrollDir) {
+      _scrollDir = newDir;
+      if (_scrollDir !== 0 && !_scrollRafId) {
+        const scroll = () => {
+          if (_scrollDir === 0) { _scrollRafId = null; return; }
+          treeEl.scrollTop += _scrollDir * 8;
+          _scrollRafId = requestAnimationFrame(scroll);
+        };
+        _scrollRafId = requestAnimationFrame(scroll);
+      }
+    }
+
     const folderEl = e.target.closest('.tree-item:not(.link)');
     if (!folderEl) return;
     e.preventDefault();
@@ -3721,6 +3746,7 @@ function _initDragDrop() {
     e.preventDefault();
     const folderEl = e.target.closest('.tree-item:not(.link)');
     _clearDragOver();
+    _stopAutoScroll();
     if (!folderEl) return;
     await _doDrop(Number(folderEl.dataset.id));
   });
@@ -3746,6 +3772,7 @@ function _initDragDrop() {
     e.preventDefault();
     const folderEl = e.target.closest('.card-folder');
     _clearDragOver();
+    _stopAutoScroll();
     if (!folderEl) return;
     await _doDrop(Number(folderEl.dataset.id));
   });
@@ -3821,6 +3848,7 @@ function createTreeNode(node, depth) {
     item.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
     _clearDragOver();
+    _stopAutoScroll();
   });
 
   wrap.appendChild(item);
@@ -4466,6 +4494,7 @@ function createFolderRow(node) {
     row.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
     _clearDragOver();
+    _stopAutoScroll();
   });
 
   // Drop target (drop onto this folder to move items into it)
@@ -4512,6 +4541,7 @@ function createCard(b) {
     card.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
     _clearDragOver();
+    _stopAutoScroll();
   });
 
   const dot = document.createElement("span");
