@@ -3593,7 +3593,6 @@ function updateStatusLeft() {
   const parts    = [`Папок: ${nFolders}`, `Ссылок: ${nLinks}`];
   if      (_sbSearchCount   !== null) parts.push(`Найдено: ${_sbSearchCount}`);
   else if (_sbInFolderCount !== null) parts.push(`В папке: ${_sbInFolderCount}`);
-  if (currentDbName) parts.push(`[${currentDbName}]`);
   document.getElementById('sb-left').textContent = parts.join(' · ');
 }
 
