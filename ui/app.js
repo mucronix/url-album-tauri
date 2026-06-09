@@ -5,6 +5,7 @@ const { invoke }         = window.__TAURI__.core;
 const { convertFileSrc } = window.__TAURI__.core;
 
 const MAX_FAVICON_CONCURRENCY = 5; // intentional per-domain rate limiting
+const APP_VERSION = '2.2.2-beta';
 
 // ── Link checker ─────────────────────────────────────────────────────────
 // Column config: id → CSS-var suffix, label, default width
@@ -3430,6 +3431,7 @@ const importScreen = document.getElementById("import-screen");
 const app          = document.getElementById("app");
 const treeEl       = document.getElementById("tree");
 const gridEl       = document.getElementById("grid");
+const rootZone     = document.getElementById('tree-root-drop');
 const breadcrumb   = document.getElementById("breadcrumb");
 const emptyHint    = document.getElementById("empty-hint");
 const searchEl        = document.getElementById("search");
@@ -3559,9 +3561,10 @@ async function updateWindowTitle() {
   try {
     const p = await invoke('get_db_path');
     currentDbName = p ? p.replace(/\\/g, '/').split('/').pop() : '';
-    const title = currentDbName ? `URL Album — ${currentDbName}` : 'URL Album';
+    const title = `URL Album ${APP_VERSION}`;
     document.title = title;
     await invoke('set_window_title', { title });
+    rootZone.textContent = currentDbName || '↑ Корень';
   } catch(_) { currentDbName = ''; }
 }
 
@@ -3684,7 +3687,6 @@ function _stopAutoScroll() {
 
 function _initDragDrop() {
   // ── Root drop zone ────────────────────────────────────────────────────────
-  const rootZone = document.getElementById('tree-root-drop');
   rootZone.addEventListener('dragover', (e) => {
     if (!_dragNode) return;
     e.preventDefault();
@@ -3842,11 +3844,13 @@ function createTreeNode(node, depth) {
     e.dataTransfer.setData('text/plain', String(node.id));
     item.classList.add('dragging');
     document.body.classList.add('is-dragging');
+    rootZone.textContent = '↑ Корень';
   });
   item.addEventListener('dragend', () => {
     _dragNode = null;
     item.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
+    rootZone.textContent = currentDbName || '↑ Корень';
     _clearDragOver();
     _stopAutoScroll();
   });
@@ -4488,11 +4492,13 @@ function createFolderRow(node) {
     e.dataTransfer.setData('text/plain', String(node.id));
     row.classList.add('dragging');
     document.body.classList.add('is-dragging');
+    rootZone.textContent = '↑ Корень';
   });
   row.addEventListener('dragend', () => {
     _dragNode = null;
     row.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
+    rootZone.textContent = currentDbName || '↑ Корень';
     _clearDragOver();
     _stopAutoScroll();
   });
@@ -4535,11 +4541,13 @@ function createCard(b) {
     e.dataTransfer.setData('text/plain', String(b.id));
     card.classList.add('dragging');
     document.body.classList.add('is-dragging');
+    rootZone.textContent = '↑ Корень';
   });
   card.addEventListener('dragend', () => {
     _dragNode = null;
     card.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
+    rootZone.textContent = currentDbName || '↑ Корень';
     _clearDragOver();
     _stopAutoScroll();
   });

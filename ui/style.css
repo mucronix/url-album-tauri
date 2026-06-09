@@ -328,7 +328,7 @@ body {
 
 
 #tree-root-drop {
-  opacity: 0;
+  opacity: 1;
   pointer-events: none;
   padding: 5px 8px;
   line-height: 1.4;
