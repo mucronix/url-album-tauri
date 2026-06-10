@@ -148,6 +148,7 @@ Portable-файлы рядом с exe (в `target\debug\`):
 - `last_db.txt` рядом с exe — авто-resume последней базы при старте
 - Все пути относительны exe: `album.db`, `Data\`, конфиги
 - Диалоги открытия/создания БД стартуют в папке текущей базы
+- Полностью portable: в реестр ничего не пишется; `reg query` используется только read-only для автодетектирования браузеров
 
 ### DB Schema
 ```sql
@@ -319,6 +320,66 @@ CREATE TABLE nodes (
 
 ---
 
+## Критические ловушки
+
+Неочевидные root causes и решения — не теряй при рефакторинге.
+
+### Tauri / WebView2
+
+- **`dragDropEnabled: false` в `tauri.conf.json` обязателен.** Tauri по умолчанию перехватывает все OS-level drag-события для своего механизма drop файлов в окно — это блокирует `dragstart` на всех HTML-элементах, DnD не работает вообще.
+
+- **`window.close()` в WebView2 уводит на `about:blank`**, оставляя пустую рамку. Закрытие только через ×/Alt+F4. Пункт "Файл → Выход" удалён по этой причине.
+
+- **`#tree-root-drop` обязан быть вне потока.** Показ/скрытие через `display: block` во время `dragstart` вызывает sidebar reflow → сдвигает drag-source → Chromium/WebView2 немедленно отменяет drag (firing `dragend`). Текущее решение: `opacity: 0/1` + `pointer-events: none/auto` — DOM не меняется, reflow нет.
+
+- **`eprintln!`/`dbg!` не видны в GUI-сборке** (`windows_subsystem = "windows"`). DevTools в release отключены. Для отладки: `"devtools": true` в `tauri.conf.json` временно, или писать в файл (`OpenOptions::append`).
+
+### Rust — IPC и блокировки
+
+- **Блокирующие команды (`std::process::Command::status()` и т.п.) — обязательно `async fn` + `spawn_blocking`.** Иначе IPC-поток замерзает и UI не реагирует. Касается: `refresh_thumb`, любой команды, запускающей внешний процесс.
+
+- **Не держать `MutexGuard` через `.await`.** В async-командах: взять `db.lock()`, выполнить запрос, отпустить guard до первого `.await`.
+
+- **Tauri 2: направление конвертации имён.**
+  - JS → Rust (аргументы `invoke`): camelCase **конвертируется** в snake_case автоматически. `invoke('cmd', { sortIdx: 5 })` доходит до параметра `sort_idx: i64`; аналогично `parentId → parent_id`, `newPath → new_path`.
+  - Rust → JS (поля ответа, сериализованные структуры): **НЕ конвертируются**, остаются snake_case. Структура с полем `sort_idx` приходит в JS как `n.sort_idx`, не `n.sortIdx`. При обращении к полям ответа всегда использовать snake_case.
+
+### SQLite / rusqlite
+
+- **`WHERE parent IS ?1` вместо `= ?1` при работе с NULL.** SQLite: `NULL = NULL` → false; `NULL IS NULL` → true. Используется в `move_node` и фильтрации корневых узлов.
+
+- **`sort_idx` обязан быть в SELECT и в `struct TreeNode`.** Без поля `pub sort_idx: i64` в `TreeNode` фронтенд получает `undefined` — все `.sort((a,b) => (a.sort_idx??0)-...)` тихо сводятся к сортировке по `id`. Симптом: порядок сбрасывается при каждом перезапуске, хотя в БД записано верно. Дерево "работало" случайно — V8 стабильная сортировка сохраняла порядок из `ORDER BY sort_idx,id`.
+
+- **`thumb` хранит полный абсолютный путь (legacy); `favicon` — только filename.** Путь favicon строится в runtime: `exe_dir/Data/favicons/{filename}`. При переносе папки скриншоты ломаются — известное ограничение.
+
+### Скриншоты (thumbnails)
+
+- **`MAX_THUMB_CONCURRENCY = 1` — не поднимать.** При > 1 воркеры стартуют в одну секунду → одинаковый timestamp → один файл → браузеры перезаписывают друг друга → скриншоты путаются между ссылками. Имена `{id}_{ms}.png` частично решают, но ограничение остаётся.
+
+- **Уникальный `--user-data-dir` per invocation** (`ua_screenshot_{id}`) — иначе конфликт профилей Edge/Chrome headless при параллельных вызовах.
+
+### Браузерное расширение
+
+- **`POST /api/v1/handshake`, не GET.** Браузер не шлёт заголовок `Origin` на простые GET-запросы — Origin-проверка всегда давала 403. POST шлёт Origin.
+
+- **`GET /api/v1/folders` — Origin-проверка ослаблена намеренно.** Браузер не шлёт Origin на GET без кастомных заголовков → нельзя требовать совпадение. Защита — токен `X-UA-Token`. Логика: Origin прислан и не совпадает → 403; пустой → пропустить.
+
+- **Extension ID `imekfalcnffmmmabcjapmihbocjabecf` зафиксирован через `"key"` в `manifest.json`.** Приватный ключ `extension-keys/private.key.pem` **не в git** (`extension-keys*/` в `.gitignore`) — нужен для восстановления того же ID. Не потерять.
+
+### Релиз
+
+- **4 места для обновления версии:** `Cargo.toml`, `tauri.conf.json`, `extension/manifest.json` (без `-beta` — Chrome не поддерживает), `APP_VERSION` в `app.js`.
+
+- **Ссылка в README — прямая** (`/releases/download/vX.Y.Z/...`), не `/releases/latest/download/...` — `latest` не видит pre-release, даёт 404.
+
+- **ZIP без `extension-keys/`** — в `.gitignore`, в архив не попадает. Состав: `URL-Album.exe` + `README.txt` + `extension\`.
+
+### Поддерживаемые ОС
+
+- **Минимум Windows 10.** WebView2 требует `ProcessPrng` из `bcryptprimitives.dll` — появилась в Windows 8+. На Win7 WebView2 (включая v109) падает с "ProcessPrng не найдена". DLL-шим отклонён — антивирусы флагают как малварь.
+
+---
+
 ## Паттерны и соглашения
 
 ### Rust
@@ -362,159 +423,31 @@ CREATE TABLE nodes (
 
 ## История изменений (крупные сессии)
 
-### Сессия 1 (до 2026-05-15)
-1. Multi-DB support — `db_path: Mutex<PathBuf>`, `switch_db()`, `last_db.txt`
-2. Compact list view в правой панели вместо card grid
-3. Resizable columns (`--col-name-w` CSS var, drag handler)
-4. Resizable sidebar splitter (сохраняется в settings)
-5. Synchronized dual-pane navigation (tree ↔ grid)
-6. Drag & drop с `move_node` (circular ref validation в Rust)
-7. `normalize_url()` — https:// авто-добавление без изменения БД
-8. Tree toggle fix: `selectFolder(id, expand=false)` для tree-clicks
-9. `CREATE_NO_WINDOW` — убрано мигание консоли при открытии ссылок
+**Сессия 1** (до 2026-05-15) — Multi-DB (`switch_db`, `last_db.txt`), compact list view в правой панели, resizable columns/splitter, DnD с `move_node` (circular ref validation), `normalize_url`, `CREATE_NO_WINDOW`.
 
-### Сессия 2 (2026-05-15–16)
-10. **Favicon loading** — полная система: Rust async fetch + JS queue + domain dedup + progress panel
-    - `fetch_favicon` (4 стратегии: favicon.ico → HTML → DuckDuckGo → Google), `get_data_dir`, `update_node_favicon`
-    - `is_valid_image()` — magic bytes, SVG check (`<svg`/`<?xml`), отсеивает HTML
-    - Cache validation — перезагружает битые кэш-файлы автоматически
-    - Browser UA: Chrome 124 для обхода Cloudflare
-    - `faviconFilePath()` — нормализация path separators на Windows
-    - `sameIds` domain dedup — все ноды домена персистируются в DB
-    - Favicon в дереве, гриде, detail view
-11. **Tree UX** — полный рефакторинг поведения:
-    - `[+]/[-]` кнопки через CSS `::before` (data-has-children)
-    - Клик на `[+]/[-]` = только toggle; клик на label = только выделение+грид; dblclick = toggle
-    - Серое выделение только на `.label` (не полная строка)
-    - ↑↓ стрелки выбирают И активируют; клик фокусирует item
-    - Папки всегда выше ссылок (`buildTree` сортирует по kind)
-    - PNG иконки папок (`ui/icons/`) — pixel-art, CSS переключает по `.open`
-12. **Grid single click** → `openDetailView` (карточка); double click → открыть в браузере
-13. **`open_url`** → `rundll32.exe url.dll,FileProtocolHandler`; новая `open_file` для локальных файлов
-14. **Контекстные меню** — убран "Проверить" из меню ссылки; упорядочены пункты; сортировка: один пункт + toggle asc/desc с ▲▼
-15. **`refresh_thumb`** — принимает width/height/timeout из настроек; дефолт 1280×800, **15сек**; кнопка "По умолчанию"
-16. **Окно** — `center: true`, `minWidth: 500` (Windows Snap корректно)
-17. **Очистка** — удалены test screenshots, дубликаты иконок
+**Сессия 2** (2026-05-15–16) — Полная система favicon (4 стратегии, domain dedup, `sameIds`, прогресс-панель); рефакторинг Tree UX (`[+]/[-]`, поведение кликов, PNG-иконки папок); grid single click → detail view; `open_url` → rundll32; `refresh_thumb` с настраиваемыми размером/таймаутом.
 
-### Сессия 4 (2026-05-19)
-22. **Batch thumbnail refresh** — пакетное обновление скриншотов для папки:
-    - Пункт "Обновить рисунки" в контекстном меню папки (после "Загрузить favicon'ы")
-    - `#thumb-panel` — новая прогресс-панель (HTML + CSS), зеркало `#favicon-panel`, z-index: 501
-    - `startThumbBatch(folderNode)` — только прямые ссылки папки (не рекурсивно)
-    - `_runThumbWorker()` — `MAX_THUMB_CONCURRENCY = 1`, обновляет `allNodes` + DOM грида
-    - `_applyThumbToCard(id, title, newPath)` — хелпер обновления карточки в гриде; используется и в `_runThumbWorker`, и в `refreshThumb`
-    - `makeDlgDraggable` на `#tp-titlebar` — панель перетаскивается
-    - **Fix:** `refresh_thumb` переведён из `fn` в `async fn` + `tauri::async_runtime::spawn_blocking` — `std::process::Command::status()` больше не блокирует IPC-поток и UI
-    - **Fix:** уникальный `--user-data-dir` per invocation (`ua_screenshot_{id}`) — устранён конфликт при параллельных вызовах; temp dir удаляется после каждого скриншота
-    - **Fix:** `makeDlgDraggable` сбрасывает `bottom`/`right` → `auto` при начале drag — панели с `bottom:` позиционированием не растягиваются
-    - **Fix:** `#import-screen` скрыт по умолчанию — устранено мигание стартового экрана при Ctrl+R
-    - **Cleanup:** `CREATE_NO_WINDOW` добавлен к browser Command в `spawn_blocking` (консистентно с остальным кодом)
+**Сессия 3** (2026-05-17–18) — Tree UX доработки (`noTreeExpand`, правый клик в дереве/гриде); меню "Вид" → один toggle-пункт с синхронизацией toolbar (`_syncExpandToggleUI`); меню закрывается при `window.blur`.
 
-### Сессия 3 (2026-05-17–18)
-18. **Tree UX — доработки:**
-    - `selectFolder(id, false, true)` — noTreeExpand=true: одиночный клик не трогает дерево вообще
-    - `[+]/[-]` и dblclick НЕ вызывают `collapseSiblingBranches` — все папки независимы
-    - При старте: все папки закрыты, первая только подсвечена
-    - Правый клик по папке в дереве — подсвечивает папку (добавлен `.active`)
-    - Правый клик по папке в гриде — `showFolderContextMenu` (было `return`)
-19. **Меню "Вид"** — один toggle-пункт вместо двух:
-    - `toggle-expand-all` в `CMD_REGISTRY`, `MENU_DATA`, `handleMenuAction`, `handleToolbarAction`
-    - `_syncExpandToggleUI()` — синхронизирует текст+иконку меню и toolbar кнопки
-    - Вызывается при открытии меню "Вид" и после каждого toggle
-    - `expand-all` / `collapse-all` полностью удалены (из CMD_REGISTRY, handlers, DEFAULT_TOOLBAR)
-20. **Меню закрывается** при `window.blur` (клик на titlebar, Alt+Tab)
-21. **`group.dataset.id = menu.id`** — добавлен в buildMenubar для идентификации групп меню
+**Сессия 4** (2026-05-19) — Batch thumbnail refresh (`#thumb-panel`, `startThumbBatch`, `_applyThumbToCard`); `refresh_thumb` → `async fn` + `spawn_blocking`; уникальный `--user-data-dir` per invocation.
 
-### Сессия 5 (2026-05-19) — Реструктуризация меню
-22. **Новая архитектура меню** — принцип "НАД ЧЕМ":
-    - **Файл** = lifecycle БД: Создать.../Открыть.../Последние базы▶/Закрыть / Создать резервную копию.../с рисунками... / Свойства базы/Настройки/Выход
-    - **Ссылки** = только операции над ссылками (без Import/Export/Backup/Sort)
-    - **Перенос** = новое меню: Импорт▶ (браузер, другая база, HTML, TXT, sync, ua.dat) / Экспорт▶ / Браузеры
-    - **Поиск** = только "Найти" (дубликаты перенесены в Ссылки)
-    - **Вид** — без изменений
-    - Пункт "Восстановить резервную копию" удалён (дублировал "Открыть базу")
-23. **Новые Rust команды:**
-    - `close_db` — checkpoint WAL, JS показывает welcome screen
-    - `get_recent_dbs()` — список последних баз из `recent_dbs.txt` (max 10)
-    - `get_db_properties()` → `DbProperties { path, size_bytes, folder_count, bookmark_count }`
-    - `save_recent_db(path)` — вызывается из `switch_db` автоматически
-    - Import команды (`import_html`, `import_txt_lines`, `import_sync`, `import_uadat_pick`, `import_txt_urls`, `db::import`) — добавлен `parent_id: Option<i64>` для импорта в конкретную папку
-24. **Диалог "Свойства базы"** — показывает путь, размер, кол-во папок/ссылок; кнопка "Очистить базу"
-    - `openDbPropertiesDialog()`, `formatBytes(bytes)`, `#dbprops-overlay`
-    - `.win-btn-danger` / `.win-btn.win-btn-danger:not(:disabled):hover` — красная кнопка опасного действия
-25. **Новое контекстное меню папки:**
-    - Новая папка (`createFolderAndRename(folderNode.id)`) / Переименовать / Удалить
-    - Импорт в папку▶ (`buildFolderImportSubmenu`) / Экспорт папки▶
-    - Проверить ссылки / Обновить favicon'ы / Обновить рисунки
-    - Сортировка▶ / Свойства
-    - `invokeFolderImport(action, parentId)` — передаёт parentId в import команды
-26. **Динамическое подменю "Последние базы"** — `_populateRecentDbs(drop)` вызывается при каждом открытии File меню
-    - Элементы: `entry.dataset.recentDbs = '1'` для lookup
-    - Click на запись: `invoke('switch_db', { newPath: p }).then(() => showApp())`
+**Сессия 5** (2026-05-19) — Реструктуризация меню (Файл / Ссылки / **Перенос** / Поиск / Вид); `close_db`, `get_recent_dbs`, диалог "Свойства базы" (`#dbprops-overlay`); обновлённое контекстное меню папки с импортом в папку.
 
-### Сессия 7 (2026-05-19) — Drag & Drop fix
-30. **Fix: drag & drop не работал вообще** — Tauri по умолчанию перехватывает все OS-level drag-события для своего механизма drop файлов в окно (`dragDropEnabled: true`). Это блокировало `dragstart` на всех элементах. Фикс: `"dragDropEnabled": false` в `tauri.conf.json`.
-31. **Refactor: DnD переписан на event delegation** — вместо handlers на каждом элементе, один `dragover`/`drop` на `treeEl` и `gridEl`. Используется `e.target.closest('.tree-item:not(.link)')` и `.closest('.card-folder')` для определения цели.
-32. **Fix: убрана лишняя проверка "already there"** из `_isDragValid` — теперь перемещение в ту же папку просто делает no-op, но не блокирует drag visually.
+**Сессия 6** (2026-05-19) — Fix: favicon batch не обновлял UI; fix: скриншоты зависали на недоступных сайтах (`spawn` + `try_wait` poll вместо `status()`).
 
-### Сессия 8 (2026-05-21) — Тестирование Win7, документация
-33. **Тестирование Windows 7** — установка VirtualBox 7.1.6 + VM Windows 7 Pro SP1 x64:
-    - Guest Additions 7.1.x не устанавливались — `ERROR_AUTHENTICODE_TRUST_NOT_ESTABLISHED` (SHA-2 подпись, нужен KB3033929)
-    - KB3033929 через ISO (создан через PowerShell IMAPI2FS) — не помог, bcdedit testsigning on — тоже
-    - Решение: Guest Additions **6.1.48** (SHA-1 подпись) — установились без патчей
-    - WebView2 bootstrapper: `ProcessPrng не найдена в bcryptprimitives.dll` — функция из Windows 8+
-    - WebView2 v109 (139 МБ, Internet Archive) — та же ошибка
-    - **Вывод: Windows 7/8 не поддерживается** — WebView2 требует Win8+ API (`ProcessPrng` в bcryptprimitives.dll). DLL-шим отклонён — антивирусы будут флагать как малварь.
-34. **README и релиз обновлены** — убраны упоминания Windows 7/8 везде:
-    - `README.md`: требования теперь **Windows 10 / 11** (64-bit)
-    - `dist/URL-Album-2\README.txt`: то же
-    - GitHub release: описание и ZIP обновлены
-    - Минимальная поддерживаемая ОС: **Windows 10**
+**Сессия 7** (2026-05-19) — Fix: DnD не работал (`dragDropEnabled: false`); DnD переписан на event delegation.
 
-### Сессия 9 (2026-06-03) — Чистка, новая фича импорта
-35. **Репозиторий** — проект переехал в `url-album-tauri` (чистая папка), новый GitHub-репо `skljar/url-album-tauri`, релиз v2.0-beta опубликован. Topics: bookmark-manager, tauri, rust, windows, sqlite, desktop-app.
-36. **Удалена вкладка "Прокси"** из настроек — была заглушкой (proxy-поля сохранялись в settings.json но нигде не применялись). Системный WARP покрывает эту задачу. Удалено: HTML-блок `#stab-proxy`, таб, 5 полей в `appSettings`, `syncProxyFields`, populate/save код (~57 строк).
-37. **Меню "Файл" перестроено** — плоский список вместо подменю "Резервная копия▶": `Создать резервную копию...` (backup_db) и `Создать резервную копию с рисунками...` (backup_db_with_data) вынесены на верхний уровень. Удалён дублирующий пункт "Восстановить резервную копию" (открывал тот же диалог что и "Открыть базу"). Мёртвый `case 'backup-restore'` удалён из handler.
-38. **Фича "Импорт из другой базы"** (Перенос → Импорт → Из другой базы...):
-    - **Rust:** `analyze_import_db` — read-only Connection к исходной БД, сравнение URL через `normalize_url_for_dedup` (убирает схему/www./trailing slash/регистр), возвращает `ImportAnalysis { source_path, total_bookmarks, new_count, duplicate_count, total_folders }`. `execute_import_db` — читает исходные ноды в память (spawn_blocking), затем BFS-обход needed_folders (только предки новых закладок), INSERT с перемаппингом old_id→new_id, INSERT новых закладок.
-    - **UI:** диалог `#import-db-overlay` со статистикой; select назначения (корневые папки из allNodes + "Корень" + "Создать новую папку..."); при выборе "новая папка" — `invoke('create_folder')` → id → `execute_import_db`; alert с итогом + `refreshTree()`.
-    - **Дедуп:** по нормализованному URL (не по домену) — `site.com/page1` и `site.com/page2` считаются разными.
-    - **Поля Tauri → JS:** snake_case (source_path, new_count, etc.) — Tauri не конвертирует в camelCase на выходе.
+**Сессия 8** (2026-05-21) — Тестирование Win7: WebView2 несовместим (`ProcessPrng` из Win8+), минимум Windows 10. README обновлён.
 
-39. **Настройка размера шрифта интерфейса** — ползунок 8–18px в Настройки → Общие:
-    - **CSS:** переменная `--ui-font: 13px` на `:root`; все `font-size: 12px` → `calc(var(--ui-font) - 1px)`, `11px` → `-2px`, `10px` → `-3px`, `13px` → `var(--ui-font)`; нетронуты: 7–9px (иконки/стрелки), 14px, 16px (×), 20px
-    - **JS:** `appSettings.uiFontSize = 13`; в `applySettings` — `document.documentElement.style.setProperty('--ui-font', size + 'px')`; ползунок с live-label в IIFE настроек
-    - **Сохранение:** в `settings.json` через существующий `save_settings`; Rust не менялся
+**Сессия 9** (2026-06-03) — Новый репо `skljar/url-album-tauri`; удалена вкладка "Прокси"; фича "Импорт из другой базы" (`analyze_import_db`/`execute_import_db`, BFS + dedup по URL); настройка размера шрифта (`--ui-font`).
 
-### Сессия 11 (2026-06-04) — Статусбар
-41. **Статусбар** (`#statusbar`, HTML + CSS + JS):
-    - **HTML:** `<div id="statusbar"><div id="sb-left"/><div id="sb-right"/></div>` — sibling к `#app` в `body` (body уже flex-column, никакой реструктуризации не потребовалось). Скрыт по умолчанию (`.hidden`).
-    - **CSS:** `height: 20px`, `background: var(--bg2)`, `border-top: 1px solid var(--border)`, `font-size: calc(var(--ui-font) - 3px)`. `#sb-left` — flex:1, ellipsis. `#sb-right` — max-width:50%, ellipsis; `.sb-temp` (белый, 3с), `.sb-sticky` (акцент, пока не заменено).
-    - **JS API:** `setStatus(text, {sticky=false})` — sticky остаётся до следующего вызова, temp гаснет через 3с. `clearStatus()` — сбросить. `updateStatusLeft()` — пересчитать `Папок/Ссылок/В папке|Найдено/[name.db]`.
-    - **Интеграция:** `showApp()` (`await updateWindowTitle()` → `currentDbName`, показать бар), `showImportScreen()` (скрыть бар), `renderTree()` (updateStatusLeft), `loadFolderContents()` (`_sbInFolderCount`), `renderSearchResults()` (`_sbSearchCount`), `clearSearchUI()` (сброс `_sbSearchCount`). Favicon/thumb batch: sticky прогресс → temp "Готово". Импорт: `alert(...)` → `setStatus(...)` для успехов.
-    - **Баг обнаружен (не исправлен):** `window.close()` в WebView2 уводит на `about:blank` вместо закрытия. Пункт меню "Выход" оставляет пустую рамку. → Исправлено в сессии 12.
+**Сессия 10** (2026-06-04) — DnD в корень: `move_node(Option<i64>)`, `#tree-root-drop`, `virtualRootId`.
 
-### Сессия 12 (2026-06-04) — Удалён пункт "Выход"
-42. **Удалён пункт "Файл → Выход"** — `window.close()` в WebView2 уводил на `about:blank`, оставляя пустую рамку окна. Проверена WAL-безопасность: `PRAGMA synchronous=FULL` + `sqlite3_close` при выходе = автоматический финальный checkpoint (документированное поведение SQLite для last-connection). `on_window_event(Destroyed)` в main.rs — no-op, данные сохраняются через Connection::drop. Удалены: строка `MENU_DATA` и `case 'quit':` обработчик.
+**Сессия 11** (2026-06-04) — Статусбар (`#statusbar`, `setStatus`/`updateStatusLeft`, интеграция в tree/grid/search/batch).
 
-### Сессия 13 (2026-06-04) — Фиксы пакетного обновления рисунков
-43. **Имя файла скриншота: `{id}_{ts}.png` с миллисекундами** — было `{ts}.png` с `as_secs()`. При `MAX_THUMB_CONCURRENCY > 1` несколько воркеров стартуют в одну секунду → одинаковый `ts` → один и тот же файл → браузеры перезаписывают друг друга → скриншоты путаются между ссылками (видно визуально: чужие картинки на карточках). Фикс: `as_millis()` + `id` в имени гарантируют уникальность.
-44. **`MAX_THUMB_CONCURRENCY = 1`** — было задокументировано в сессии 4, потом поднято до 3 и вернуло баг путаницы файлов. **Не поднимать без уникальных имён файлов.**
-45. **`_finishThumbBatch` теперь вызывает `loadFolderContents` + обновляет открытый detail view** — раньше не вызывал (в отличие от `_finishFaviconBatch`). Результат: рисунки писались на диск и в DB, но UI обновлялся только после перезапуска программы.
-46. **`.catch` в `_runThumbWorker` больше не глотает ошибки** — было `.catch(() => {})`, теперь выводит в статусбар. Раньше батч показывал "Готово N рисунков" даже при полном провале всех invoke.
-47. **Удалена мёртвая иконка `quit`** — хвост от убранного в сессии 12 пункта "Выход".
-    - **Диагностика в будущем:** F12/DevTools отключены в debug-сборке (WebView2 без `devtools: true` в конфиге). Для диагностики JS-ошибок — либо добавить `"devtools": true` в `tauri.conf.json` временно, либо выводить в UI (статусбар).
-48. **Релиз v2.1.1-beta** — тег `v2.1.1-beta`, ZIP `URL-Album-2.1.1-beta.zip` прикреплён к GitHub Releases. Версия в `tauri.conf.json` и `Cargo.toml` поднята с `0.1.0` до `2.1.1`.
-    - **`dist/` в `.gitignore` намеренно** — `README.txt` внутри `dist/` уходит в релиз через ZIP, в git его force-добавлять не нужно.
-    - **Упаковка ZIP:** `Compress-Archive` в PowerShell, файлы кладутся в корень архива (без вложенной папки), exe переименовывается в `URL-Album.exe` перед упаковкой и удаляется из `dist/` после.
+**Сессия 12** (2026-06-04) — Удалён пункт "Файл → Выход" (`window.close()` → about:blank).
 
-### Сессия 10 (2026-06-04) — DnD в корень
-40. **DnD в корень** — перетаскивание узлов на верхний уровень дерева:
-    - **Rust:** `move_node(id: i64, new_parent: Option<i64>)` — guards (`self-parent`, `circular ref`) только при `Some(np)`; `WHERE parent IS ?1` вместо `= ?1` (SQLite IS корректно работает с NULL); UPDATE работает с `Option<i64>` через rusqlite::params!.
-    - **JS:** `virtualRootId` (let, обновляется в `buildTree`) — если в БД есть legacy-обёртка, drop в корень → обёртка; иначе → NULL. `_doDrop(null)` корректно проходит `_isDragValid` (null target). Guard `if (targetFolderId !== null)` в `_doDrop` — пропускает auto-expand для корня.
-    - **UI:** `#tree-root-drop` (HTML) — `position: absolute; top:0; left:0; right:0; z-index:10; background: var(--bg2)`. Видим только при `body.is-dragging`. `body.is-dragging` выставляется в `dragstart` всех трёх источников (tree-item, grid-row, grid-card), снимается в `dragend`.
-    - **`_clearDragOver()`** — расширен: чистит `.drag-over` с root-зоны. `dragend` у всех трёх источников рефакторнут: инлайновый cleanup → `_clearDragOver()`.
-    - **Fix: reflow отменял drag из дерева** — `display: block` в нормальном потоке во время `dragstart` сдвигало tree-items, Chromium/WebView2 немедленно отменял drag (firing `dragend`). Фикс: `position: absolute` убирает зону из потока, layout не меняется, drag инициализируется нормально. DnD из грида не был затронут (источник в другой панели).
+**Сессия 13** (2026-06-04) — Fix: путаница скриншотов при concurrency > 1 → `{id}_{ms}.png`, `MAX_THUMB_CONCURRENCY = 1`; fix: batch не обновлял UI; релиз **v2.1.1-beta**.
 
 ### Сессия 14 (2026-06-05) — Браузерное расширение
 49. **Рефакторинг `refresh_thumb` → `do_screenshot`** — логика скриншота вынесена в `async fn do_screenshot(data_dir, id, url, width, height, timeout)` без `tauri::State`. `refresh_thumb` стала тонкой обёрткой. Заодно исправлен UI-баг: `buildTree()` делал `{ ...n, children: [] }` (shallow copy) — мутации `allNodes[i].thumb` не проникали в замыкания click-обработчиков дерева. Фикс: `n.children = []; map.set(n.id, n)` — ссылки на оригинальные объекты.
@@ -565,11 +498,3 @@ CREATE TABLE nodes (
 63. **Feat (после релиза 2.2.2, для будущего релиза): имя базы в строке над деревом + версия в заголовке окна.** Строка #tree-root-drop (бывшая пустая зона дропа в корень) в покое показывает имя текущей базы (currentDbName), при drag — «↑ Корень», после drag возвращает имя базы (переключение через textContent в updateWindowTitle и в трёх dragstart/dragend; rootZone вынесен в глобал). CSS: opacity 0→1 (зона теперь всегда видима, layout не меняется — drag не затронут). Заголовок окна теперь «URL Album <версия>» без имени базы; добавлена const APP_VERSION в app.js (ВНИМАНИЕ: 4-е место, где надо обновлять версию при релизе, вместе с Cargo.toml/tauri.conf.json/manifest.json). Дубль имени базы из статусбара убран (в updateStatusLeft удалён parts.push с [currentDbName]) — теперь имя базы только над деревом.
 64. **Fix (после релиза 2.2.2, для будущего релиза): ручная сортировка ссылок стрелками вверх/вниз не сохранялась между сессиями.** КОРНЕВАЯ ПРИЧИНА (неочевидная, искали долго): `get_tree` НЕ возвращал `sort_idx` во фронтенд — `struct TreeNode` (db.rs) не содержал поля `sort_idx`, и SELECT его не тянул (хотя `ORDER BY sort_idx,id` был). Поэтому на фронте у всех узлов `n.sort_idx === undefined`, и все сортировки (`.sort((a,b)=>(a.sort_idx??0)-...)`) сводились к сортировке по `id`. Стрелки писали `sort_idx` в БД относительно id-порядка, после перезапуска грид сортировался по `id` → «сброс». Дерево «работало» случайно (`allNodes` приходил `ORDER BY sort_idx,id`, стабильная сортировка V8 сохраняла порядок). Запись в БД при этом работала корректно (проверено в DB Browser). ФИКС: (1) db.rs — добавлено поле `pub sort_idx: i64` в `TreeNode` (после `visited`) и колонка `sort_idx` в SELECT `get_tree` (индекс 10, `count` сдвинут на 11 — индексы `row.get` строго по порядку колонок!); (2) app.js — `foldersFirst` в `buildTree` учитывает `sort_idx` внутри группы (папки по-прежнему выше ссылок); `loadFolderContents` сортирует закладки по `(sort_idx??0)-...||id`; `tbMoveItem`: siblings сортируется с tiebreaker `||a.id-b.id`, после перестановки обновляются И дерево (`saveOpenState→renderTree→restoreOpenState`, без `get_tree` т.к. `allNodes` уже мутирован) И грид (`await loadBookmarks`), восстанавливается выделение (`_activateTreeItem` + `gridSelectRow`). Коммит `a304912`.
 65. **Feat (после релиза 2.2.2, для будущего релиза): перемещение ПАПОК стрелками вверх/вниз.** Расширен `tbMoveItem` (раньше работал только для bookmark): источник node теперь `activeBookmarkNode` (ссылка) ИЛИ `allNodes.find` по `activeFolderId` (папка, выбранная одиночным кликом в дереве — навигацию НЕ меняли). siblings фильтруются по `node.kind` (папки двигаются среди папок-сестёр, ссылки среди ссылок), `parent===null` корректно отбирает корневые папки. После перестановки: `renderTree` + `restoreOpenState` + `_activateTreeItem(node)` для обоих типов (серия нажатий работает); грид (`loadBookmarks`+`gridSelectRow`) обновляется только для ссылок (для папки `activeFolderId` не меняется, содержимое то же). Правка 2: `loadFolderContents` теперь сортирует и subfolders по `sort_idx` (раньше только bookmarks). Папки «выше ссылок» сохраняется через `foldersFirst`. Коммит `70a953b`.
-
-### Сессия 6 (2026-05-19) — Багфиксы
-27. **Fix: favicon не появлялись после batch-загрузки** — `_finishFaviconBatch` теперь вызывает `renderTree()` + `loadFolderContents(activeFolderId)` после завершения. Ранее `updateFaviconInDOM` обновлял DOM, но WebView2 не перерисовывал без явного reload.
-28. **Fix: скриншоты зависали на недоступных сайтах** — `spawn()` + poll `try_wait()` каждые 250мс вместо `status()`. Если deadline превышен — `child.kill()` принудительно, браузер всегда завершается в срок.
-    - Дефолтный таймаут: 30с → **15с** (Настройки → Рисунок)
-    - Rust fallback: `timeout.unwrap_or(15)`
-    - JS fallbacks: `appSettings.thumbTimeout || 15`
-29. **Release build** — `cargo build --release` → `dist/URL-Album-2.0-beta.zip` (3.7 MB). Полностью portable, в реестр ничего не пишется (только `reg query` для определения браузеров — read-only).
