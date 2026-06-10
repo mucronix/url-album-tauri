@@ -276,7 +276,7 @@ CREATE TABLE nodes (
 - Защита от циклов: **двойная** — JS `_isDragValid` (walk up через `allNodes`) + Rust `move_node` (walk up через БД). Потеря данных невозможна.
 - Сохранение в БД: `UPDATE nodes SET parent = ?1` при каждом drop — персистируется.
 - Drop в корень: **реализован** — `move_node(Option<i64>)`, `WHERE parent IS ?1` (SQLite IS для NULL), `#tree-root-drop` drop-зона.
-- **Важно: `#tree-root-drop` — `position: absolute`**, не в потоке. Если сделать `display: block` в нормальном потоке во время `dragstart`, sidebar reflow сдвигает drag-source → Chromium/WebView2 отменяет drag немедленно.
+- `#tree-root-drop` в потоке, управление через opacity (не absolute); причина reflow-срыва drag и эволюция решения — см. раздел Критические ловушки.
 - `virtualRootId` (JS) — ID папки-обёртки legacy-баз; если есть, drop в корень → эта папка, иначе `parent = NULL`.
 - `body.is-dragging` — класс на `<body>` при активном drag (dragstart/dragend всех трёх источников: tree-item, grid-row, grid-card). Управляет видимостью `#tree-root-drop` через CSS.
 - Drag-сортировка ссылок и папок в гриде (порядок + вложение по зонам, п.66).
