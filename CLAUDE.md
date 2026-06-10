@@ -219,26 +219,10 @@ CREATE TABLE nodes (
 - `group.dataset.id = menu.id` — для идентификации меню при открытии (вызов sync при открытии "Вид")
 
 **Favicon система (JS):**
-- `MAX_FAVICON_CONCURRENCY = 5` — константа в начале app.js (intentional rate limiting)
-- `dataDir` — путь к Data/ (загружается при старте через `get_data_dir`)
-- `faviconFilePath(filename)` — нормализует path separators для `convertFileSrc` на Windows
-- `setFaviconOnEl(el, src)` — ставит favicon img, при ошибке восстанавливает `●`
-- `extractDomain(url)` — извлечь домен для dedup
-- `buildFaviconQueue(bookmarks)` — dedup по домену; один item на домен + `sameIds[]`
-- `_runFaviconWorker()` — worker loop (5 параллельных invoke)
-- `applyFaviconToDOM(item, filename)` — обновить allNodes + DOM + вызвать `update_node_favicon` для каждого sameId
-- `updateFaviconInDOM(nodeId, filePath)` — live update tree + grid + detail
-- `loadSingleFavicon(node)` — одна ссылка, без панели, после загрузки reload грида
-- `startFaviconBatch(folderNode, recursive)` — запуск batch с прогресс-панелью
-- Контекстное меню ссылки: "Загрузить favicon"
-- Контекстное меню папки: "Загрузить favicon'ы" (recursive)
-
-**Drag & Drop:**
-- Все элементы дерева и grid-строки draggable
-- Папки — drop targets (в дереве и в grid)
-- Auto-expand при hover 650ms
-- Валидация: no self-parent, no circular refs
-- После drop: `get_tree` + re-render + reload panel
+- `MAX_FAVICON_CONCURRENCY = 5` — intentional rate limiting
+- `dataDir` — путь к Data/ (через `get_data_dir`); `faviconFilePath(filename)` — нормализует separators для `convertFileSrc`
+- `buildFaviconQueue` + `sameIds` — dedup по домену; `startFaviconBatch(folderNode, recursive)` / `loadSingleFavicon(node)` — entry points
+- `applyFaviconToDOM` / `updateFaviconInDOM` — live update tree + grid + detail
 
 **Контекстное меню ссылки:**
 Открыть → Открыть с помощью → [sep] → Открыть рисунок → Обновить рисунок → Удалить рисунок → [sep] → Загрузить favicon → [sep] → Удалить ссылку → [sep] → Копировать URL → Свойства
@@ -271,7 +255,6 @@ CREATE TABLE nodes (
 
 ### Активные проблемы
 - [ ] Accordion mode в настройках — не всегда корректно закрывает ветки при навигации из правой панели
-- [ ] `tbMoveItem` — работает только внутри одной папки
 - [ ] Поиск — breadcrumb не всегда обновляется при клике на папку из результатов
 - [ ] `backup_db` с `set_parent(&window)` — может вызывать DPI issues на Windows
 
@@ -281,13 +264,6 @@ CREATE TABLE nodes (
 - `thumb` хранит полный абсолютный путь в DB (legacy, в отличие от `favicon` который хранит только filename)
 
 ### Что НЕ сделано / очередь
-- [x] Контекстное меню для папок в правой панели — реализовано
-- [x] Proxy settings — вкладка удалена (системный WARP, незачем)
-- [x] Импорт из другой базы — реализован (Перенос → Из другой базы...)
-- [x] Настройка размера шрифта — реализована (ползунок 8–18px, `--ui-font` + calc)
-- [x] **DnD в корень** — `move_node(Option<i64>)`, `#tree-root-drop` drop-зона (position: absolute, body.is-dragging), `virtualRootId` для legacy-обёртки
-- [x] **Статусбар** — `#statusbar` (flex, 20px, `var(--bg2)`, снизу окна). Левая часть: `Папок: N · Ссылок: M · В папке: K · [name.db]`; при поиске — `Найдено: X`. Правая часть: временные сообщения (3с, `.sb-temp`) и sticky-прогресс (`.sb-sticky`, акцент). API: `setStatus(text, {sticky})`, `clearStatus()`, `updateStatusLeft()`. Интегрирован в: `showApp`, `showImportScreen`, `renderTree`, `loadFolderContents`, `renderSearchResults`, `clearSearchUI`, favicon/thumb batch, импорт из базы (замена alert). `currentDbName` устанавливается в `updateWindowTitle()`.
-- [x] **Пункт "Файл → Выход" удалён** — `window.close()` в WebView2 уводил на `about:blank`, оставляя пустую рамку. Закрытие только через ×/Alt+F4. WAL-безопасность подтверждена: `PRAGMA synchronous=FULL` гарантирует fsync каждой записи в WAL; `sqlite3_close` при выходе автоматически делает финальный checkpoint (last-connection WAL merge — документированное поведение SQLite).
 - [ ] Drag & drop сортировка внутри папки (сейчас только кнопки вверх/вниз)
 - [ ] `thumb` хранит абсолютный путь в DB → перейти на filename как у `favicon` (при переносе папки скриншоты ломаются)
 - [ ] Browser import (`import_chromium`, `import_firefox`) → добавить `parent_id` (сейчас всегда в корень)
