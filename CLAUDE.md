@@ -279,6 +279,7 @@ CREATE TABLE nodes (
 - **Важно: `#tree-root-drop` — `position: absolute`**, не в потоке. Если сделать `display: block` в нормальном потоке во время `dragstart`, sidebar reflow сдвигает drag-source → Chromium/WebView2 отменяет drag немедленно.
 - `virtualRootId` (JS) — ID папки-обёртки legacy-баз; если есть, drop в корень → эта папка, иначе `parent = NULL`.
 - `body.is-dragging` — класс на `<body>` при активном drag (dragstart/dragend всех трёх источников: tree-item, grid-row, grid-card). Управляет видимостью `#tree-root-drop` через CSS.
+- Drag-сортировка ссылок и папок в гриде (порядок + вложение по зонам, п.66).
 
 ### Крупные задачи (отдельная сессия)
 
