@@ -789,6 +789,12 @@ async function sortFolder(folderNode, by, desc) {
       wrappers.forEach(w => childrenEl.appendChild(w));
     }
 
+    // Sync allNodes sort_idx from newOrder so loadFolderContents renders correct order
+    newOrder.forEach((id, idx) => {
+      const n = allNodes.find(n => n.id === id);
+      if (n) n.sort_idx = idx;
+    });
+
     // Reload grid if this folder is shown
     if (activeFolderId === folderNode.id) loadBookmarks(folderNode.id);
   } catch (err) { console.error("sort_folder:", err); }
@@ -2304,6 +2310,22 @@ function handleToolbarAction(id) {
   handleMenuAction(cmd.action || id);
 }
 
+async function _applySortOrder(siblings, node) {
+  await Promise.all(siblings.map((n, si) => invoke('set_sort_idx', { id: n.id, sortIdx: si })));
+  siblings.forEach((n, si) => { n.sort_idx = si; });
+  const openIds = saveOpenState();
+  renderTree();
+  restoreOpenState(openIds);
+  _activateTreeItem(node);
+  if (node.kind === 'folder') {
+    await loadFolderContents(node.parent);
+  } else if (node.kind === 'bookmark') {
+    await loadBookmarks(node.parent);
+    const card = gridEl.querySelector(`.card[data-id="${node.id}"]`);
+    if (card) gridSelectRow(card);
+  }
+}
+
 function tbMoveItem(dir) {
   const node = activeBookmarkNode ||
     (activeFolderId != null ? allNodes.find(n => n.id === activeFolderId) : null);
@@ -2313,23 +2335,8 @@ function tbMoveItem(dir) {
     .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id);
   const idx = siblings.findIndex(n => n.id === node.id);
   if (idx < 0 || idx + dir < 0 || idx + dir >= siblings.length) return;
-  // Swap positions in array
   [siblings[idx], siblings[idx + dir]] = [siblings[idx + dir], siblings[idx]];
-  // Persist new sort_idx for each sibling and update local state
-  Promise.all(siblings.map((n, si) => invoke('set_sort_idx', { id: n.id, sortIdx: si })))
-    .then(async () => {
-      siblings.forEach((n, si) => { n.sort_idx = si; });
-      const openIds = saveOpenState();
-      renderTree();
-      restoreOpenState(openIds);
-      _activateTreeItem(node);
-      if (node.kind === 'bookmark') {
-        await loadBookmarks(node.parent);
-        const card = gridEl.querySelector(`.card[data-id="${node.id}"]`);
-        if (card) gridSelectRow(card);
-      }
-    })
-    .catch(console.error);
+  _applySortOrder(siblings, node).catch(console.error);
 }
 
 // ── Open database dialog ──────────────────────────────────────────────────────
@@ -3678,11 +3685,29 @@ async function _doDrop(targetFolderId) {
   } catch(e) { console.error('move_node:', e); }
 }
 
+async function _doSort(targetNodeId, insertBefore) {
+  if (!_dragNode) return;
+  const node = allNodes.find(n => n.id === _dragNode.id);
+  if (!node) return;
+  const siblings = allNodes
+    .filter(n => n.kind === node.kind && n.parent === node.parent)
+    .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id);
+  const srcIdx = siblings.findIndex(n => n.id === node.id);
+  if (srcIdx < 0) return;
+  siblings.splice(srcIdx, 1);
+  let destIdx = siblings.findIndex(n => n.id === targetNodeId);
+  if (destIdx < 0) return;
+  if (!insertBefore) destIdx++;
+  siblings.splice(destIdx, 0, node);
+  await _applySortOrder(siblings, node);
+}
+
 // ── DnD via event delegation on containers ────────────────────────────────
 
 function _clearDragOver() {
   treeEl.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
   gridEl.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+  gridEl.querySelectorAll('.sort-before,.sort-after').forEach(el => el.classList.remove('sort-before','sort-after'));
   document.getElementById('tree-root-drop').classList.remove('drag-over');
   clearTimeout(_dragExpandTimer); _dragExpandTimer = null;
 }
@@ -3763,13 +3788,32 @@ function _initDragDrop() {
   // ── Grid drop target ──────────────────────────────────────────────────────
   gridEl.addEventListener('dragover', (e) => {
     if (!_dragNode) return;
-    const folderEl = e.target.closest('.card-folder');
-    if (!folderEl) return;
+    const card = e.target.closest('.card');
+    if (!card) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (!folderEl.classList.contains('drag-over')) {
-      _clearDragOver();
-      folderEl.classList.add('drag-over');
+    if (!card.classList.contains('card-folder') && _dragNode.kind === 'bookmark') {
+      const rect = card.getBoundingClientRect();
+      const wantClass = e.clientY < rect.top + rect.height / 2 ? 'sort-before' : 'sort-after';
+      if (!card.classList.contains(wantClass)) {
+        _clearDragOver();
+        card.classList.add(wantClass);
+      }
+    } else if (card.classList.contains('card-folder')) {
+      if (_dragNode.kind === 'folder') {
+        const rect = card.getBoundingClientRect();
+        const rel = (e.clientY - rect.top) / rect.height;
+        const wantClass = rel < 0.25 ? 'sort-before' : rel > 0.75 ? 'sort-after' : 'drag-over';
+        if (!card.classList.contains(wantClass)) {
+          _clearDragOver();
+          card.classList.add(wantClass);
+        }
+      } else {
+        if (!card.classList.contains('drag-over')) {
+          _clearDragOver();
+          card.classList.add('drag-over');
+        }
+      }
     }
   });
 
@@ -3779,11 +3823,33 @@ function _initDragDrop() {
 
   gridEl.addEventListener('drop', async (e) => {
     e.preventDefault();
-    const folderEl = e.target.closest('.card-folder');
     _clearDragOver();
     _stopAutoScroll();
-    if (!folderEl) return;
-    await _doDrop(Number(folderEl.dataset.id));
+    const card = e.target.closest('.card');
+    if (!card) return;
+    if (!card.classList.contains('card-folder') && _dragNode?.kind === 'bookmark') {
+      const targetId = Number(card.dataset.id);
+      const targetNode = allNodes.find(n => n.id === targetId);
+      if (!targetNode || targetNode.parent !== _dragNode.parent) return;
+      const rect = card.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      await _doSort(targetId, before);
+    } else if (card.classList.contains('card-folder')) {
+      if (_dragNode?.kind === 'folder') {
+        const targetId = Number(card.dataset.id);
+        const targetNode = allNodes.find(n => n.id === targetId);
+        const rect = card.getBoundingClientRect();
+        const rel = (e.clientY - rect.top) / rect.height;
+        if (rel < 0.25 || rel > 0.75) {
+          if (!targetNode || targetNode.parent !== _dragNode.parent) return;
+          await _doSort(targetId, rel < 0.25);
+        } else {
+          await _doDrop(targetId);
+        }
+      } else {
+        await _doDrop(Number(card.dataset.id));
+      }
+    }
   });
 }
 
