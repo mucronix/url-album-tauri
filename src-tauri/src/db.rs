@@ -16,8 +16,9 @@ pub struct TreeNode {
     pub favicon: Option<String>,
     pub note:    Option<String>,
     pub created: Option<String>,
-    pub visited: Option<String>,
-    pub count:   i64,
+    pub visited:  Option<String>,
+    pub sort_idx: i64,
+    pub count:    i64,
 }
 
 #[derive(Serialize)]
@@ -79,7 +80,7 @@ pub fn is_empty(conn: &Connection) -> bool {
 
 pub fn get_tree(conn: &Connection) -> Result<Vec<TreeNode>> {
     let mut stmt = conn.prepare(
-        "SELECT id, parent, kind, title, url, thumb, note, created, visited, favicon,
+        "SELECT id, parent, kind, title, url, thumb, note, created, visited, favicon, sort_idx,
                 CASE WHEN kind = 'folder'
                      THEN (SELECT COUNT(*) FROM nodes b
                            WHERE b.parent = nodes.id AND b.kind = 'bookmark')
@@ -99,8 +100,9 @@ pub fn get_tree(conn: &Connection) -> Result<Vec<TreeNode>> {
             note:    row.get(6)?,
             created: row.get(7)?,
             visited: row.get(8)?,
-            favicon: row.get(9)?,
-            count:   row.get(10)?,
+            favicon:  row.get(9)?,
+            sort_idx: row.get(10)?,
+            count:    row.get(11)?,
         })
     })?.collect();
     result

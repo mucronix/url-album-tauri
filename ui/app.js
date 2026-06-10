@@ -2310,16 +2310,22 @@ function tbMoveItem(dir) {
   if (!node || node.kind !== 'bookmark') return;
   const siblings = allNodes
     .filter(n => n.kind === 'bookmark' && n.parent === node.parent)
-    .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0));
+    .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id);
   const idx = siblings.findIndex(n => n.id === node.id);
   if (idx < 0 || idx + dir < 0 || idx + dir >= siblings.length) return;
   // Swap positions in array
   [siblings[idx], siblings[idx + dir]] = [siblings[idx + dir], siblings[idx]];
   // Persist new sort_idx for each sibling and update local state
   Promise.all(siblings.map((n, si) => invoke('set_sort_idx', { id: n.id, sortIdx: si })))
-    .then(() => {
+    .then(async () => {
       siblings.forEach((n, si) => { n.sort_idx = si; });
-      loadBookmarks(node.parent);
+      const openIds = saveOpenState();
+      renderTree();
+      restoreOpenState(openIds);
+      _activateTreeItem(node);
+      await loadBookmarks(node.parent);
+      const card = gridEl.querySelector(`.card[data-id="${node.id}"]`);
+      if (card) gridSelectRow(card);
     })
     .catch(console.error);
 }
@@ -3800,8 +3806,8 @@ function buildTree() {
 
   // Folders always above bookmarks within each level
   const foldersFirst = (a, b) => {
-    if (a.kind === b.kind) return 0;
-    return a.kind === 'folder' ? -1 : 1;
+    if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
+    return (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id;
   };
   roots.sort(foldersFirst);
   for (const node of map.values()) node.children.sort(foldersFirst);
@@ -4459,7 +4465,9 @@ async function loadFolderContents(folderId) {
   emptyHint.classList.add("hidden");
 
   const subfolders = allNodes.filter(n => n.parent === folderId && n.kind === 'folder');
-  const bookmarks  = allNodes.filter(n => n.parent === folderId && n.kind === 'bookmark');
+  const bookmarks  = allNodes
+    .filter(n => n.parent === folderId && n.kind === 'bookmark')
+    .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id);
 
   _sbInFolderCount = subfolders.length + bookmarks.length;
   _sbSearchCount   = null;
