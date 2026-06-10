@@ -2306,10 +2306,10 @@ function handleToolbarAction(id) {
 
 function tbMoveItem(dir) {
   const node = activeBookmarkNode ||
-    allNodes.find(n => String(n.id) === gridEl.querySelector('.card.selected')?.dataset.id);
-  if (!node || node.kind !== 'bookmark') return;
+    (activeFolderId != null ? allNodes.find(n => n.id === activeFolderId) : null);
+  if (!node) return;
   const siblings = allNodes
-    .filter(n => n.kind === 'bookmark' && n.parent === node.parent)
+    .filter(n => n.kind === node.kind && n.parent === node.parent)
     .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id);
   const idx = siblings.findIndex(n => n.id === node.id);
   if (idx < 0 || idx + dir < 0 || idx + dir >= siblings.length) return;
@@ -2323,9 +2323,11 @@ function tbMoveItem(dir) {
       renderTree();
       restoreOpenState(openIds);
       _activateTreeItem(node);
-      await loadBookmarks(node.parent);
-      const card = gridEl.querySelector(`.card[data-id="${node.id}"]`);
-      if (card) gridSelectRow(card);
+      if (node.kind === 'bookmark') {
+        await loadBookmarks(node.parent);
+        const card = gridEl.querySelector(`.card[data-id="${node.id}"]`);
+        if (card) gridSelectRow(card);
+      }
     })
     .catch(console.error);
 }
@@ -4464,7 +4466,9 @@ async function loadFolderContents(folderId) {
   gridEl.innerHTML = "";
   emptyHint.classList.add("hidden");
 
-  const subfolders = allNodes.filter(n => n.parent === folderId && n.kind === 'folder');
+  const subfolders = allNodes
+    .filter(n => n.parent === folderId && n.kind === 'folder')
+    .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id);
   const bookmarks  = allNodes
     .filter(n => n.parent === folderId && n.kind === 'bookmark')
     .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id);
