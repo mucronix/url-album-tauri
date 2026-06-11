@@ -2317,7 +2317,7 @@ async function _applySortOrder(siblings, node) {
   renderTree();
   restoreOpenState(openIds);
   _activateTreeItem(node);
-  if (node.kind === 'folder') {
+  if (node.kind === 'folder' && activeFolderId === node.parent) {
     await loadFolderContents(node.parent);
   } else if (node.kind === 'bookmark') {
     await loadBookmarks(node.parent);
@@ -3754,20 +3754,46 @@ function _initDragDrop() {
       }
     }
 
-    const folderEl = e.target.closest('.tree-item:not(.link)');
-    if (!folderEl) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (!folderEl.classList.contains('drag-over')) {
-      _clearDragOver();
-      folderEl.classList.add('drag-over');
-      // Auto-expand after 650ms
-      const childrenEl = folderEl.parentElement?.querySelector(':scope > .tree-children');
-      if (childrenEl && !childrenEl.classList.contains('open')) {
-        _dragExpandTimer = setTimeout(() => {
-          childrenEl.classList.add('open');
-          folderEl.classList.add('open');
-        }, 650);
+    const targetEl = e.target.closest('.tree-item');
+    if (!targetEl) return;
+    const isFolderDrag = _dragNode.kind === 'folder';
+    const isTargetFolder = !targetEl.classList.contains('link');
+
+    if (isFolderDrag && isTargetFolder) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const r = targetEl.getBoundingClientRect();
+      const rel = (e.clientY - r.top) / r.height;
+      const isOpen = targetEl.classList.contains('open');
+      const wantClass = rel < 0.25 ? 'sort-before'
+        : (!isOpen && rel > 0.75) ? 'sort-after'
+        : 'drag-over';
+      if (!targetEl.classList.contains(wantClass)) {
+        _clearDragOver();
+        targetEl.classList.add(wantClass);
+        if (wantClass === 'drag-over') {
+          const childrenEl = targetEl.parentElement?.querySelector(':scope > .tree-children');
+          if (childrenEl && !childrenEl.classList.contains('open')) {
+            _dragExpandTimer = setTimeout(() => {
+              childrenEl.classList.add('open');
+              targetEl.classList.add('open');
+            }, 650);
+          }
+        }
+      }
+    } else if (!isFolderDrag && isTargetFolder) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (!targetEl.classList.contains('drag-over')) {
+        _clearDragOver();
+        targetEl.classList.add('drag-over');
+        const childrenEl = targetEl.parentElement?.querySelector(':scope > .tree-children');
+        if (childrenEl && !childrenEl.classList.contains('open')) {
+          _dragExpandTimer = setTimeout(() => {
+            childrenEl.classList.add('open');
+            targetEl.classList.add('open');
+          }, 650);
+        }
       }
     }
   });
@@ -3778,11 +3804,29 @@ function _initDragDrop() {
 
   treeEl.addEventListener('drop', async (e) => {
     e.preventDefault();
-    const folderEl = e.target.closest('.tree-item:not(.link)');
     _clearDragOver();
     _stopAutoScroll();
-    if (!folderEl) return;
-    await _doDrop(Number(folderEl.dataset.id));
+    const targetEl = e.target.closest('.tree-item');
+    if (!targetEl) return;
+    const targetId = Number(targetEl.dataset.id);
+    const targetNode = allNodes.find(n => n.id === targetId);
+    if (!targetNode) return;
+    const isFolderDrag = _dragNode?.kind === 'folder';
+    const isTargetFolder = !targetEl.classList.contains('link');
+    if (isFolderDrag && isTargetFolder) {
+      const r = targetEl.getBoundingClientRect();
+      const rel = (e.clientY - r.top) / r.height;
+      const isOpen = targetEl.classList.contains('open');
+      const zone = rel < 0.25 ? 'before' : (!isOpen && rel > 0.75) ? 'after' : 'into';
+      if (zone === 'into') {
+        await _doDrop(targetId);
+      } else {
+        if (targetNode.parent !== _dragNode.parent) return;
+        await _doSort(targetId, zone === 'before');
+      }
+    } else if (isTargetFolder) {
+      await _doDrop(targetId);
+    }
   });
 
   // ── Grid drop target ──────────────────────────────────────────────────────
