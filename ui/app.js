@@ -465,7 +465,7 @@ function _finishThumbBatch() {
   if (activeBookmarkNode) {
     const fresh = allNodes.find(n => n.id === activeBookmarkNode.id);
     if (fresh?.thumb) {
-      detailImgEl.src = convertFileSrc(fresh.thumb) + '?t=' + Date.now();
+      detailImgEl.src = convertFileSrc(thumbFilePath(fresh.thumb)) + '?t=' + Date.now();
       detailImgEl.style.display = '';
       detailNoImgEl.style.display = 'none';
     }
@@ -1110,7 +1110,7 @@ async function refreshThumb(node) {
     _applyThumbToCard(node.id, node.title, newPath);
 
     // Update detail image
-    detailImgEl.src             = convertFileSrc(newPath) + "?t=" + Date.now();
+    detailImgEl.src             = convertFileSrc(thumbFilePath(newPath)) + "?t=" + Date.now();
     detailImgEl.style.display   = "";
     detailNoImgEl.style.display = "none";
     detailImgEl.onerror = () => {};
@@ -1132,7 +1132,7 @@ function _applyThumbToCard(id, title, newPath) {
   if (!thumbDiv) return;
   thumbDiv.innerHTML = '';
   const img = document.createElement('img');
-  img.src = convertFileSrc(newPath);
+  img.src = convertFileSrc(thumbFilePath(newPath));
   img.onerror = () => { img.remove(); thumbDiv.appendChild(makeNoImg(title)); };
   thumbDiv.appendChild(img);
 }
@@ -1676,7 +1676,7 @@ function showContextMenu(e, node) {
 
   ctxMenuEl.appendChild(
     ctxItem("image",   "Открыть рисунок",  "F12",
-      () => invoke("open_file", { path: node.thumb }), !hasThumb)
+      () => invoke("open_file", { path: thumbFilePath(node.thumb) }), !hasThumb)
   );
   ctxMenuEl.appendChild(
     ctxItem("refresh", "Обновить рисунок", null,
@@ -3634,6 +3634,8 @@ async function showApp() {
   _sbSearchCount   = null;
   document.getElementById('statusbar').classList.remove('hidden');
 
+  dataDir = await invoke('get_data_dir').catch(() => dataDir);
+
   renderTree();
   updateStatusLeft();
 
@@ -4391,7 +4393,7 @@ function showDetailView(node) {
   // Viewer: show real thumbnail, or subtle domain placeholder
   detailThumbEl.style.display = "";
   if (node.thumb) {
-    detailImgEl.src = convertFileSrc(node.thumb);
+    detailImgEl.src = convertFileSrc(thumbFilePath(node.thumb));
     detailImgEl.style.display = "";
     detailNoImgEl.style.display = "none";
     detailImgEl.onerror = () => {
@@ -4753,6 +4755,9 @@ function updateFaviconInDOM(nodeId, filePath) {
 function faviconFilePath(filename) {
   // Normalize to forward slashes so convertFileSrc works on all platforms
   return dataDir.replace(/\\/g, '/') + '/favicons/' + filename;
+}
+function thumbFilePath(filename) {
+  return dataDir.replace(/\\/g, '/') + '/' + filename;
 }
 
 function applyFaviconToDOM(item, filename) {

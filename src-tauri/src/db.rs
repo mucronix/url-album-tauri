@@ -290,7 +290,7 @@ pub fn export_sync(conn: &Connection, folder_id: i64, with_images: bool) -> Resu
 
 /// Insert all parsed nodes into the database.
 /// `data_dir` is the absolute path to the folder containing PNG thumbnails.
-pub fn import(conn: &Connection, nodes: &[ParsedNode], data_dir: &str, dest_parent: Option<i64>) -> Result<usize> {
+pub fn import(conn: &Connection, nodes: &[ParsedNode], _data_dir: &str, dest_parent: Option<i64>) -> Result<usize> {
     conn.execute_batch("BEGIN")?;
 
     // Stack of (depth, parent_id). Sentinel: depth=-1, dest_parent (None = root).
@@ -311,10 +311,7 @@ pub fn import(conn: &Connection, nodes: &[ParsedNode], data_dir: &str, dest_pare
 
         let parent_id = stack.last().and_then(|(_, pid)| *pid);
 
-        // Build absolute thumb path if present
-        let thumb = node.thumb.as_deref().map(|name| {
-            format!("{}{}{}", data_dir, std::path::MAIN_SEPARATOR, name)
-        });
+        let thumb = node.thumb.as_deref().map(|name| name.to_string());
 
         conn.execute(
             "INSERT INTO nodes

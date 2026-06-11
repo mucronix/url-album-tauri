@@ -311,8 +311,8 @@ async fn do_screenshot(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let path = data_dir.join(format!("{id}_{ts}.png"));
-    let path_str = path.to_string_lossy().into_owned();
+    let filename = format!("{id}_{ts}.png");
+    let path = data_dir.join(&filename);
 
     let w = width.unwrap_or(1280);
     let h = height.unwrap_or(800);
@@ -331,7 +331,7 @@ async fn do_screenshot(
 
     let tmp_dir = std::env::temp_dir().join(format!("ua_screenshot_{id}"));
     let tmp_dir_str = tmp_dir.to_string_lossy().into_owned();
-    let path_str2 = path_str.clone();
+    let path_str2 = path.to_string_lossy().into_owned();
 
     // Run blocking browser process on a dedicated thread so the UI stays responsive
     let status = tauri::async_runtime::spawn_blocking(move || {
@@ -374,7 +374,7 @@ async fn do_screenshot(
         return Err("Не удалось создать скриншот".to_string());
     }
 
-    Ok(path_str)
+    Ok(filename)
 }
 
 #[tauri::command]
@@ -391,12 +391,12 @@ async fn refresh_thumb(
         let p = state.db_path.lock().map_err(|e| e.to_string())?;
         p.parent().ok_or("no parent dir")?.to_path_buf().join("Data")
     };
-    let path_str = do_screenshot(data_dir, id, url, width, height, timeout).await?;
+    let filename = do_screenshot(data_dir, id, url, width, height, timeout).await?;
     state.db.lock().map_err(|e| e.to_string())?.execute(
         "UPDATE nodes SET thumb = ?1 WHERE id = ?2",
-        rusqlite::params![path_str, id],
+        rusqlite::params![filename, id],
     ).map_err(|e| e.to_string())?;
-    Ok(path_str)
+    Ok(filename)
 }
 
 #[tauri::command]
@@ -637,6 +637,7 @@ fn switch_db(state: tauri::State<'_, AppState>, new_path: std::path::PathBuf) ->
 
     let new_conn = Connection::open(&new_path).map_err(|e| e.to_string())?;
     db::init(&new_conn).map_err(|e| e.to_string())?;
+    migrate_thumb_to_filename(&new_conn, &new_path.parent().unwrap_or(&new_path).join("Data"));
     *db_guard = new_conn;
     drop(db_guard);
 
@@ -2115,6 +2116,27 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
     }
 }
 
+fn migrate_thumb_to_filename(conn: &Connection, data_dir: &std::path::Path) {
+    let rows: Vec<(i64, String)> = conn
+        .prepare("SELECT id, thumb FROM nodes WHERE thumb IS NOT NULL")
+        .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|it| it.filter_map(|r| r.ok()).collect()))
+        .unwrap_or_default();
+    for (id, path) in rows {
+        if path.contains('/') || path.contains('\\') {
+            if let Some(name) = std::path::Path::new(&path).file_name() {
+                let name_str = name.to_string_lossy().to_string();
+                if data_dir.join(&name_str).exists() {
+                    conn.execute(
+                        "UPDATE nodes SET thumb = ?1 WHERE id = ?2",
+                        rusqlite::params![name_str, id],
+                    ).ok();
+                }
+            }
+        }
+    }
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
@@ -2137,6 +2159,7 @@ fn main() {
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             db::init(&conn)
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            migrate_thumb_to_filename(&conn, &db_path.parent().unwrap_or(&db_path).join("Data"));
 
             // Persist the resolved path so the next startup knows what was open.
             save_last_db(&db_path);
