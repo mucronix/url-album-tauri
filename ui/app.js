@@ -3732,8 +3732,7 @@ function _initDragDrop() {
     e.preventDefault();
     rootZone.classList.remove('drag-over');
     _stopAutoScroll();
-    // Use wrapper folder ID when present; otherwise drop to literal root (parent = NULL)
-    await _doDrop(virtualRootId !== null ? virtualRootId : null);
+    await _doDrop(null);
   });
 
   // ── Tree drop target ──────────────────────────────────────────────────────
@@ -3904,10 +3903,6 @@ function _makeFolderDropTarget(_el, _folderId, _childrenEl) {}
 
 // ── Tree ──────────────────────────────────────────────────────────────────
 
-// When the DB has a legacy single-root wrapper folder ("Закладки!!!"), its ID is
-// stored here so the root drop zone targets that folder instead of NULL.
-let virtualRootId = null;
-
 function buildTree() {
   const map = new Map();
   for (const n of allNodes) { n.children = []; map.set(n.id, n); }
@@ -3926,13 +3921,6 @@ function buildTree() {
   roots.sort(foldersFirst);
   for (const node of map.values()) node.children.sort(foldersFirst);
 
-  // Skip the single root wrapper node (the old "Закладки!!!" node).
-  // Track its ID so the root drop zone can target it directly.
-  if (roots.length === 1 && roots[0].kind === "folder" && roots[0].children.length > 0) {
-    virtualRootId = roots[0].id;
-    return roots[0].children;
-  }
-  virtualRootId = null;
   return roots;
 }
 
