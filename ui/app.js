@@ -3460,9 +3460,6 @@ const detailNoImgEl   = document.getElementById("detail-no-img");
 const detailUrlEl     = document.getElementById("detail-url");
 const detailNoteEl    = document.getElementById("detail-note");
 const detailOpenBtn   = document.getElementById("detail-open-btn");
-const datPathInput    = document.getElementById("dat-path");
-const importBtn    = document.getElementById("import-btn");
-const importStatus = document.getElementById("import-status");
 
 // ── Init ──────────────────────────────────────────────────────────────────
 async function init() {
@@ -3488,13 +3485,10 @@ async function init() {
 
 // ── Welcome / first-run screen ────────────────────────────────────────────────
 
-const importForm    = document.getElementById("import-form");
 const welcomeActs   = document.getElementById("welcome-actions");
 
 async function showImportScreen() {
-  // Always show welcome actions, hide the ua.dat sub-form
   welcomeActs.classList.remove("hidden");
-  importForm.classList.add("hidden");
   importScreen.classList.remove("hidden");
   app.classList.add("hidden");
   toolbarEl.classList.add("hidden");
@@ -3523,47 +3517,16 @@ document.getElementById("wb-open").addEventListener("click", async () => {
   }
 });
 
-// "Импортировать ua.dat" — expand import sub-form
+// "Импортировать ua.dat" — file picker then import
 document.getElementById("wb-import").addEventListener("click", async () => {
-  welcomeActs.classList.add("hidden");
-  importForm.classList.remove("hidden");
-  // Auto-detect ua.dat
   try {
-    const found = await invoke("find_uadat");
-    if (found) {
-      datPathInput.value = found;
-      importStatus.textContent = "Найден файл данных.";
-    }
-  } catch (_) {}
-  datPathInput.focus();
-});
-
-// "← Назад" — back to welcome
-document.getElementById("import-back").addEventListener("click", () => {
-  importForm.classList.add("hidden");
-  importStatus.textContent = "";
-  datPathInput.value = "";
-  welcomeActs.classList.remove("hidden");
-});
-
-// Import button
-importBtn.addEventListener("click", async () => {
-  const path = datPathInput.value.trim();
-  if (!path) return;
-  importBtn.disabled = true;
-  importStatus.textContent = "Импортирую…";
-  try {
-    const count = await invoke("import_uadat", { path });
-    importStatus.textContent = `Импортировано ${count} записей.`;
-    setTimeout(async () => {
-      importScreen.classList.add("hidden");
-      await showApp();
-    }, 800);
-  } catch (err) {
-    importStatus.textContent = `Ошибка: ${err}`;
-    importBtn.disabled = false;
+    await invoke("import_uadat_pick");
+    await showApp();
+  } catch(e) {
+    if (e !== "Отменено") console.error("import_uadat_pick:", e);
   }
 });
+
 
 // ── Statusbar state ───────────────────────────────────────────────────────
 let _sbTimer         = null;   // auto-clear timer for temp messages

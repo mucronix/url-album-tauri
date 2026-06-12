@@ -250,38 +250,6 @@ body {
 .wb-title { font-size: calc(var(--ui-font) - 1px); font-weight: 600; }
 .wb-desc  { font-size: calc(var(--ui-font) - 2px); color: var(--text-dim, #888); }
 
-/* ua.dat import sub-form */
-#import-form { display: flex; flex-direction: column; gap: 8px; }
-
-#dat-path {
-  width: 100%; box-sizing: border-box;
-  background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 4px; color: var(--text);
-  padding: 7px 9px; font-size: calc(var(--ui-font) - 1px);
-  font-family: "Consolas", "Courier New", monospace;
-  outline: none; transition: border-color 0.15s;
-}
-#dat-path:focus { border-color: var(--accent); }
-
-.import-form-row { display: flex; gap: 6px; }
-
-#import-btn {
-  flex: 1; background: var(--accent); color: #fff;
-  border: none; border-radius: 4px; padding: 7px 0;
-  font-size: calc(var(--ui-font) - 1px); font-weight: 600; cursor: pointer;
-  transition: background 0.15s;
-}
-#import-btn:hover    { background: var(--accent-h); }
-#import-btn:disabled { opacity: 0.5; cursor: default; }
-
-#import-back {
-  background: transparent; border: 1px solid var(--border);
-  border-radius: 4px; padding: 7px 12px;
-  font-size: calc(var(--ui-font) - 1px); cursor: pointer; color: var(--text);
-}
-#import-back:hover { background: var(--item-hover); }
-
-#import-status { font-size: calc(var(--ui-font) - 2px); color: var(--text-dim); min-height: 14px; }
 
 /* ── App layout ───────────────────────────────────────────────────────────── */
 #app {
