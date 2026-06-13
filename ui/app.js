@@ -2241,7 +2241,7 @@ const CMD_REGISTRY = [
 const TOOLBAR_DEFS = CMD_REGISTRY;
 
 const DEFAULT_TOOLBAR = [
-  'new-link', 'new-folder', '|',
+  'new-link', 'new-folder', 'new-subfolder', '|',
   'delete-link', 'properties', '|',
   'find', '|',
   'check-all-links', '|',
