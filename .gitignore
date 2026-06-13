@@ -36,3 +36,8 @@ extension-keys*/
 # Dev / editor
 .claude/
 *.log
+
+# Release artifacts (do not commit)
+URL-Album-*.zip
+gh-downloads.ps1
+release-tmp/
