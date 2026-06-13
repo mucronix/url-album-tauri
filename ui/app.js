@@ -2084,7 +2084,8 @@ addBrowserOverlay.addEventListener("click",(e) => { if (e.target === addBrowserO
 // ── Menu ──────────────────────────────────────────────────────────────────
 
 const ICONS = {
-  folder: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4.5h4.2l1.1 1.5H13V11H1V4.5z"/></svg>`,
+  folder:    `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M0.7 3h4.6l1.2 1.6H13.3V11.4H0.7V3z"/></svg>`,
+  subfolder: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M0.7 2.2h3.7l1 1.3H10.5v2.6"/><path d="M0.7 2.2v6.3"/><path d="M3.5 5.8h3.6l1 1.3H13.3V12.2H3.5V5.8z"/></svg>`,
   link:   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M5.5 8.5a3 3 0 004.2 0l2-2a3 3 0 00-4.2-4.2L6.4 3.4"/><path d="M8.5 5.5a3 3 0 00-4.2 0l-2 2a3 3 0 004.2 4.2l1.1-1.1"/></svg>`,
   gear:   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><circle cx="7" cy="7" r="1.8"/><path d="M7 1.5v1.2M7 11.3v1.2M1.5 7h1.2M11.3 7h1.2M3.3 3.3l.85.85M9.85 9.85l.85.85M3.3 10.7l.85-.85M9.85 4.15l.85-.85"/></svg>`,
   db:     `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><ellipse cx="7" cy="4" rx="4.5" ry="1.8"/><path d="M2.5 4v3c0 1 2 1.8 4.5 1.8S11.5 8 11.5 7V4"/><path d="M2.5 7v3c0 1 2 1.8 4.5 1.8S11.5 11 11.5 10V7"/></svg>`,
@@ -2197,7 +2198,7 @@ const CMD_REGISTRY = [
   // Создание
   { id:'new-link',            label:'Новая ссылка',              icon:'link',        group:'Создание',     shortcut:'Ctrl+Shift+N', action:'new-link' },
   { id:'new-folder',          label:'Новая папка',               icon:'folder',      group:'Создание',     shortcut:'Ctrl+N',       action:'new-folder' },
-  { id:'new-subfolder',       label:'Новая подпапка',            icon:'folder',      group:'Создание',                              action:'new-subfolder' },
+  { id:'new-subfolder',       label:'Новая подпапка',            icon:'subfolder',   group:'Создание',                              action:'new-subfolder' },
   // Правка
   { id:'delete-link',         label:'Удалить ссылку',            icon:'trash',       group:'Правка',       shortcut:'Del',          action:'delete-link' },
   { id:'properties',          label:'Свойства ссылки',           icon:'props',       group:'Правка',       shortcut:'F4',           action:'properties' },
