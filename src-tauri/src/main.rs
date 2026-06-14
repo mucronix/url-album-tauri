@@ -391,7 +391,16 @@ async fn refresh_thumb(
         let p = state.db_path.lock().map_err(|e| e.to_string())?;
         p.parent().ok_or("no parent dir")?.to_path_buf().join("Data")
     };
-    let filename = do_screenshot(data_dir, id, url, width, height, timeout).await?;
+    let old_thumb: Option<String> = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT thumb FROM nodes WHERE id=?1", rusqlite::params![id], |r| r.get(0)).ok().flatten()
+    };
+    let filename = do_screenshot(data_dir.clone(), id, url, width, height, timeout).await?;
+    if let Some(old) = old_thumb {
+        if old != filename {
+            let _ = std::fs::remove_file(data_dir.join(&old));
+        }
+    }
     state.db.lock().map_err(|e| e.to_string())?.execute(
         "UPDATE nodes SET thumb = ?1 WHERE id = ?2",
         rusqlite::params![filename, id],
@@ -2099,8 +2108,18 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                 let p  = st.db_path.lock().unwrap();
                 p.parent().unwrap().join("Data")
             };
-            match do_screenshot(data_dir, bookmark_id, url2, None, None, None).await {
+            let old_thumb: Option<String> = {
+                if let Ok(conn) = h2.state::<AppState>().db.lock() {
+                    conn.query_row("SELECT thumb FROM nodes WHERE id=?1", rusqlite::params![bookmark_id], |r| r.get(0)).ok().flatten()
+                } else { None }
+            };
+            match do_screenshot(data_dir.clone(), bookmark_id, url2, None, None, None).await {
                 Ok(path) => {
+                    if let Some(old) = old_thumb {
+                        if old != path {
+                            let _ = std::fs::remove_file(data_dir.join(&old));
+                        }
+                    }
                     if let Ok(conn) = h2.state::<AppState>().db.lock() {
                         conn.execute(
                             "UPDATE nodes SET thumb=?1 WHERE id=?2",
