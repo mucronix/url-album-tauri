@@ -99,8 +99,16 @@ fn delete_folder(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
 #[tauri::command]
 fn clear_thumb(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let old_thumb: Option<String> = conn.query_row(
+        "SELECT thumb FROM nodes WHERE id=?1", rusqlite::params![id], |r| r.get(0)
+    ).ok().flatten();
     conn.execute("UPDATE nodes SET thumb = NULL WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
+    if let Some(old) = old_thumb {
+        let data_dir = state.db_path.lock().map_err(|e| e.to_string())?
+            .parent().ok_or("no parent dir")?.to_path_buf().join("Data");
+        let _ = std::fs::remove_file(data_dir.join(&old));
+    }
     Ok(())
 }
 
