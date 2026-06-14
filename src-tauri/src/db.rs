@@ -86,10 +86,12 @@ pub fn get_tree(conn: &Connection) -> Result<Vec<TreeNode>> {
         "SELECT id, parent, kind, title, url, thumb, note, created, visited, favicon, sort_idx,
                 CASE WHEN kind = 'folder'
                      THEN (SELECT COUNT(*) FROM nodes b
-                           WHERE b.parent = nodes.id AND b.kind = 'bookmark')
+                           WHERE b.parent = nodes.id AND b.kind = 'bookmark'
+                             AND (b.deleted IS NULL OR b.deleted = 0))
                      ELSE 0
                 END AS count
          FROM nodes
+         WHERE (deleted IS NULL OR deleted = 0)
          ORDER BY sort_idx, id",
     )?;
     let result: rusqlite::Result<Vec<TreeNode>> = stmt.query_map([], |row| {

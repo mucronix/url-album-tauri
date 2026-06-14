@@ -82,17 +82,21 @@ fn rename_node(state: tauri::State<AppState>, id: i64, title: String) -> Result<
 #[tauri::command]
 fn delete_folder(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    // Use parameter binding — execute_batch doesn't support params for multi-statement,
-    // so we use a single DELETE with a recursive CTE via a prepared statement.
-    let mut stmt = conn.prepare(
+    // (а) mark all descendants (excluding root) as deleted, keep their parent links intact
+    conn.execute(
         "WITH RECURSIVE sub(id) AS (
              VALUES(?1)
              UNION ALL
              SELECT n.id FROM nodes n JOIN sub s ON n.parent = s.id
          )
-         DELETE FROM nodes WHERE id IN (SELECT id FROM sub)"
+         UPDATE nodes SET deleted=1 WHERE id IN (SELECT id FROM sub) AND id != ?1",
+        rusqlite::params![id],
     ).map_err(|e| e.to_string())?;
-    stmt.execute(rusqlite::params![id]).map_err(|e| e.to_string())?;
+    // (б) detach root from tree and mark deleted, saving its original parent for restore
+    conn.execute(
+        "UPDATE nodes SET deleted=1, deleted_parent=parent, parent=NULL WHERE id=?1",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -419,8 +423,10 @@ async fn refresh_thumb(
 #[tauri::command]
 fn delete_node(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM nodes WHERE id = ?1", rusqlite::params![id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE nodes SET deleted=1, deleted_parent=parent, parent=NULL WHERE id=?1",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
