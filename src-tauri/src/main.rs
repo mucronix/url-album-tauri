@@ -101,6 +101,106 @@ fn delete_folder(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_trash(state: tauri::State<AppState>) -> Result<Vec<db::TreeNode>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::get_trash(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_node(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    let (kind, deleted_parent): (String, Option<i64>) = conn.query_row(
+        "SELECT kind, deleted_parent FROM nodes WHERE id=?1",
+        rusqlite::params![id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|e| e.to_string())?;
+
+    let target_parent: Option<i64> = match deleted_parent {
+        Some(dp) => {
+            let ok: bool = conn.query_row(
+                "SELECT COUNT(*) FROM nodes WHERE id=?1 AND (deleted IS NULL OR deleted=0)",
+                rusqlite::params![dp],
+                |r| r.get::<_, i64>(0),
+            ).unwrap_or(0) > 0;
+            if ok { Some(dp) } else { None }
+        }
+        None => None,
+    };
+
+    if kind == "folder" {
+        // Restore all deleted descendants, keep their parent links intact
+        conn.execute(
+            "WITH RECURSIVE sub(id) AS (
+                 VALUES(?1)
+                 UNION ALL
+                 SELECT n.id FROM nodes n JOIN sub s ON n.parent = s.id WHERE n.deleted = 1
+             )
+             UPDATE nodes SET deleted=0, deleted_parent=NULL
+             WHERE id IN (SELECT id FROM sub) AND id != ?1",
+            rusqlite::params![id],
+        ).map_err(|e| e.to_string())?;
+    }
+    // Restore root or bookmark: place back at target_parent
+    conn.execute(
+        "UPDATE nodes SET deleted=0, parent=?1, deleted_parent=NULL WHERE id=?2",
+        rusqlite::params![target_parent, id],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn empty_trash(state: tauri::State<AppState>) -> Result<(), String> {
+    let data_dir = {
+        let p = state.db_path.lock().map_err(|e| e.to_string())?;
+        p.parent().ok_or("no parent dir")?.to_path_buf().join("Data")
+    };
+
+    let (thumbs_to_delete, favicons_to_delete) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+        let mut stmt = conn.prepare(
+            "SELECT thumb, favicon FROM nodes WHERE deleted=1"
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<(Option<String>, Option<String>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let thumbs: Vec<String> = rows.iter().filter_map(|(t, _)| t.clone()).collect();
+
+        // Delete favicon file only if no active node uses it
+        let favicons: Vec<String> = rows.iter()
+            .filter_map(|(_, f)| f.clone())
+            .filter(|fav| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM nodes WHERE favicon=?1 AND (deleted IS NULL OR deleted=0)",
+                    rusqlite::params![fav],
+                    |r| r.get(0),
+                ).unwrap_or(1);
+                count == 0
+            })
+            .collect();
+
+        conn.execute("DELETE FROM nodes WHERE deleted=1", [])
+            .map_err(|e| e.to_string())?;
+
+        (thumbs, favicons)
+    };
+
+    for thumb in thumbs_to_delete {
+        let _ = std::fs::remove_file(data_dir.join(&thumb));
+    }
+    for fav in favicons_to_delete {
+        let _ = std::fs::remove_file(data_dir.join("favicons").join(&fav));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn clear_thumb(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let old_thumb: Option<String> = conn.query_row(
@@ -2243,6 +2343,9 @@ fn main() {
             clear_thumb,
             refresh_thumb,
             delete_node,
+            get_trash,
+            restore_node,
+            empty_trash,
             update_bookmark,
             pick_browser_file,
             update_note,

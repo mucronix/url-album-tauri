@@ -113,6 +113,38 @@ pub fn get_tree(conn: &Connection) -> Result<Vec<TreeNode>> {
     result
 }
 
+pub fn get_trash(conn: &Connection) -> Result<Vec<TreeNode>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, parent, kind, title, url, thumb, note, created, visited, favicon, sort_idx,
+                CASE WHEN kind = 'folder'
+                     THEN (SELECT COUNT(*) FROM nodes b
+                           WHERE b.parent = nodes.id AND b.kind = 'bookmark'
+                             AND b.deleted = 1)
+                     ELSE 0
+                END AS count
+         FROM nodes
+         WHERE deleted = 1
+         ORDER BY sort_idx, id",
+    )?;
+    let result: rusqlite::Result<Vec<TreeNode>> = stmt.query_map([], |row| {
+        Ok(TreeNode {
+            id:      row.get(0)?,
+            parent:  row.get(1)?,
+            kind:    row.get(2)?,
+            title:   row.get(3)?,
+            url:     row.get(4)?,
+            thumb:   row.get(5)?,
+            note:    row.get(6)?,
+            created: row.get(7)?,
+            visited: row.get(8)?,
+            favicon:  row.get(9)?,
+            sort_idx: row.get(10)?,
+            count:    row.get(11)?,
+        })
+    })?.collect();
+    result
+}
+
 pub fn get_bookmarks(conn: &Connection, folder_id: i64) -> Result<Vec<Bookmark>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, url, thumb, note, favicon
