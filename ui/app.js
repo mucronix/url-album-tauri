@@ -2110,6 +2110,7 @@ const ICONS = {
   'collapse-all':`<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="1" y="1" width="5" height="5" rx=".8"/><rect x="1" y="8" width="5" height="5" rx=".8"/><path d="M8 3.5h5M8 10.5h5"/></svg>`,
   'move-up':     `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V3M3.5 6.5L7 3l3.5 3.5"/></svg>`,
   'move-down':   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v8M3.5 7.5L7 11l3.5-3.5"/></svg>`,
+  'menu-toggle': `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 3.5h10M2 7h10M2 10.5h10"/></svg>`,
 };
 
 // todo:true = disabled (not yet implemented)
@@ -2211,6 +2212,7 @@ const CMD_REGISTRY = [
   { id:'toggle-expand-all',   label:'Развернуть/Свернуть все',   icon:'expand-all',  group:'Навигация',                             action:'toggle-expand-all' },
   { id:'move-up',             label:'Переместить вверх',         icon:'move-up',     group:'Навигация',                             action:'move-up' },
   { id:'move-down',           label:'Переместить вниз',          icon:'move-down',   group:'Навигация',                             action:'move-down' },
+  { id:'toggle-menubar',      label:'Переключить меню',          icon:'menu-toggle', group:'Навигация',                             action:'toggle-menubar' },
   // Поиск
   { id:'find',                label:'Поиск',                     icon:'search',      group:'Поиск',        shortcut:'Ctrl+F',       action:'find' },
   { id:'find-dupes',          label:'Поиск дубликатов',          icon:'dupes',       group:'Поиск',                                 action:'find-dupes' },
@@ -2241,6 +2243,7 @@ const CMD_REGISTRY = [
 const TOOLBAR_DEFS = CMD_REGISTRY;
 
 const DEFAULT_TOOLBAR = [
+  'toggle-menubar', '|',
   'new-link', 'new-folder', 'new-subfolder', '|',
   'delete-link', 'properties', '|',
   'find', '|',
@@ -2285,7 +2288,9 @@ function buildToolbar() {
     btn.className = 'tb-btn';
     btn.dataset.tbCmd = cmd.id;
     const hint = cmd.shortcut ? `${cmd.label} (${cmd.shortcut})` : cmd.label;
-    btn.title = hint;
+    btn.title = cmd.id === 'toggle-menubar'
+      ? (appSettings.compactMode ? 'Показать меню' : 'Скрыть меню')
+      : hint;
     btn.innerHTML = tbIconHtml(cmd.icon);
     btn.addEventListener('click', () => handleToolbarAction(cmd.id));
     toolbarEl.appendChild(btn);
@@ -2308,6 +2313,11 @@ function handleToolbarAction(id) {
   }
   if (id === 'move-up')   { tbMoveItem(-1); return; }
   if (id === 'move-down') { tbMoveItem(+1); return; }
+  if (id === 'toggle-menubar') {
+    appSettings.compactMode = !appSettings.compactMode;
+    applySettings();
+    return;
+  }
   handleMenuAction(cmd.action || id);
 }
 
@@ -3259,6 +3269,7 @@ let appSettings = {
   thumbTimeout:  15,
   // Расширение браузера
   extensionToken: '',
+  compactMode:    false,
 };
 
 async function loadAppSettings() {
@@ -3280,6 +3291,13 @@ function applySettings(save = true) {
   if (typeof toolbarEl !== 'undefined') {
     if (appSettings.showToolbar) toolbarEl.classList.remove('hidden');
     else toolbarEl.classList.add('hidden');
+  }
+  const mb = document.getElementById('menubar');
+  if (mb) mb.classList.toggle('hidden', !!appSettings.compactMode);
+  const mbBtn = toolbarEl.querySelector('[data-tb-cmd="toggle-menubar"]');
+  if (mbBtn) {
+    mbBtn.classList.toggle('active', !!appSettings.compactMode);
+    mbBtn.title = appSettings.compactMode ? 'Показать меню' : 'Скрыть меню';
   }
   applyColWidth(appSettings.listColWidth ?? 42, false);
   applySidebarWidth(appSettings.sidebarWidth ?? 230, false);

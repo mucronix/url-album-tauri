@@ -60,6 +60,7 @@ body {
 .tb-btn:hover:not(:disabled) { background: var(--item-hover); border-color: var(--border); }
 .tb-btn:active:not(:disabled) { background: var(--sel-bg, #cce4f7); }
 .tb-btn:disabled { opacity: 0.33; cursor: default; }
+.tb-btn.active { background: var(--sel-bg, #cce4f7); border-color: var(--border); }
 .tb-btn svg { pointer-events: none; display: block; }
 .tb-sep { width: 1px; height: 16px; background: var(--border); margin: 0 3px; flex-shrink: 0; }
 
