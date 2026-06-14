@@ -1028,10 +1028,6 @@ function showFolderContextMenu(e, folderNode) {
     hideContextMenu();
     startInlineRename(folderNode.id);
   }));
-  ctxMenuEl.appendChild(ctxItem("trash", "Удалить", "Del", () => {
-    hideContextMenu();
-    deleteFolder(folderNode);
-  }));
   ctxMenuEl.appendChild(ctxSep());
 
   // ── Transfer ───────────────────────────────────────────────────────────
@@ -1064,8 +1060,13 @@ function showFolderContextMenu(e, folderNode) {
   wireMainContextFloat(sortEl, () => buildSortSubmenu(folderNode));
   ctxMenuEl.appendChild(sortEl);
   ctxMenuEl.appendChild(ctxSep());
+  ctxMenuEl.appendChild(ctxItem("trash", "Удалить", "Del", () => {
+    hideContextMenu();
+    deleteFolder(folderNode);
+  }));
 
   // ── Properties ─────────────────────────────────────────────────────────
+  ctxMenuEl.appendChild(ctxSep());
   ctxMenuEl.appendChild(ctxItem("props", "Свойства", "F4", () => {
     hideContextMenu();
     openFolderPropsDialog(folderNode);
@@ -1695,15 +1696,14 @@ function showContextMenu(e, node) {
 
   ctxMenuEl.appendChild(ctxSep());
 
-  ctxMenuEl.appendChild(ctxItem("trash",  "Удалить ссылку", "Del",
-    () => deleteBookmark(node)));
-
-  ctxMenuEl.appendChild(ctxSep());
-
   ctxMenuEl.appendChild(
     ctxItem("copy", "Копировать URL", "Ctrl+C",
       () => navigator.clipboard.writeText(node.url || "").catch(() => {}))
   );
+  ctxMenuEl.appendChild(ctxSep());
+  ctxMenuEl.appendChild(ctxItem("trash",  "Удалить ссылку", "Del",
+    () => deleteBookmark(node)));
+  ctxMenuEl.appendChild(ctxSep());
   ctxMenuEl.appendChild(ctxItem("props", "Свойства", "F4",
     () => { hideContextMenu(); openPropsDialog(node); }));
 
