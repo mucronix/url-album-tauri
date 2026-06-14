@@ -55,6 +55,9 @@ pub fn init(conn: &Connection) -> Result<()> {
     )?;
     // Migration: add favicon column if absent (silent on existing DBs)
     conn.execute("ALTER TABLE nodes ADD COLUMN favicon TEXT", []).ok();
+    // Migration: add soft-delete columns if absent
+    conn.execute("ALTER TABLE nodes ADD COLUMN deleted INTEGER DEFAULT 0", []).ok();
+    conn.execute("ALTER TABLE nodes ADD COLUMN deleted_parent INTEGER", []).ok();
     Ok(())
 }
 
