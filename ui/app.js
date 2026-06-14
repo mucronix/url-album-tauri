@@ -1028,6 +1028,10 @@ function showFolderContextMenu(e, folderNode) {
     hideContextMenu();
     startInlineRename(folderNode.id);
   }));
+  ctxMenuEl.appendChild(ctxItem("folder", "Переместить в…", null, () => {
+    hideContextMenu();
+    openMoveToDialog(folderNode);
+  }));
   ctxMenuEl.appendChild(ctxSep());
 
   // ── Transfer ───────────────────────────────────────────────────────────
@@ -1415,6 +1419,90 @@ fpropsOverlay.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeFolderPropsDialog();
 });
 
+// ── Move To dialog ────────────────────────────────────────────────────────
+let _moveToNode = null;
+
+function openMoveToDialog(node) {
+  _moveToNode = node;
+  const sel = document.getElementById('move-to-folder');
+  sel.innerHTML = '';
+
+  const excluded = node.kind === 'folder' ? collectSubtreeIds(node.id) : new Set();
+
+  // Root option — skip if node is already at root
+  if (node.parent !== null) {
+    const rootOpt = document.createElement('option');
+    rootOpt.value = '';
+    rootOpt.textContent = '(Корень)';
+    sel.appendChild(rootOpt);
+  }
+
+  const addOpts = (parentId, depth) => {
+    const children = allNodes
+      .filter(n => n.kind === 'folder' && n.parent === parentId)
+      .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id);
+    for (const f of children) {
+      if (excluded.has(f.id)) continue;   // сама папка и её потомки — пропустить и рекурсию
+      if (f.id !== node.parent) {
+        const opt = document.createElement('option');
+        opt.value = f.id;
+        opt.textContent = '   '.repeat(depth) + (depth > 0 ? '└ ' : '') + f.title;
+        sel.appendChild(opt);
+      }
+      addOpts(f.id, depth + 1);
+    }
+  };
+  addOpts(null, 0);
+
+  raiseOverlay(document.getElementById('move-to-overlay'));
+  setTimeout(() => sel.focus(), 30);
+}
+
+(function() {
+  const overlay = document.getElementById('move-to-overlay');
+  const sel     = document.getElementById('move-to-folder');
+
+  function close() {
+    overlay.classList.add('hidden');
+    _moveToNode = null;
+  }
+
+  document.getElementById('move-to-x').onclick      = close;
+  document.getElementById('move-to-cancel').onclick  = close;
+
+  document.getElementById('move-to-ok').onclick = async () => {
+    if (!_moveToNode) return;
+    const v         = sel.value;
+    const newParent = v === '' ? null : parseInt(v, 10);
+    const okBtn     = document.getElementById('move-to-ok');
+    okBtn.disabled  = true;
+    const openIds   = saveOpenState();
+    try {
+      await invoke('move_node', { id: _moveToNode.id, newParent });
+      close();
+      allNodes   = await invoke('get_tree');
+      allFolders = allNodes.filter(n => n.kind === 'folder');
+      renderTree();
+      restoreOpenState(openIds);
+      if (newParent !== null) {
+        const ti = treeEl.querySelector(`.tree-item[data-id="${newParent}"]`);
+        const ch = ti?.parentElement?.querySelector(':scope > .tree-children');
+        if (ti && ch) { ch.classList.add('open'); ti.classList.add('open'); }
+      }
+      if (activeFolderId != null) await loadFolderContents(activeFolderId);
+    } catch(e) {
+      alert('Ошибка перемещения: ' + e);
+    } finally {
+      okBtn.disabled = false;
+    }
+  };
+
+  overlay.addEventListener('keydown', e => {
+    if (e.key === 'Escape') close();
+    if (e.key === 'Enter')  document.getElementById('move-to-ok').click();
+  });
+})();
+
 // ── DB Properties dialog ──────────────────────────────────────────────────
 const dbpropsOverlay = document.getElementById('dbprops-overlay');
 
@@ -1694,6 +1782,11 @@ function showContextMenu(e, node) {
       !node.url)
   );
 
+  ctxMenuEl.appendChild(ctxSep());
+  ctxMenuEl.appendChild(
+    ctxItem("folder", "Переместить в…", null,
+      () => { hideContextMenu(); openMoveToDialog(node); })
+  );
   ctxMenuEl.appendChild(ctxSep());
 
   ctxMenuEl.appendChild(

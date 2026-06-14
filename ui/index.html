@@ -465,6 +465,26 @@
     </div>
   </div>
 
+  <!-- Move to dialog -->
+  <div id="move-to-overlay" class="dlg-overlay hidden">
+    <div class="win-dlg" style="width:320px">
+      <div class="dlg-title">
+        <span>Переместить в…</span>
+        <button class="dlg-close" id="move-to-x">×</button>
+      </div>
+      <div class="dlg-body dlg-form">
+        <div class="form-row">
+          <label class="form-label">Папка назначения</label>
+          <select class="dlg-input form-field" id="move-to-folder" style="height:24px"></select>
+        </div>
+      </div>
+      <div class="dlg-footer">
+        <button class="win-btn win-btn-default" id="move-to-ok">Переместить</button>
+        <button class="win-btn" id="move-to-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
   <!-- New folder / new link dialog -->
   <div id="new-item-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:340px">
