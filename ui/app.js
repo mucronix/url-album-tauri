@@ -768,6 +768,7 @@ function deleteFolder(node) {
     } else if (node.parent != null) {
       selectFolder(node.parent);
     }
+    if (activeFolderId === -1) loadTrashContents();
   });
 }
 
@@ -1290,6 +1291,7 @@ function deleteBookmark(node) {
       // Nothing left — go to parent folder
       selectFolder(node.parent);
     }
+    if (activeFolderId === -1) loadTrashContents();
   });
 }
 
@@ -4786,6 +4788,37 @@ function createTrashRow(node, depth, ancestors, hasChildren) {
   }
 
   row.append(dot, name, sep, addr);
+
+  row.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    closeSubFloat();
+    ctxMenuEl.innerHTML = '';
+    ctxMenuEl.appendChild(ctxItem('import', 'Восстановить', null, async () => {
+      hideContextMenu();
+      await invoke('restore_node', { id: node.id });
+      allNodes = await invoke('get_tree');
+      allFolders = allNodes.filter(n => n.kind === 'folder');
+      const openIds = saveOpenState();
+      renderTree();
+      restoreOpenState(openIds);
+      loadTrashContents();
+    }));
+    ctxMenuEl.appendChild(ctxItem('trash-bin', 'Удалить навсегда', null, () => {
+      hideContextMenu();
+      deleteConfirm('Удалить навсегда? Объект будет стёрт безвозвратно.', async () => {
+        await invoke('purge_node', { id: node.id });
+        loadTrashContents();
+      });
+    }));
+    ctxMenuEl.querySelectorAll('.ctx-item:not(.ctx-has-sub)').forEach(it => {
+      it.addEventListener('mouseenter', () => { clearTimeout(_subTimer); closeSubFloat(); });
+    });
+    ctxMenuEl.classList.remove('hidden');
+    const mw = ctxMenuEl.offsetWidth, mh = ctxMenuEl.offsetHeight;
+    ctxMenuEl.style.left = Math.min(e.clientX, window.innerWidth  - mw - 4) + 'px';
+    ctxMenuEl.style.top  = Math.min(e.clientY, window.innerHeight - mh - 4) + 'px';
+  });
 
   if (isFolder && hasChildren) {
     row.addEventListener('dblclick', (e) => {
