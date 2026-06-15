@@ -201,6 +201,83 @@ fn empty_trash(state: tauri::State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn purge_node(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
+    let data_dir = {
+        let p = state.db_path.lock().map_err(|e| e.to_string())?;
+        p.parent().ok_or("no parent dir")?.to_path_buf().join("Data")
+    };
+
+    let (thumbs_to_delete, favicons_to_delete) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+        // Determine ids to purge: node + deleted subtree if folder
+        let kind: String = conn.query_row(
+            "SELECT kind FROM nodes WHERE id=?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).map_err(|e| e.to_string())?;
+
+        let ids: Vec<i64> = if kind == "folder" {
+            let mut stmt = conn.prepare(
+                "WITH RECURSIVE sub(id) AS (
+                     VALUES(?1)
+                     UNION ALL
+                     SELECT n.id FROM nodes n JOIN sub s ON n.parent = s.id WHERE n.deleted = 1
+                 )
+                 SELECT id FROM sub"
+            ).map_err(|e| e.to_string())?;
+            // Bind to named variable so borrow lifetime is explicit to the compiler
+            let mapped = stmt.query_map(rusqlite::params![id], |r| r.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?;
+            mapped.filter_map(|r| r.ok()).collect()
+        } else {
+            vec![id]
+        };
+
+        // Collect thumb/favicon for all ids (Vec<i64> — safe for interpolation)
+        let placeholders = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let mut stmt = conn.prepare(
+            &format!("SELECT thumb, favicon FROM nodes WHERE id IN ({})", placeholders)
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<(Option<String>, Option<String>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let thumbs: Vec<String> = rows.iter().filter_map(|(t, _)| t.clone()).collect();
+
+        // Favicon: delete only if no active (non-deleted) node outside our set uses it
+        let favicons: Vec<String> = rows.iter()
+            .filter_map(|(_, f)| f.clone())
+            .filter(|fav| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM nodes WHERE favicon=?1 AND (deleted IS NULL OR deleted=0)",
+                    rusqlite::params![fav],
+                    |r| r.get(0),
+                ).unwrap_or(1);
+                count == 0
+            })
+            .collect();
+
+        conn.execute(
+            &format!("DELETE FROM nodes WHERE id IN ({})", placeholders), []
+        ).map_err(|e| e.to_string())?;
+
+        (thumbs, favicons)
+    };
+
+    for thumb in thumbs_to_delete {
+        let _ = std::fs::remove_file(data_dir.join(&thumb));
+    }
+    for fav in favicons_to_delete {
+        let _ = std::fs::remove_file(data_dir.join("favicons").join(&fav));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn clear_thumb(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let old_thumb: Option<String> = conn.query_row(
@@ -2346,6 +2423,7 @@ fn main() {
             get_trash,
             restore_node,
             empty_trash,
+            purge_node,
             update_bookmark,
             pick_browser_file,
             update_note,
