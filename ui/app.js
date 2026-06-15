@@ -2204,6 +2204,7 @@ const ICONS = {
   'move-up':     `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V3M3.5 6.5L7 3l3.5 3.5"/></svg>`,
   'move-down':   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v8M3.5 7.5L7 11l3.5-3.5"/></svg>`,
   'menu-toggle': `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 3.5h10M2 7h10M2 10.5h10"/></svg>`,
+  'trash-bin':   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h10M5 4V2.5h4V4M3.5 4l1 7.5h5l1-7.5M6 6v3M8 6v3"/></svg>`,
 };
 
 // todo:true = disabled (not yet implemented)
@@ -3725,6 +3726,7 @@ async function showApp() {
 // ── Drag & Drop ───────────────────────────────────────────────────────────────
 
 let _dragNode        = null;  // { id, kind, parent }
+const _trashOpen     = new Set(); // ids of expanded trash folders
 let _dragExpandTimer = null;
 let _scrollRafId     = null;
 let _scrollDir       = 0;     // -1 up / 0 stop / +1 down
@@ -3999,12 +4001,52 @@ function buildTree() {
   return roots;
 }
 
+function appendTrashNode() {
+  const wrap = document.createElement('div');
+  const item = document.createElement('div');
+  item.className = 'tree-item';
+  item.dataset.id = -1;
+  item.dataset.kind = 'folder';
+  item.tabIndex = -1;
+  item.style.marginTop = '6px';
+
+  const arrow = document.createElement('span');
+  arrow.className = 'arrow';
+
+  const ico = document.createElement('span');
+  ico.className = 'folder-icon';
+  ico.innerHTML = ICONS['trash-bin'];
+
+  const label = document.createElement('span');
+  label.className = 'label';
+  label.textContent = 'Корзина';
+
+  item.append(arrow, ico, label);
+
+  item.addEventListener('click', (e) => {
+    e.stopPropagation();
+    item.focus();
+    selectFolder(-1, false, true);
+  });
+
+  item.addEventListener('contextmenu', (e) => {
+    e.stopPropagation();
+    document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
+    item.classList.add('active');
+    showFolderContextMenu(e, { id: -1, kind: 'folder', title: 'Корзина' });
+  });
+
+  wrap.appendChild(item);
+  treeEl.appendChild(wrap);
+}
+
 function renderTree() {
   const roots = buildTree();
   treeEl.innerHTML = "";
   for (const node of roots) {
     treeEl.appendChild(createTreeNode(node, 0));
   }
+  appendTrashNode();
   updateStatusLeft();
 }
 
@@ -4616,8 +4658,12 @@ function selectFolder(folderId, expand = true, noTreeExpand = false) {
   }
 
   // Breadcrumb
-  const folder = allFolders.find(f => f.id === folderId);
-  breadcrumb.textContent = folder ? buildBreadcrumbText(folderId) : "";
+  if (folderId === -1) {
+    breadcrumb.textContent = 'Корзина';
+  } else {
+    const folder = allFolders.find(f => f.id === folderId);
+    breadcrumb.textContent = folder ? buildBreadcrumbText(folderId) : "";
+  }
 
   return loadFolderContents(folderId);
 }
@@ -4638,6 +4684,7 @@ function buildBreadcrumbText(id) {
 
 // ── Folder contents (subfolders + bookmarks) ──────────────────────────────
 async function loadFolderContents(folderId) {
+  if (folderId === -1) { loadTrashContents(); return; }
   gridEl.innerHTML = "";
   emptyHint.classList.add("hidden");
 
@@ -4663,6 +4710,104 @@ async function loadFolderContents(folderId) {
 
 // Kept for callers that reload after sort/move — delegates to loadFolderContents
 function loadBookmarks(folderId) { return loadFolderContents(folderId); }
+
+function _refreshTrashVisibility() {
+  for (const row of gridEl.querySelectorAll('[data-trash="1"]')) {
+    const anc = row.dataset.trashAncestors;
+    const ancestors = anc ? anc.split(',').map(Number) : [];
+    row.style.display = ancestors.every(id => _trashOpen.has(id)) ? '' : 'none';
+  }
+}
+
+function createTrashRow(node, depth, ancestors, hasChildren) {
+  const indent = '   '.repeat(depth) + (depth > 0 ? '└ ' : '');
+  const isFolder = node.kind === 'folder';
+
+  const row = document.createElement('div');
+  row.className = isFolder ? 'card card-folder' : 'card';
+  row.dataset.id             = node.id;
+  row.dataset.kind           = node.kind;
+  row.dataset.trash          = '1';
+  row.dataset.trashDepth     = depth;
+  row.dataset.trashAncestors = ancestors.join(',');
+
+  const dot = document.createElement('span');
+  dot.className = isFolder ? 'row-dot row-dot-folder' : 'row-dot';
+  if (isFolder) {
+    const arrow = document.createElement('span');
+    arrow.className = 'arrow';
+    if (hasChildren) arrow.dataset.hasChildren = '1';
+    dot.appendChild(arrow);
+  } else if (node.favicon && dataDir) {
+    setFaviconOnEl(dot, convertFileSrc(faviconFilePath(node.favicon)));
+  } else {
+    dot.textContent = '●';
+  }
+
+  const name = document.createElement('span');
+  name.className = 'row-name';
+  name.textContent = indent + node.title;
+
+  const sep = document.createElement('span');
+  sep.className = 'row-sep';
+
+  const addr = document.createElement('span');
+  addr.className = isFolder ? 'row-addr row-addr-folder' : 'row-addr';
+  if (isFolder) {
+    addr.textContent = node.count > 0 ? node.count + ' ссылок' : '';
+  } else {
+    addr.textContent = node.url || '';
+    if (node.url) addr.title = node.url;
+  }
+
+  row.append(dot, name, sep, addr);
+
+  if (isFolder && hasChildren) {
+    row.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      if (_trashOpen.has(node.id)) {
+        _trashOpen.delete(node.id);
+        row.classList.remove('open');
+      } else {
+        _trashOpen.add(node.id);
+        row.classList.add('open');
+      }
+      _refreshTrashVisibility();
+    });
+  }
+
+  return row;
+}
+
+async function loadTrashContents() {
+  gridEl.innerHTML = '';
+  emptyHint.classList.add('hidden');
+
+  const trash = await invoke('get_trash');
+
+  if (trash.length === 0) {
+    emptyHint.classList.remove('hidden');
+    return;
+  }
+
+  const addNodes = (parentId, depth, ancestors) => {
+    const children = trash
+      .filter(n => n.parent === parentId)
+      .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id);
+    for (const n of children) {
+      const hasChildren = trash.some(c => c.parent === n.id);
+      gridEl.appendChild(createTrashRow(n, depth, ancestors, hasChildren));
+      if (n.kind === 'folder') addNodes(n.id, depth + 1, [...ancestors, n.id]);
+    }
+  };
+  addNodes(null, 0, []);
+
+  _refreshTrashVisibility();
+
+  _sbInFolderCount = trash.length;
+  _sbSearchCount = null;
+  updateStatusLeft();
+}
 
 function createFolderRow(node) {
   const row = document.createElement("div");

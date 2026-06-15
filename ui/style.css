@@ -367,6 +367,11 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 .tree-item .arrow[data-has-children]::before { content: "+"; }
 .tree-item.open > .arrow[data-has-children]::before { content: "−"; }
 
+.card-folder .arrow { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; flex-shrink:0; user-select:none; }
+.card-folder .arrow[data-has-children] { border:1px solid var(--border); background:var(--bg); color:var(--text); cursor:pointer; font-weight:bold; font-size:var(--ui-font); }
+.card-folder .arrow[data-has-children]::before { content:"+"; }
+.card-folder.open .arrow[data-has-children]::before { content:"−"; }
+
 .tree-item .label {
   overflow: hidden;
   text-overflow: ellipsis;
