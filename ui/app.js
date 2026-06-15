@@ -733,6 +733,7 @@ function removeSubtreeFromState(ids) {
 }
 
 function deleteFolder(node) {
+  if (!node || node.id === -1) return;
   const ids     = collectSubtreeIds(node.id);
   const total   = ids.size - 1;   // exclude the folder itself
   const detail  = total > 0 ? ` и всё содержимое (${total} эл.)` : "";
@@ -1018,6 +1019,29 @@ function showFolderContextMenu(e, folderNode) {
   e.stopPropagation();
   closeSubFloat();
   ctxMenuEl.innerHTML = "";
+
+  if (folderNode.id === -1) {
+    ctxMenuEl.appendChild(ctxItem("trash-bin", "Очистить корзину", null, () => {
+      hideContextMenu();
+      deleteConfirm("Очистить корзину? Всё удалённое будет стёрто безвозвратно.", async () => {
+        await invoke('empty_trash');
+        allNodes = await invoke('get_tree');
+        allFolders = allNodes.filter(n => n.kind === 'folder');
+        const openIds = saveOpenState();
+        renderTree();
+        restoreOpenState(openIds);
+        if (activeFolderId === -1) loadTrashContents();
+      });
+    }));
+    ctxMenuEl.querySelectorAll(".ctx-item:not(.ctx-has-sub)").forEach(it => {
+      it.addEventListener("mouseenter", () => { clearTimeout(_subTimer); closeSubFloat(); });
+    });
+    ctxMenuEl.classList.remove("hidden");
+    const mw = ctxMenuEl.offsetWidth, mh = ctxMenuEl.offsetHeight;
+    ctxMenuEl.style.left = Math.min(e.clientX, window.innerWidth  - mw - 4) + "px";
+    ctxMenuEl.style.top  = Math.min(e.clientY, window.innerHeight - mh - 4) + "px";
+    return;
+  }
 
   // ── Folder management ──────────────────────────────────────────────────
   ctxMenuEl.appendChild(ctxItem("new", "Новая папка", null, () => {
@@ -3733,6 +3757,7 @@ let _scrollDir       = 0;     // -1 up / 0 stop / +1 down
 
 function _isDragValid(targetFolderId) {
   if (!_dragNode) return false;
+  if (targetFolderId === -1) return false;
   if (_dragNode.id === targetFolderId) return false;
   if (_dragNode.kind === 'folder') {
     // No circular refs: walk up from target, reject if we hit dragNode
