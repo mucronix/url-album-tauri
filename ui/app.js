@@ -571,12 +571,16 @@ function _dRenderTable(nodes) {
                  + `<td class="dupes-td dupes-td-url" title="${node.url}"><span>${node.url}</span></td>`
                  + `<td class="dupes-td" title="${folder}"><span>${folder}</span></td>`
                  + `<td class="dupes-td" title="${date}"><span>${date}</span></td>`;
-    tr.addEventListener('click', () => {
+    tr.addEventListener('click', async () => {
       _dRowIdx = i;
       tbody.querySelectorAll('.dupes-row').forEach((r,ri) => r.classList.toggle('selected', ri===i));
       _dUpdateBtns();
-      // Single click → navigate
       navigateToCard(node);
+      if (node.parent != null) {
+        activeFolderId = node.parent;
+        await loadFolderContents(node.parent);
+        openDetailView(node);
+      }
     });
     tr.addEventListener('dblclick', () => { if (node.url) openWithBrowser(node.url, getDefaultBrowserPath()); });
     tbody.appendChild(tr);
@@ -657,6 +661,7 @@ document.getElementById('dupes-del-one').addEventListener('click', () => {
     else _dRenderTable([]);
     _dUpdateBtns();
     refreshTree();
+    loadFolderContents(activeFolderId);
   });
 });
 
@@ -688,7 +693,6 @@ function closeDupesDialog() { dupesOverlay.classList.add("hidden"); }
 
 document.getElementById("dupes-x").onclick         = closeDupesDialog;
 document.getElementById("dupes-close-btn").onclick = closeDupesDialog;
-dupesOverlay.addEventListener("click", e => { if (e.target === dupesOverlay) closeDupesDialog(); });
 
 function openDupesDialog() {
   _dGroups   = findDuplicates();
@@ -5212,12 +5216,19 @@ function nodeFromCard(card) {
 
 // Grid single-click: sync tree highlight + show info bar, keep grid visible
 function navigateToCard(node) {
-  if (node.parent != null) expandTreePath(node.parent);
+  if (node.parent != null) {
+    expandTreePath(node.parent);
+    const parentItem = treeEl.querySelector(`.tree-item[data-id="${node.parent}"]`);
+    if (parentItem) {
+      const ch = parentItem.parentElement.querySelector(":scope > .tree-children");
+      if (ch) { ch.classList.add("open"); parentItem.classList.add("open"); }
+    }
+  }
   _activateTreeItem(node);
   showInfoBar(node);
   requestAnimationFrame(() => {
     treeEl.querySelector(`.tree-item[data-id="${node.id}"]`)
-      ?.scrollIntoView({ block: "nearest" });
+      ?.scrollIntoView({ block: "center" });
   });
 }
 
