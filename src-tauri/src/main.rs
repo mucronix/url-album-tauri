@@ -8,9 +8,10 @@ use rusqlite::Connection;
 use tauri::{Manager, Emitter};
 
 struct AppState {
-    db:           Mutex<Connection>,
-    db_path:      Mutex<std::path::PathBuf>,
-    pending_open: Mutex<Option<(String, String)>>, // (url, title) from urlalbum:// scheme
+    db:                 Mutex<Connection>,
+    db_path:            Mutex<std::path::PathBuf>,
+    pending_open:       Mutex<Option<(String, String)>>, // (url, title) from urlalbum:// scheme
+    extension_add_mode: Mutex<String>,                   // "quick" | "dialog"
 }
 
 const INBOX_FOLDER_NAME: &str = "Новые ссылки";
@@ -1489,6 +1490,13 @@ fn get_pending_url(state: tauri::State<'_, AppState>) -> Option<PendingOpen> {
     p.take().map(|(url, title)| PendingOpen { url, title })
 }
 
+#[tauri::command]
+fn set_extension_add_mode(state: tauri::State<'_, AppState>, mode: String) {
+    if let Ok(mut m) = state.extension_add_mode.lock() {
+        *m = mode;
+    }
+}
+
 // ── Browser detection ────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, Clone)]
@@ -2163,7 +2171,8 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
             };
             let mut stmt = match conn.prepare(
                 "SELECT id, title FROM nodes \
-                 WHERE kind='folder' AND parent IS NULL ORDER BY sort_idx"
+                 WHERE kind='folder' AND parent IS NULL \
+                 AND (deleted IS NULL OR deleted=0) ORDER BY sort_idx"
             ) {
                 Ok(s)  => s,
                 Err(e) => {
@@ -2231,6 +2240,25 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
 
         if url.is_empty() {
             respond_json(req, 400, r#"{"error":"url required"}"#, cors);
+            continue;
+        }
+
+        // In "dialog" mode: skip INSERT, ask the app to show the edit dialog
+        let add_mode = handle.state::<AppState>()
+            .extension_add_mode.lock()
+            .map(|m| m.clone())
+            .unwrap_or_else(|_| "quick".to_string());
+        if add_mode == "dialog" {
+            respond_json(req, 200, r#"{"status":"ok"}"#, cors);
+            handle.emit("extension-add-request", serde_json::json!({
+                "url":       url,
+                "title":     title,
+                "folder_id": v["folder_id"].as_i64()
+            })).ok();
+            if let Some(win) = handle.get_webview_window("main") {
+                win.unminimize().ok();
+                win.set_focus().ok();
+            }
             continue;
         }
 
@@ -2380,9 +2408,10 @@ fn main() {
                 .and_then(|a| parse_url_scheme(&a));
 
             app.manage(AppState {
-                db:           Mutex::new(conn),
-                db_path:      Mutex::new(db_path),
-                pending_open: Mutex::new(pending),
+                db:                 Mutex::new(conn),
+                db_path:            Mutex::new(db_path),
+                pending_open:       Mutex::new(pending),
+                extension_add_mode: Mutex::new("quick".to_string()),
             });
 
             // Register urlalbum:// protocol handler (idempotent)
@@ -2467,6 +2496,7 @@ fn main() {
             get_recent_dbs,
             get_db_properties,
             get_pending_url,
+            set_extension_add_mode,
             analyze_import_db,
             execute_import_db,
         ])

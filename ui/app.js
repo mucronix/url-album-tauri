@@ -2615,13 +2615,14 @@ function tbMoveItem(dir) {
     noteInput.value = '';
     urlRow.classList.remove('hidden');
     noteRow.classList.remove('hidden');
-    _populateFolderSelect(activeFolderId);
+    _populateFolderSelect(prefill.prefillFolderId ?? activeFolderId);
     raiseOverlay(overlay);
     setTimeout(() => (prefill.url ? nameInput.focus() : urlInput.focus()), 30);
   }
 
-  window.doNewFolder = () => createFolderAndRename(null);
-  window.doNewLink   = () => openNewItemDlg('link');
+  window.doNewFolder    = () => createFolderAndRename(null);
+  window.doNewLink      = () => openNewItemDlg('link');
+  window.openNewItemDlg = openNewItemDlg;
   // Новая подпапка → вложенная в текущую выбранную папку, с inline rename
   window.doNewSubfolder = () => { if (activeFolderId != null) createFolderAndRename(activeFolderId); };
 
@@ -2667,6 +2668,15 @@ function tbMoveItem(dir) {
         const card = gridEl.querySelector(`.card[data-id="${newId}"]`);
         if (card) { gridSelectRow(card); card.scrollIntoView({ block: 'nearest' }); }
         navigateToCard(newNode);
+      }
+      // Fire-and-forget screenshot (mirrors quick-add via extension)
+      if (url) {
+        invoke('refresh_thumb', {
+          id: newId, url,
+          width:   appSettings.thumbWidth   || 1280,
+          height:  appSettings.thumbHeight  || 800,
+          timeout: appSettings.thumbTimeout || 15,
+        }).then(newPath => { _applyThumbToCard(newId, name, newPath); }).catch(() => {});
       }
     } catch(e) { console.error(e); }
   }
@@ -3392,8 +3402,9 @@ let appSettings = {
   thumbHeight:   800,
   thumbTimeout:  15,
   // Расширение браузера
-  extensionToken: '',
-  compactMode:    false,
+  extensionToken:    '',
+  compactMode:       false,
+  extensionAddMode:  'quick',  // 'quick' | 'dialog'
 };
 
 async function loadAppSettings() {
@@ -3426,6 +3437,7 @@ function applySettings(save = true) {
   applyColWidth(appSettings.listColWidth ?? 42, false);
   applySidebarWidth(appSettings.sidebarWidth ?? 230, false);
   document.documentElement.style.setProperty('--ui-font', (appSettings.uiFontSize || 13) + 'px');
+  invoke('set_extension_add_mode', { mode: appSettings.extensionAddMode || 'quick' }).catch(() => {});
   if (save) saveAppSettings();
 }
 
@@ -3547,6 +3559,7 @@ function applyColWidth(pct, persist = true) {
     document.getElementById('s-accordion').checked   = appSettings.accordionTree;
     document.getElementById('s-confirm-del').checked  = appSettings.confirmDelete;
     document.getElementById('s-no-dupes').checked     = appSettings.noDuplicateUrls;
+    document.getElementById('s-ext-dialog').checked   = appSettings.extensionAddMode === 'dialog';
     fontSlider.value = appSettings.uiFontSize || 13;
     fontVal.textContent = fontSlider.value;
     // Рисунок
@@ -3570,8 +3583,9 @@ function applyColWidth(pct, persist = true) {
     appSettings.showToolbar     = document.getElementById('s-show-toolbar').checked;
     appSettings.accordionTree   = document.getElementById('s-accordion').checked;
     appSettings.confirmDelete   = document.getElementById('s-confirm-del').checked;
-    appSettings.noDuplicateUrls = document.getElementById('s-no-dupes').checked;
-    appSettings.uiFontSize      = parseInt(fontSlider.value) || 13;
+    appSettings.noDuplicateUrls  = document.getElementById('s-no-dupes').checked;
+    appSettings.extensionAddMode = document.getElementById('s-ext-dialog').checked ? 'dialog' : 'quick';
+    appSettings.uiFontSize       = parseInt(fontSlider.value) || 13;
     // Рисунок
     appSettings.thumbWidth   = parseInt(document.getElementById('s-thumb-w').value)   || 1280;
     appSettings.thumbHeight  = parseInt(document.getElementById('s-thumb-h').value)   || 800;
@@ -5311,6 +5325,11 @@ gridEl.addEventListener("contextmenu", (e) => {
 // ── Browser extension events ──────────────────────────────────────────────
 window.__TAURI__.event.listen('bookmark-added', () => {
     refreshTree();
+});
+
+window.__TAURI__.event.listen('extension-add-request', (e) => {
+    const { url, title, folder_id } = e.payload;
+    openNewItemDlg('link', { url, title, prefillFolderId: folder_id ?? null });
 });
 
 window.__TAURI__.event.listen('thumb-updated', (e) => {
