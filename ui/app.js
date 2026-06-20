@@ -862,7 +862,9 @@ function buildExportSubmenu(folderNode) {
     hideContextMenu();
     const args = { folderId: folderNode.id };
     if (withImages !== undefined) args.withImages = withImages;
-    invoke(cmd, args).catch(err => { if (err !== "Отменено") console.error(err); });
+    invoke(cmd, args)
+      .then(() => setStatus('Экспорт завершён'))
+      .catch(err => { if (err !== "Отменено") { console.error(err); setStatus('Ошибка экспорта'); } });
   };
 
   sub.appendChild(ctxItem("import", "HTML файл",       null, () => doExport("export_folder_html")));
@@ -3061,27 +3063,43 @@ function handleMenuAction(action) {
     // ── Export (whole DB via root folder) ──
     case 'export-html': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
-      if (fid != null) invoke("export_folder_html", { folderId: fid }).catch(console.error);
+      if (fid != null) invoke("export_folder_html", { folderId: fid })
+        .then(() => setStatus('Экспорт в HTML завершён'))
+        .catch(e => { console.error(e); setStatus('Ошибка экспорта'); });
       break;
     }
     case 'export-txt': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
-      if (fid != null) invoke("export_folder_txt", { folderId: fid }).catch(console.error);
+      if (fid != null) invoke("export_folder_txt", { folderId: fid })
+        .then(() => setStatus('Экспорт в текст завершён'))
+        .catch(e => { console.error(e); setStatus('Ошибка экспорта'); });
       break;
     }
     case 'export-sync-with': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
-      if (fid != null) invoke("export_folder_sync", { folderId: fid, withImages: true }).catch(console.error);
+      if (fid != null) invoke("export_folder_sync", { folderId: fid, withImages: true })
+        .then(() => setStatus('Экспорт (с рисунками) завершён'))
+        .catch(e => { console.error(e); setStatus('Ошибка экспорта'); });
       break;
     }
     case 'export-sync-without': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
-      if (fid != null) invoke("export_folder_sync", { folderId: fid, withImages: false }).catch(console.error);
+      if (fid != null) invoke("export_folder_sync", { folderId: fid, withImages: false })
+        .then(() => setStatus('Экспорт завершён'))
+        .catch(e => { console.error(e); setStatus('Ошибка экспорта'); });
       break;
     }
     // ── Backup ──
-    case 'backup-without': invoke("backup_db").catch(console.error); break;
-    case 'backup-with':    invoke("backup_db_with_data").catch(console.error); break;
+    case 'backup-without':
+      invoke("backup_db")
+        .then(() => setStatus('Резервная копия создана'))
+        .catch(e => { console.error(e); setStatus('Ошибка резервной копии'); });
+      break;
+    case 'backup-with':
+      invoke("backup_db_with_data")
+        .then(() => setStatus('Резервная копия создана (с рисунками)'))
+        .catch(e => { console.error(e); setStatus(e === 'Отменено' ? '' : 'Ошибка резервной копии: ' + e); });
+      break;
     // ── Sort all ──
     case 'sort-all-title-asc':    invoke("sort_all_bookmarks", { by: "title",   desc: false }).then(refreshTree).catch(console.error); break;
     case 'sort-all-title-desc':   invoke("sort_all_bookmarks", { by: "title",   desc: true  }).then(refreshTree).catch(console.error); break;
@@ -3126,7 +3144,10 @@ function handleMenuAction(action) {
       break;
     case 'import-folder':
       invoke("import_uadat_pick")
-        .then(n => { if (n > 0) { refreshTree(); } })
+        .then(n => {
+          if (n > 0) { refreshTree(); setStatus(`Импортировано ${n} ссылок`); }
+          else setStatus('Нет новых ссылок для импорта');
+        })
         .catch(e => { if (e !== 'Отменено') console.error('import_folder:', e); });
       break;
 
@@ -3677,8 +3698,9 @@ document.getElementById("wb-open").addEventListener("click", async () => {
 // "Импортировать ua.dat" — file picker then import
 document.getElementById("wb-import").addEventListener("click", async () => {
   try {
-    await invoke("import_uadat_pick");
+    const n = await invoke("import_uadat_pick");
     await showApp();
+    setStatus(`Импортировано ${n} ссылок`);
   } catch(e) {
     if (e !== "Отменено") console.error("import_uadat_pick:", e);
   }

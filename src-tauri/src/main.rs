@@ -868,6 +868,21 @@ async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> 
     Ok(())
 }
 
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let ft = entry.file_type().map_err(|e| e.to_string())?;
+        if ft.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), dst.join(entry.file_name()))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<(), String> {
     let (db_src, db_dir, db_name) = {
@@ -883,19 +898,20 @@ async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::W
         .pick_folder().await.ok_or("Отменено")?;
     let dest = dest_folder.path().to_path_buf();
 
+    // Bug 2 fix: prevent dest == db_dir which would overwrite the source DB
+    let canon_dest = std::fs::canonicalize(&dest).unwrap_or_else(|_| dest.clone());
+    let canon_src  = std::fs::canonicalize(&db_dir).unwrap_or_else(|_| db_dir.clone());
+    if canon_dest == canon_src {
+        return Err("Выберите папку, отличную от текущей базы".to_string());
+    }
+
     // Copy the DB file itself
     std::fs::copy(&db_src, dest.join(&db_name)).map_err(|e| e.to_string())?;
 
-    // Copy the Data folder (screenshots) that sits next to the DB
+    // Bug 1 fix: recursively copy Data/ so favicons/ subdirectory is included
     let data_src = db_dir.join("Data");
     if data_src.exists() {
-        let data_dst = dest.join("Data");
-        std::fs::create_dir_all(&data_dst).map_err(|e| e.to_string())?;
-        for entry in std::fs::read_dir(&data_src).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            std::fs::copy(entry.path(), data_dst.join(entry.file_name()))
-                .map_err(|e| e.to_string())?;
-        }
+        copy_dir_recursive(&data_src, &dest.join("Data"))?;
     }
     Ok(())
 }
