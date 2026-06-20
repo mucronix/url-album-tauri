@@ -1222,6 +1222,24 @@ document.getElementById("confirm-cancel").onclick  = closeConfirm;
 document.getElementById("confirm-ok").onclick      = () => { const cb = _confirmCb; closeConfirm(); cb?.(); };
 confirmOverlay.addEventListener("click", (e) => { if (e.target === confirmOverlay) closeConfirm(); });
 
+// ── Notice dialog (alert-style, одна кнопка OK) ───────────────────────────
+const noticeOverlay = document.getElementById("notice-overlay");
+const noticeTitle   = document.getElementById("notice-title");
+const noticeMsg     = document.getElementById("notice-msg");
+
+function showNotice(title, message) {
+  noticeTitle.textContent = title;
+  noticeMsg.textContent   = message;
+  raiseOverlay(noticeOverlay);
+  setTimeout(() => document.getElementById("notice-ok")?.focus(), 20);
+}
+function closeNotice() { noticeOverlay.classList.add("hidden"); }
+
+document.getElementById("notice-x").onclick  = closeNotice;   // крестик
+document.getElementById("notice-ok").onclick = closeNotice;   // OK
+noticeOverlay.addEventListener("click", (e) => { if (e.target === noticeOverlay) closeNotice(); }); // клик по фону
+// Esc — через глобальный keydown-хэндлер (app.js ~3370): закрывает верхний .dlg-overlay кликом по .dlg-close (#notice-x)
+
 // ── Delete bookmark ───────────────────────────────────────────────────────
 // Returns all currently visible (not inside closed branch) tree items.
 function getVisibleTreeItems() {
@@ -3092,13 +3110,13 @@ function handleMenuAction(action) {
     // ── Backup ──
     case 'backup-without':
       invoke("backup_db")
-        .then(() => setStatus('Резервная копия создана'))
-        .catch(e => { console.error(e); setStatus('Ошибка резервной копии'); });
+        .then(path => showNotice('Резервная копия', 'Резервная копия базы создана:\n' + path))
+        .catch(e => { if (e !== 'Отменено') { console.error(e); showNotice('Ошибка', 'Не удалось создать резервную копию:\n' + e); } });
       break;
     case 'backup-with':
       invoke("backup_db_with_data")
-        .then(() => setStatus('Резервная копия создана (с рисунками)'))
-        .catch(e => { console.error(e); setStatus(e === 'Отменено' ? '' : 'Ошибка резервной копии: ' + e); });
+        .then(path => showNotice('Резервная копия', 'Резервная копия базы с рисунками создана:\n' + path))
+        .catch(e => { if (e !== 'Отменено') { console.error(e); showNotice('Ошибка', e); } });
       break;
     // ── Sort all ──
     case 'sort-all-title-asc':    invoke("sort_all_bookmarks", { by: "title",   desc: false }).then(refreshTree).catch(console.error); break;

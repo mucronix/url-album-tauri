@@ -850,7 +850,7 @@ fn switch_db(state: tauri::State<'_, AppState>, new_path: std::path::PathBuf) ->
 }
 
 #[tauri::command]
-async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<(), String> {
+async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<String, String> {
     let (src, src_dir, src_name) = {
         let p = state.db_path.lock().map_err(|e| e.to_string())?.clone();
         let dir = p.parent().ok_or("no parent")?.to_path_buf();
@@ -865,7 +865,7 @@ async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> 
         .set_directory(&src_dir)
         .save_file().await.ok_or("Отменено")?;
     std::fs::copy(&src, file.path()).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(file.path().to_string_lossy().to_string())
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
@@ -884,7 +884,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
 }
 
 #[tauri::command]
-async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<(), String> {
+async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<String, String> {
     let (db_src, db_dir, db_name) = {
         let p = state.db_path.lock().map_err(|e| e.to_string())?.clone();
         let dir = p.parent().ok_or("no parent")?.to_path_buf();
@@ -913,7 +913,7 @@ async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::W
     if data_src.exists() {
         copy_dir_recursive(&data_src, &dest.join("Data"))?;
     }
-    Ok(())
+    Ok(dest.join(&db_name).to_string_lossy().to_string())
 }
 
 #[tauri::command]

@@ -125,6 +125,22 @@
     </div>
   </div>
 
+  <!-- Notice dialog (alert-style, одна кнопка OK) -->
+  <div id="notice-overlay" class="dlg-overlay hidden">
+    <div class="win-dlg" style="width:360px">
+      <div class="dlg-title">
+        <span id="notice-title"></span>
+        <button class="dlg-close" id="notice-x">×</button>
+      </div>
+      <div class="dlg-body" style="padding:16px 14px 10px">
+        <div id="notice-msg" style="word-break:break-all;white-space:pre-line"></div>
+      </div>
+      <div class="dlg-footer">
+        <button class="win-btn win-btn-default" id="notice-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Link properties dialog -->
   <div id="props-overlay" class="dlg-overlay hidden">
     <div class="win-dlg props-dlg" id="props-dlg">
