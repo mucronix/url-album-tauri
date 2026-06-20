@@ -81,6 +81,14 @@ fn rename_node(state: tauri::State<AppState>, id: i64, title: String) -> Result<
 }
 
 #[tauri::command]
+fn set_folder_opener(state: tauri::State<AppState>, id: i64, opener: Option<String>) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE nodes SET opener = ?1 WHERE id = ?2", rusqlite::params![opener, id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn delete_folder(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     // (а) mark all descendants (excluding root) as deleted, keep their parent links intact
@@ -2458,6 +2466,7 @@ fn main() {
             backup_db,
             backup_db_with_data,
             rename_node,
+            set_folder_opener,
             delete_folder,
             export_folder_html,
             export_folder_txt,

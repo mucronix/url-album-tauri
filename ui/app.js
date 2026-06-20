@@ -582,7 +582,7 @@ function _dRenderTable(nodes) {
         openDetailView(node);
       }
     });
-    tr.addEventListener('dblclick', () => { if (node.url) openWithBrowser(node.url, getDefaultBrowserPath()); });
+    tr.addEventListener('dblclick', () => { if (node.url) openWithBrowser(node.url, resolveOpenerForNode(node)); });
     tbody.appendChild(tr);
   });
 }
@@ -891,6 +891,36 @@ function buildExportSubmenu(folderNode) {
   return sub;
 }
 
+// Открывать через…: подменю выбора обработчика открытия для корневой папки
+function buildOpenerSubmenu(folderNode) {
+  const sub = document.createElement("div");
+  sub.className = "ctx-submenu";
+  const cur = allNodes.find(n => n.id === folderNode.id)?.opener || null;
+
+  const setOpener = async (val) => {
+    await invoke("set_folder_opener", { id: folderNode.id, opener: val }).catch(console.error);
+    await refreshTree();
+  };
+
+  // Браузер по умолчанию (сброс opener в NULL) — галочка, если opener не задан
+  sub.appendChild(ctxItem(cur ? null : "check", "Браузер по умолчанию", null, () => setOpener(null)));
+  sub.appendChild(ctxSep());
+
+  // Браузеры из списка (кроме элемента "default") — галочка у текущего
+  browsers.filter(b => b.path !== "default").forEach(b => {
+    sub.appendChild(ctxItem(cur === b.path ? "check" : null, b.name, null, () => setOpener(b.path)));
+  });
+  sub.appendChild(ctxSep());
+
+  // Обзор… — выбрать exe вручную
+  sub.appendChild(ctxItem("openwith", "Обзор…", null, async () => {
+    const p = await invoke("pick_browser_file").catch(() => null);
+    if (p) await setOpener(p);
+  }));
+
+  return sub;
+}
+
 // Generic: wires a float submenu from a main context menu trigger.
 function wireMainContextFloat(trigger, buildSubFn) {
   const FLOAT_CSS =
@@ -1089,6 +1119,14 @@ function showFolderContextMenu(e, folderNode) {
     startThumbBatch(folderNode);
   }));
   ctxMenuEl.appendChild(ctxSep());
+
+  // ── Открывать через… (только корневая папка) ─────────────────────────────
+  if (folderNode.parent === null) {
+    const openerEl = addSubTrigger("Открывать через…", "openwith");
+    wireMainContextFloat(openerEl, () => buildOpenerSubmenu(folderNode));
+    ctxMenuEl.appendChild(openerEl);
+    ctxMenuEl.appendChild(ctxSep());
+  }
 
   // ── Sort ───────────────────────────────────────────────────────────────
   const sortEl = addSubTrigger("Сортировка", "sort");
@@ -1640,6 +1678,19 @@ function setDefaultBrowserPath(p) { defaultBrowserPath = p; saveBrowsersConfig()
 
 function openWithBrowser(url, path) {
   invoke("open_url_with", { url, browser: path || "default" }).catch(console.error);
+}
+
+function findRootFolder(node) {
+  let cur = node;
+  while (cur && cur.parent != null) {
+    cur = allNodes.find(n => n.id === cur.parent);
+  }
+  return cur; // узел уровня корня (parent==null), либо сам node если предок не найден
+}
+
+function resolveOpenerForNode(node) {
+  const root = findRootFolder(node);
+  return (root && root.opener) ? root.opener : getDefaultBrowserPath();
 }
 
 // ── Open With picker ─────────────────────────────────────────────────────
@@ -3171,7 +3222,7 @@ function handleMenuAction(action) {
 
     case 'open-link': {
       const t = getActiveLink();
-      if (t?.url) openWithBrowser(t.url, getDefaultBrowserPath());
+      if (t?.url) openWithBrowser(t.url, resolveOpenerForNode(t));
       break;
     }
     case 'open-with': {
@@ -3337,9 +3388,9 @@ document.addEventListener('keydown', e => {
 
   // Enter — open URL (when not in input/search)
   if ((e.key === 'Enter' || (e.ctrlKey && e.key === 'Enter')) && !e.target.matches('input,textarea')) {
-    const url = activeBookmarkNode?.url
-      || allNodes.find(n => String(n.id) === gridEl.querySelector(".card.selected")?.dataset.id)?.url;
-    if (url) { e.preventDefault(); openWithBrowser(url, getDefaultBrowserPath()); }
+    const n = activeBookmarkNode
+      || allNodes.find(n => String(n.id) === gridEl.querySelector(".card.selected")?.dataset.id);
+    if (n?.url) { e.preventDefault(); openWithBrowser(n.url, resolveOpenerForNode(n)); }
   }
 
   // Del — delete focused tree item (folder or bookmark) or selected card
@@ -4259,7 +4310,7 @@ function createTreeNode(node, depth) {
     item.addEventListener("click", (e) => {
       e.stopPropagation();
       item.focus();
-      if (e.detail >= 2) { if (node.url) openWithBrowser(node.url, getDefaultBrowserPath()); }
+      if (e.detail >= 2) { if (node.url) openWithBrowser(node.url, resolveOpenerForNode(node)); }
       else selectTreeBookmark(node);
     });
 
@@ -5340,7 +5391,7 @@ gridEl.addEventListener("dblclick", (e) => {
     if (node) selectFolder(node.id);
   } else {
     const node = nodeFromCard(card);
-    if (node.url) openWithBrowser(node.url, getDefaultBrowserPath());
+    if (node.url) openWithBrowser(node.url, resolveOpenerForNode(node));
   }
 });
 

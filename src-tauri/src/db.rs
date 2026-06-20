@@ -19,6 +19,7 @@ pub struct TreeNode {
     pub visited:  Option<String>,
     pub sort_idx: i64,
     pub count:    i64,
+    pub opener:   Option<String>,
 }
 
 #[derive(Serialize)]
@@ -58,6 +59,8 @@ pub fn init(conn: &Connection) -> Result<()> {
     // Migration: add soft-delete columns if absent
     conn.execute("ALTER TABLE nodes ADD COLUMN deleted INTEGER DEFAULT 0", []).ok();
     conn.execute("ALTER TABLE nodes ADD COLUMN deleted_parent INTEGER", []).ok();
+    // Открывать через: обработчик открытия для папки (NULL/ключ браузера/custom:путь)
+    conn.execute("ALTER TABLE nodes ADD COLUMN opener TEXT", []).ok();
     Ok(())
 }
 
@@ -89,7 +92,8 @@ pub fn get_tree(conn: &Connection) -> Result<Vec<TreeNode>> {
                            WHERE b.parent = nodes.id AND b.kind = 'bookmark'
                              AND (b.deleted IS NULL OR b.deleted = 0))
                      ELSE 0
-                END AS count
+                END AS count,
+                opener
          FROM nodes
          WHERE (deleted IS NULL OR deleted = 0)
          ORDER BY sort_idx, id",
@@ -108,6 +112,7 @@ pub fn get_tree(conn: &Connection) -> Result<Vec<TreeNode>> {
             favicon:  row.get(9)?,
             sort_idx: row.get(10)?,
             count:    row.get(11)?,
+            opener:   row.get(12)?,
         })
     })?.collect();
     result
@@ -121,7 +126,8 @@ pub fn get_trash(conn: &Connection) -> Result<Vec<TreeNode>> {
                            WHERE b.parent = nodes.id AND b.kind = 'bookmark'
                              AND b.deleted = 1)
                      ELSE 0
-                END AS count
+                END AS count,
+                opener
          FROM nodes
          WHERE deleted = 1
          ORDER BY sort_idx, id",
@@ -140,6 +146,7 @@ pub fn get_trash(conn: &Connection) -> Result<Vec<TreeNode>> {
             favicon:  row.get(9)?,
             sort_idx: row.get(10)?,
             count:    row.get(11)?,
+            opener:   row.get(12)?,
         })
     })?.collect();
     result
