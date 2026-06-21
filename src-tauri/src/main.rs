@@ -6,6 +6,9 @@ mod importer;
 use std::sync::Mutex;
 use rusqlite::Connection;
 use tauri::{Manager, Emitter};
+use tauri::tray::TrayIconBuilder;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::image::Image;
 
 struct AppState {
     db:                 Mutex<Connection>,
@@ -2472,6 +2475,48 @@ fn main() {
                     .spawn(move || run_http_server(handle, token, SERVER_PORT))
                     .expect("failed to spawn HTTP server thread");
             }
+
+            // ── System tray (v1.0) ───────────────────────────────────────────
+            // РИСК 2: иконку вшиваем (include_bytes), НЕ полагаемся на default_window_icon.
+            let tray_icon = Image::from_bytes(include_bytes!("../icons/icon.ico"))?;
+
+            let show_i = MenuItem::with_id(app, "show",     "Показать URL-Album", true, None::<&str>)?;
+            let add_i  = MenuItem::with_id(app, "add_clip", "Добавить из буфера", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit",     "Выход",              true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[
+                &show_i, &PredefinedMenuItem::separator(app)?,
+                &add_i,  &PredefinedMenuItem::separator(app)?,
+                &quit_i,
+            ])?;
+
+            let tray = TrayIconBuilder::new()
+                .icon(tray_icon)
+                .tooltip("URL Album")
+                .menu(&tray_menu)
+                .on_menu_event(|app, event| {
+                    let show_win = |app: &tauri::AppHandle| {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                        }
+                    };
+                    match event.id.as_ref() {
+                        "show" => show_win(app),
+                        // Буфер читаем в JS (navigator.clipboard.readText). Если окажется
+                        // ненадёжно (приходит пустым) — переключить на чтение в Rust через
+                        // крейт arboard и эмитить app.emit("tray-add-from-clipboard", text)
+                        // с уже готовым текстом (JS примет payload, без navigator.clipboard).
+                        "add_clip" => { show_win(app); app.emit("tray-add-from-clipboard", ()).ok(); }
+                        "quit" => app.exit(0),
+                        _ => {}
+                    }
+                })
+                .build(app)?;
+
+            // РИСК 1 (критично): TrayIcon обязан пережить setup, иначе Drop уберёт иконку
+            // через секунду после старта. Держим его в managed-состоянии на всё время работы.
+            app.manage(tray);
 
             Ok(())
         })

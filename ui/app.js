@@ -5424,6 +5424,15 @@ window.__TAURI__.event.listen('extension-add-request', (e) => {
     openNewItemDlg('link', { url, title, prefillFolderId: folder_id ?? null });
 });
 
+// Трей: «Добавить из буфера». РИСК 3: окно получает фокус асинхронно — даём небольшую
+// задержку, иначе navigator.clipboard.readText() может прийти пустым. Если буфер будет
+// приходить пустым — перейти на чтение в Rust (arboard) с готовым текстом в payload.
+window.__TAURI__.event.listen('tray-add-from-clipboard', async () => {
+    await new Promise(r => setTimeout(r, 150));
+    const text = await navigator.clipboard.readText().catch(() => '');
+    openNewItemDlg('link', { url: text });
+});
+
 window.__TAURI__.event.listen('thumb-updated', (e) => {
     const { id, path } = e.payload;
     const node = allNodes.find(n => n.id === id);
