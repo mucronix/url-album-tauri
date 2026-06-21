@@ -842,6 +842,7 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 .cl-ok   { color: #007000; }
 .cl-err  { color: #c00000; }
 .cl-warn { color: #a06000; }
+.cl-skip { color: var(--text-dim); }
 
 /* Broken link in tree */
 .tree-item.link.broken .tree-link-icon { color: #cc2222; opacity: 1; }

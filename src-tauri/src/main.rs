@@ -639,10 +639,33 @@ pub struct UrlCheckResult {
     pub redirect: Option<String>,
     pub ms:       u64,
     pub err:      Option<String>,
+    pub skipped:  bool,
+}
+
+// Служебные/не-HTTP схемы (edge://, chrome://, about:, file://, mailto:, …) — не проверяются HTTP-запросом
+fn is_non_http_scheme(url: &str) -> bool {
+    let u = url.trim().to_ascii_lowercase();
+    const KNOWN: &[&str] = &[
+        "chrome:", "edge:", "about:", "file:", "mailto:", "tel:", "data:",
+        "javascript:", "ftp:", "ftps:", "view-source:", "chrome-extension:", "moz-extension:",
+    ];
+    if KNOWN.iter().any(|k| u.starts_with(k)) { return true; }
+    if let Some(pos) = u.find("://") {
+        let scheme = &u[..pos];
+        let is_scheme = !scheme.is_empty()
+            && scheme.chars().next().map_or(false, |c| c.is_ascii_alphabetic())
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+        if is_scheme && scheme != "http" && scheme != "https" { return true; }
+    }
+    false
 }
 
 #[tauri::command]
 async fn check_url(url: String) -> UrlCheckResult {
+    if is_non_http_scheme(&url) {
+        return UrlCheckResult { url, status: 0, ok: false, timed_out: false,
+            redirect: None, ms: 0, err: None, skipped: true };
+    }
     let url = normalize_url(&url);
     let t0 = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(8);
@@ -653,7 +676,7 @@ async fn check_url(url: String) -> UrlCheckResult {
     {
         Ok(c) => c,
         Err(e) => return UrlCheckResult { url, status: 0, ok: false, timed_out: false,
-            redirect: None, ms: 0, err: Some(e.to_string()) },
+            redirect: None, ms: 0, err: Some(e.to_string()), skipped: false },
     };
     let resp = match client.head(&url).send().await {
         Ok(r) if r.status().as_u16() == 405 => client.get(&url).send().await,
@@ -667,13 +690,13 @@ async fn check_url(url: String) -> UrlCheckResult {
             UrlCheckResult {
                 ok: status < 400, timed_out: false,
                 redirect: (final_url != url).then_some(final_url),
-                err: None, url, status, ms,
+                err: None, url, status, ms, skipped: false,
             }
         }
         Err(e) => {
             let timed_out = e.is_timeout();
             UrlCheckResult { url, status: 0, ok: false, timed_out,
-                redirect: None, ms, err: Some(e.to_string()) }
+                redirect: None, ms, err: Some(e.to_string()), skipped: false }
         }
     }
 }

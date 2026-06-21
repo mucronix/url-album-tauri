@@ -74,14 +74,15 @@ function buildChkHeader() {
 function makeChkRow(r) {
   const row = document.createElement("div");
   let cls, st;
-  if (r.timed_out)      { cls = "cl-err";  st = "Timeout"; }
+  if (r.skipped)        { cls = "cl-skip"; st = "не проверяется"; }
+  else if (r.timed_out) { cls = "cl-err";  st = "Timeout"; }
   else if (r.redirect)  { cls = "cl-warn"; st = "Redirect"; }
   else if (r.ok)        { cls = "cl-ok";   st = "OK"; }
   else                  { cls = "cl-err";  st = "Ошибка"; }
-  const rowCls = (!r.ok || r.redirect) ? (r.redirect ? "cl-warn" : "cl-err") : "";
+  const rowCls = r.skipped ? "" : ((!r.ok || r.redirect) ? (r.redirect ? "cl-warn" : "cl-err") : "");
   row.className = "cl-row " + rowCls;
   const ms   = r.ms < 1000 ? `${r.ms}ms` : `${(r.ms/1000).toFixed(1)}s`;
-  const code = r.status || (r.timed_out ? "T/O" : "—");
+  const code = r.skipped ? "—" : (r.status || (r.timed_out ? "T/O" : "—"));
   const urlStr = r.url.replace(/^https?:\/\/(www\.)?/, "");
   row.innerHTML =
     `<div class="cl-url" title="${r.url}">${urlStr}</div>` +
@@ -321,7 +322,7 @@ async function runChecker() {
       }));
 
       _ck.done++;
-      if (!r.ok)       _ck.errors++;
+      if (!r.ok && !r.skipped) _ck.errors++;
       if (r.redirect)  _ck.redirects++;
       if (r.timed_out) _ck.timeouts++;
 
