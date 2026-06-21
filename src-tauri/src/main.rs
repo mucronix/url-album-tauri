@@ -9,12 +9,14 @@ use tauri::{Manager, Emitter};
 use tauri::tray::TrayIconBuilder;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::image::Image;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 struct AppState {
     db:                 Mutex<Connection>,
     db_path:            Mutex<std::path::PathBuf>,
     pending_open:       Mutex<Option<(String, String)>>, // (url, title) from urlalbum:// scheme
     extension_add_mode: Mutex<String>,                   // "quick" | "dialog"
+    user_hotkey:        Mutex<Option<String>>,           // пользовательский хоткей (помимо встроенного F8)
 }
 
 const INBOX_FOLDER_NAME: &str = "Новые ссылки";
@@ -1547,6 +1549,59 @@ fn set_extension_add_mode(state: tauri::State<'_, AppState>, mode: String) {
     }
 }
 
+// Чёрный список: точные строки, которые успешно регистрируются, но ломают копирование/вставку и т.п.
+fn is_blacklisted(combo: &str) -> bool {
+    matches!(combo.to_lowercase().as_str(),
+        "ctrl+c" | "ctrl+v" | "ctrl+x" | "ctrl+a" | "ctrl+z" | "ctrl+s")
+}
+
+#[tauri::command]
+fn set_hotkey(state: tauri::State<AppState>, app: tauri::AppHandle, combo: Option<String>) -> Result<(), String> {
+    let gs = app.global_shortcut();
+
+    // [ЧТЕНИЕ — единственное] текущее значение в клон, lock сразу отпускаем
+    let current = state.user_hotkey.lock().map_err(|e| e.to_string())?.clone();
+
+    // Пусто/None → снять старый, очистить (остаётся встроенный F8)
+    let new = match combo.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => {
+            if let Some(old) = current.as_deref() { gs.unregister(old).ok(); }
+            *state.user_hotkey.lock().map_err(|e| e.to_string())? = None;
+            return Ok(());
+        }
+        Some(s) => s.to_string(),
+    };
+
+    // Равен текущему → ничего не делаем (избегаем лишних операций/ложных ошибок при повторном applySettings)
+    if current.as_deref().map_or(false, |c| c.eq_ignore_ascii_case(&new)) {
+        return Ok(());
+    }
+
+    // Валидация (тексты для showNotice)
+    if new.eq_ignore_ascii_case("F8") {
+        return Err("Клавиша F8 зарезервирована (работает всегда)".into());
+    }
+    let low = new.to_lowercase();
+    if !(low.contains("ctrl") || low.contains("shift") || low.contains("alt")) {
+        return Err("Нужен хотя бы один модификатор: Ctrl, Shift или Alt".into());
+    }
+    if is_blacklisted(&new) {
+        return Err("Эта комбинация занята системой (копирование/вставка и т.п.)".into());
+    }
+
+    // Атомарно (lock НЕ держим): СНАЧАЛА регистрируем новый — старый трогаем только при успехе
+    gs.on_shortcut(new.as_str(), |app, _shortcut, event| {
+        if event.state() == ShortcutState::Pressed {
+            add_from_clipboard(app);
+        }
+    }).map_err(|_| "Не удалось зарегистрировать комбинацию.\nВозможно, она уже используется другой программой.".to_string())?;
+
+    // Успех → снять старый и записать новый (берём lock заново)
+    if let Some(old) = current.as_deref() { gs.unregister(old).ok(); }
+    *state.user_hotkey.lock().map_err(|e| e.to_string())? = Some(new);
+    Ok(())
+}
+
 // ── Browser detection ────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, Clone)]
@@ -2425,10 +2480,22 @@ fn migrate_thumb_to_filename(conn: &Connection, data_dir: &std::path::Path) {
     }
 }
 
+// Общее действие «Добавить из буфера» — вызывается из трея и из хоткея F8.
+// Буфер читает JS-listener 'tray-add-from-clipboard' (navigator.clipboard) — payload не нужен.
+fn add_from_clipboard(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+    app.emit("tray-add-from-clipboard", ()).ok();
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // Portable mode: all files live next to the executable.
             let exe_dir = std::env::current_exe()?
@@ -2462,6 +2529,7 @@ fn main() {
                 db_path:            Mutex::new(db_path),
                 pending_open:       Mutex::new(pending),
                 extension_add_mode: Mutex::new("quick".to_string()),
+                user_hotkey:        Mutex::new(None),
             });
 
             // Register urlalbum:// protocol handler (idempotent)
@@ -2507,7 +2575,7 @@ fn main() {
                         // ненадёжно (приходит пустым) — переключить на чтение в Rust через
                         // крейт arboard и эмитить app.emit("tray-add-from-clipboard", text)
                         // с уже готовым текстом (JS примет payload, без navigator.clipboard).
-                        "add_clip" => { show_win(app); app.emit("tray-add-from-clipboard", ()).ok(); }
+                        "add_clip" => add_from_clipboard(app),
                         "quit" => app.exit(0),
                         _ => {}
                     }
@@ -2517,6 +2585,13 @@ fn main() {
             // РИСК 1 (критично): TrayIcon обязан пережить setup, иначе Drop уберёт иконку
             // через секунду после старта. Держим его в managed-состоянии на всё время работы.
             app.manage(tray);
+
+            // Глобальный хоткей. "F8" — единственное место смены комбинации (например на "Ctrl+Alt+A").
+            app.global_shortcut().on_shortcut("F8", |app, _shortcut, event| {
+                if event.state() == ShortcutState::Pressed {   // ТОЛЬКО нажатие, не отпускание — иначе сработает дважды
+                    add_from_clipboard(app);
+                }
+            })?;
 
             Ok(())
         })
@@ -2590,6 +2665,7 @@ fn main() {
             get_db_properties,
             get_pending_url,
             set_extension_add_mode,
+            set_hotkey,
             analyze_import_db,
             execute_import_db,
         ])

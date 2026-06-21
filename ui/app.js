@@ -3496,6 +3496,7 @@ let appSettings = {
   extensionToken:    '',
   compactMode:       false,
   extensionAddMode:  'quick',  // 'quick' | 'dialog'
+  hotkey:            '',       // доп. глоб. хоткей "Ctrl+Shift+A"; пусто = только F8
 };
 
 async function loadAppSettings() {
@@ -3529,7 +3530,48 @@ function applySettings(save = true) {
   applySidebarWidth(appSettings.sidebarWidth ?? 230, false);
   document.documentElement.style.setProperty('--ui-font', (appSettings.uiFontSize || 13) + 'px');
   invoke('set_extension_add_mode', { mode: appSettings.extensionAddMode || 'quick' }).catch(() => {});
+  invoke('set_hotkey', { combo: appSettings.hotkey || null })
+    .catch(e => showNotice('Горячая клавиша', typeof e === 'string' ? e : 'Не удалось назначить горячую клавишу'));
   if (save) saveAppSettings();
+}
+
+// ── Горячая клавиша (настройки) ───────────────────────────────────────────
+function _populateHotkeyKeys() {
+  const sel = document.getElementById('s-hk-key');
+  if (!sel || sel.options.length > 1) return;          // уже заполнен
+  const keys = [];
+  for (let c = 65; c <= 90; c++) keys.push(String.fromCharCode(c)); // A-Z
+  for (let d = 0; d <= 9; d++)  keys.push(String(d));               // 0-9
+  for (let f = 1; f <= 12; f++) keys.push('F' + f);                 // F1-F12
+  for (const k of keys) { const o = document.createElement('option'); o.value = k; o.textContent = k; sel.appendChild(o); }
+}
+function buildHotkeyString() {
+  const mods = [];
+  if (document.getElementById('s-hk-ctrl').checked)  mods.push('Ctrl');
+  if (document.getElementById('s-hk-shift').checked) mods.push('Shift');
+  if (document.getElementById('s-hk-alt').checked)   mods.push('Alt');
+  const key = document.getElementById('s-hk-key').value;
+  return key ? [...mods, key].join('+') : '';          // нет клавиши → хоткей не задан
+}
+function parseHotkeyString(s) {
+  const ctrl = document.getElementById('s-hk-ctrl'), shift = document.getElementById('s-hk-shift'),
+        alt = document.getElementById('s-hk-alt'), keySel = document.getElementById('s-hk-key');
+  ctrl.checked = shift.checked = alt.checked = false; keySel.value = '';
+  if (!s) return;
+  const tokens = s.split('+').map(t => t.trim());
+  const key = (tokens.pop() || '').toUpperCase();
+  for (const t of tokens) {
+    const lt = t.toLowerCase();
+    if (lt === 'ctrl') ctrl.checked = true;
+    else if (lt === 'shift') shift.checked = true;
+    else if (lt === 'alt') alt.checked = true;
+  }
+  keySel.value = [...keySel.options].some(o => o.value === key) ? key : '';
+}
+function updateHotkeyPreview() {
+  const combo = buildHotkeyString();
+  const el = document.getElementById('s-hk-preview');
+  if (el) el.textContent = combo ? ('Текущая: ' + combo) : 'Только F8';
 }
 
 function applySidebarWidth(px, persist = true) {
@@ -3651,6 +3693,11 @@ function applyColWidth(pct, persist = true) {
     document.getElementById('s-confirm-del').checked  = appSettings.confirmDelete;
     document.getElementById('s-no-dupes').checked     = appSettings.noDuplicateUrls;
     document.getElementById('s-ext-dialog').checked   = appSettings.extensionAddMode === 'dialog';
+    _populateHotkeyKeys();
+    parseHotkeyString(appSettings.hotkey || '');
+    updateHotkeyPreview();
+    ['s-hk-ctrl','s-hk-shift','s-hk-alt','s-hk-key'].forEach(id =>
+      document.getElementById(id).onchange = updateHotkeyPreview);
     fontSlider.value = appSettings.uiFontSize || 13;
     fontVal.textContent = fontSlider.value;
     // Рисунок
@@ -3670,12 +3717,25 @@ function applyColWidth(pct, persist = true) {
   document.getElementById('settings-x').onclick      = () => overlay.classList.add('hidden');
   document.getElementById('settings-cancel').onclick = () => overlay.classList.add('hidden');
   document.getElementById('settings-ok').onclick = () => {
+    // Горячая клавиша: клавиша выбрана, но нет модификатора → не сохранять
+    const _hkHasMod = document.getElementById('s-hk-ctrl').checked
+                   || document.getElementById('s-hk-shift').checked
+                   || document.getElementById('s-hk-alt').checked;
+    if (document.getElementById('s-hk-key').value && !_hkHasMod) {
+      showNotice('Горячая клавиша', 'Выберите хотя бы один модификатор: Ctrl, Shift или Alt');
+      return;
+    }
+    if (_hkHasMod && !document.getElementById('s-hk-key').value) {
+      showNotice('Горячая клавиша', 'Выберите клавишу для горячей комбинации');
+      return;
+    }
     // Общие
     appSettings.showToolbar     = document.getElementById('s-show-toolbar').checked;
     appSettings.accordionTree   = document.getElementById('s-accordion').checked;
     appSettings.confirmDelete   = document.getElementById('s-confirm-del').checked;
     appSettings.noDuplicateUrls  = document.getElementById('s-no-dupes').checked;
     appSettings.extensionAddMode = document.getElementById('s-ext-dialog').checked ? 'dialog' : 'quick';
+    appSettings.hotkey           = buildHotkeyString();
     appSettings.uiFontSize       = parseInt(fontSlider.value) || 13;
     // Рисунок
     appSettings.thumbWidth   = parseInt(document.getElementById('s-thumb-w').value)   || 1280;
