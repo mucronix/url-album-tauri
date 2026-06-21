@@ -1178,7 +1178,7 @@ async function refreshThumb(node) {
       url: node.url,
       width:   appSettings.thumbWidth   || 1280,
       height:  appSettings.thumbHeight  || 800,
-      timeout: appSettings.thumbTimeout || 15,
+      timeout: appSettings.thumbTimeout || 10,
     });
 
     if (activeBookmarkNode?.id === node.id) activeBookmarkNode.thumb = newPath;
@@ -2740,7 +2740,7 @@ function tbMoveItem(dir) {
           id: newId, url,
           width:   appSettings.thumbWidth   || 1280,
           height:  appSettings.thumbHeight  || 800,
-          timeout: appSettings.thumbTimeout || 15,
+          timeout: appSettings.thumbTimeout || 10,
         }).then(newPath => { _applyThumbToCard(newId, name, newPath); }).catch(() => {});
       }
     } catch(e) { console.error(e); }
@@ -3483,7 +3483,7 @@ let appSettings = {
   // Рисунок
   thumbWidth:    1280,
   thumbHeight:   800,
-  thumbTimeout:  15,
+  thumbTimeout:  10,
   // Расширение браузера
   extensionToken:    '',
   compactMode:       false,
@@ -3699,7 +3699,7 @@ function applyColWidth(pct, persist = true) {
     document.getElementById('s-thumb-defaults').onclick = () => {
       document.getElementById('s-thumb-w').value       = 1280;
       document.getElementById('s-thumb-h').value       = 800;
-      document.getElementById('s-thumb-timeout').value = 15;
+      document.getElementById('s-thumb-timeout').value = 10;
     };
 
     raiseOverlay(overlay);
@@ -3732,7 +3732,7 @@ function applyColWidth(pct, persist = true) {
     // Рисунок
     appSettings.thumbWidth   = parseInt(document.getElementById('s-thumb-w').value)   || 1280;
     appSettings.thumbHeight  = parseInt(document.getElementById('s-thumb-h').value)   || 800;
-    appSettings.thumbTimeout = parseInt(document.getElementById('s-thumb-timeout').value) || 30;
+    appSettings.thumbTimeout = parseInt(document.getElementById('s-thumb-timeout').value) || 10;
 
     applySettings(true);
     overlay.classList.add('hidden');
@@ -5308,7 +5308,7 @@ function _runThumbWorker() {
     url:     item.url,
     width:   appSettings.thumbWidth   || 1280,
     height:  appSettings.thumbHeight  || 800,
-    timeout: appSettings.thumbTimeout || 15,
+    timeout: appSettings.thumbTimeout || 10,
   })
     .then(newPath => {
       if (!newPath) return;

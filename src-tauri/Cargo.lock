@@ -4506,6 +4506,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "tiny_http",
+ "tokio",
 ]
 
 [[package]]

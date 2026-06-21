@@ -379,13 +379,17 @@ async fn fetch_favicon(
 
     // ── 4. HTTP client ───────────────────────────────────────────────────
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_secs(5))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         .build()
         .map_err(|e| e.to_string())?;
 
-    // ── 5. Attempt favicon.ico ────────────────────────────────────────────
     let favicon_ico = format!("https://{}/favicon.ico", domain);
+
+    // Шаги 5-8 под общим лимитом 12с: мёртвый URL сдаётся за ≤12с (вместо ~40с),
+    // но DuckDuckGo (быстрый фолбэк) успевает дёрнуться даже после двух медленных первых шагов.
+    let chain = async {
+    // ── 5. Attempt favicon.ico ────────────────────────────────────────────
     let (raw_bytes, ext) = match client.get(&favicon_ico).send().await {
         Ok(resp) if resp.status().is_success() => {
             let ct = resp.headers()
@@ -478,6 +482,13 @@ async fn fetch_favicon(
         (raw_bytes, ext)
     };
 
+        (raw_bytes, ext)
+    };
+    let (raw_bytes, ext) = match tokio::time::timeout(std::time::Duration::from_secs(12), chain).await {
+        Ok(v)  => v,
+        Err(_) => return Ok(None),   // общий лимит истёк → «нет фавикона», без паники
+    };
+
     // ── 9. Nothing found ─────────────────────────────────────────────────
     let bytes = match raw_bytes {
         Some(b) => b,
@@ -519,7 +530,7 @@ async fn do_screenshot(
 
     let w = width.unwrap_or(1280);
     let h = height.unwrap_or(800);
-    let t = timeout.unwrap_or(15);
+    let t = timeout.unwrap_or(10);
 
     // Try Edge, then Chrome (headless --screenshot mode)
     let candidates = [
