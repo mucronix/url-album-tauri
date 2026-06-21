@@ -1197,7 +1197,9 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 .dlg-label { color: #000; white-space: nowrap; }
 .dlg-default-row select {
   flex: 1;
-  height: 22px;
+  min-height: 2.1em;
+  line-height: 1.3;
+  padding: 3px 6px;
   font-family: inherit;
   font-size: calc(var(--ui-font) - 1px);
   border: 1px solid #7a7a7a;
@@ -1212,13 +1214,17 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 }
 .win-btn {
   min-width: 75px;
-  height: 23px;
+  min-height: 2em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.3;
   background: #e1e1e1;
   border: 1px solid #adadad;
   font-family: "Segoe UI", system-ui, sans-serif;
   font-size: calc(var(--ui-font) - 1px);
   cursor: default;
-  padding: 0 12px;
+  padding: 3px 12px;
   color: #000;
 }
 .win-btn:not(:disabled):hover { background: #c8e0f4; border-color: #0078d4; }
@@ -1237,11 +1243,12 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 .dlg-checkbox input[type="checkbox"] { cursor: default; margin: 0; }
 
 .dlg-input {
-  height: 22px;
+  min-height: 2.1em;
+  line-height: 1.3;
   border: 1px solid #7a7a7a;
   font-family: "Segoe UI", system-ui, sans-serif;
   font-size: calc(var(--ui-font) - 1px);
-  padding: 2px 4px;
+  padding: 3px 6px;
   background: #fff;
   box-sizing: border-box;
 }
@@ -1349,7 +1356,7 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   margin-bottom: 7px;
 }
 .form-label {
-  width: 72px;
+  width: 6em;
   flex-shrink: 0;
   font-size: calc(var(--ui-font) - 1px);
   color: #000;

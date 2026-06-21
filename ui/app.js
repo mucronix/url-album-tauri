@@ -1259,7 +1259,6 @@ function closeConfirm() { confirmOverlay.classList.add("hidden"); _confirmCb = n
 document.getElementById("confirm-x").onclick      = closeConfirm;
 document.getElementById("confirm-cancel").onclick  = closeConfirm;
 document.getElementById("confirm-ok").onclick      = () => { const cb = _confirmCb; closeConfirm(); cb?.(); };
-confirmOverlay.addEventListener("click", (e) => { if (e.target === confirmOverlay) closeConfirm(); });
 
 // ── Notice dialog (alert-style, одна кнопка OK) ───────────────────────────
 const noticeOverlay = document.getElementById("notice-overlay");
@@ -1276,7 +1275,6 @@ function closeNotice() { noticeOverlay.classList.add("hidden"); }
 
 document.getElementById("notice-x").onclick  = closeNotice;   // крестик
 document.getElementById("notice-ok").onclick = closeNotice;   // OK
-noticeOverlay.addEventListener("click", (e) => { if (e.target === noticeOverlay) closeNotice(); }); // клик по фону
 // Esc — через глобальный keydown-хэндлер (app.js ~3370): закрывает верхний .dlg-overlay кликом по .dlg-close (#notice-x)
 
 // ── Delete bookmark ───────────────────────────────────────────────────────
@@ -1360,6 +1358,7 @@ function deleteBookmark(node) {
 
 // ── Draggable dialog helper ────────────────────────────────────────────────
 function makeDlgDraggable(dlgEl, handleEl) {
+  dlgEl.dataset.dragInit = '1';   // пометка: окно уже draggable (системный цикл его пропустит)
   let drag = { on: false, ox: 0, oy: 0 };
   handleEl.addEventListener("mousedown", (e) => {
     if (e.target.closest("button")) return;
@@ -1722,7 +1721,6 @@ function resolveOpenerForNode(node) {
   document.getElementById("openwith-x").onclick      = () => overlay.classList.add("hidden");
   document.getElementById("openwith-cancel").onclick  = () => overlay.classList.add("hidden");
   document.getElementById("openwith-ok").onclick      = () => { openWithBrowser(_owUrl, _owPath); overlay.classList.add("hidden"); };
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.classList.add("hidden"); });
 })();
 
 // ── Context menu ─────────────────────────────────────────────────────────
@@ -2272,9 +2270,6 @@ document.getElementById("add-browser-ok").onclick = () => {
   renderDlgList(); renderDlgDefault(); updateDlgBtns();
 };
 
-// Close dialogs on overlay click
-browsersOverlay.addEventListener("click",  (e) => { if (e.target === browsersOverlay)  closeBrowsersDialog(false); });
-addBrowserOverlay.addEventListener("click",(e) => { if (e.target === addBrowserOverlay) closeAddBrowserDialog(); });
 
 // ── Menu ──────────────────────────────────────────────────────────────────
 
@@ -2554,7 +2549,6 @@ function tbMoveItem(dir) {
 
   document.getElementById('open-db-x').onclick      = close;
   document.getElementById('open-db-cancel').onclick  = close;
-  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 
   document.getElementById('open-db-ok').onclick = async () => {
     const errEl = document.getElementById('open-db-err');
@@ -2584,7 +2578,6 @@ function tbMoveItem(dir) {
 
   document.getElementById('import-db-x').onclick      = close;
   document.getElementById('import-db-cancel').onclick  = close;
-  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 
   destSelect.addEventListener('change', () => {
     const isNew = destSelect.value === 'new';
@@ -2964,7 +2957,6 @@ function tbMoveItem(dir) {
     toolbarConfig = tbcItems; buildToolbar(); saveToolbarConfig();
     overlay.classList.add('hidden');
   };
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.add('hidden'); });
 })();
 
 function _populateRecentDbs(drop) {
@@ -3745,7 +3737,6 @@ function applyColWidth(pct, persist = true) {
     applySettings(true);
     overlay.classList.add('hidden');
   };
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.add('hidden'); });
 })();
 
 
@@ -4421,9 +4412,6 @@ function runSearchFromDialog() {
 document.getElementById("search-dlg-x").onclick     = closeSearchDialog;
 document.getElementById("search-dlg-close").onclick = closeSearchDialog;
 document.getElementById("search-dlg-find").onclick  = runSearchFromDialog;
-searchDlgOverlay.addEventListener("click", (e) => {
-  if (e.target === searchDlgOverlay) closeSearchDialog();
-});
 searchDlgInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); runSearchFromDialog(); }
   if (e.key === "Escape") { e.preventDefault(); closeSearchDialog(); }
@@ -5502,4 +5490,23 @@ window.__TAURI__.event.listen('thumb-updated', (e) => {
 // ── Start ─────────────────────────────────────────────────────────────────
 buildMenubar();
 _initDragDrop();
+
+// ── Системно: все модальные окна тащатся за заголовок и открываются по центру ──
+(function initDialogsUX() {
+  document.querySelectorAll('.dlg-overlay').forEach(ov => {
+    const box = ov.querySelector('.win-dlg');
+    if (!box) return;
+    // B1: drag за заголовок (флаг dragInit у уже-draggable окон → пропуск)
+    const handle = ov.querySelector('.dlg-title');
+    if (handle && !box.dataset.dragInit) makeDlgDraggable(box, handle);
+    // B2: при скрытии окна сбросить инлайн-позицию → следующий показ снова по центру (flex)
+    new MutationObserver(() => {
+      if (ov.classList.contains('hidden')) {
+        box.style.position = box.style.left = box.style.top =
+          box.style.right = box.style.bottom = box.style.margin = '';
+      }
+    }).observe(ov, { attributes: true, attributeFilter: ['class'] });
+  });
+})();
+
 init();
