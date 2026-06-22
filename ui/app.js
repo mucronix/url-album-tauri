@@ -2298,8 +2298,11 @@ const ICONS = {
   edit:          `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5l2 2L5 11H3V9l6.5-6.5z"/><path d="M8.5 3.5l2 2"/></svg>`,
   'expand-all':  `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="1" y="1" width="5" height="5" rx=".8"/><rect x="1" y="8" width="5" height="5" rx=".8"/><path d="M8 3.5h5M8 10.5h5M10.5 1.5v4M10.5 8.5v4"/></svg>`,
   'collapse-all':`<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="1" y="1" width="5" height="5" rx=".8"/><rect x="1" y="8" width="5" height="5" rx=".8"/><path d="M8 3.5h5M8 10.5h5"/></svg>`,
-  'move-up':     `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V3M3.5 6.5L7 3l3.5 3.5"/></svg>`,
-  'move-down':   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v8M3.5 7.5L7 11l3.5-3.5"/></svg>`,
+  'move-up':     `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 3h5M1.5 7h5M1.5 11h5"/><path d="M10.5 12V4M8 6.5L10.5 4l2.5 2.5"/></svg>`,
+  'nav-back':    `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 7H3M6.5 3.5L3 7l3.5 3.5"/></svg>`,
+  'nav-forward': `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h8M7.5 3.5L11 7l-3.5 3.5"/></svg>`,
+  'nav-up':      `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V3M3.5 6.5L7 3l3.5 3.5"/></svg>`,
+  'move-down':   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 3h5M1.5 7h5M1.5 11h5"/><path d="M10.5 2V10M8 7.5L10.5 10l2.5-2.5"/></svg>`,
   'menu-toggle': `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 3.5h10M2 7h10M2 10.5h10"/></svg>`,
   'trash-bin':   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h10M5 4V2.5h4V4M3.5 4l1 7.5h5l1-7.5M6 6v3M8 6v3"/></svg>`,
 };
@@ -2400,6 +2403,9 @@ const CMD_REGISTRY = [
   { id:'refresh-thumb',       label:'Обновить рисунок',          icon:'refresh',     group:'Правка',                                action:'refresh-thumb' },
   { id:'clear-thumb',         label:'Удалить рисунок',           icon:'delimg',      group:'Правка',                                action:'clear-thumb' },
   // Навигация
+  { id:'nav-back',            label:'Назад',                     icon:'nav-back',    group:'Навигация',    shortcut:'Alt+←',        action:'nav-back' },
+  { id:'nav-forward',         label:'Вперёд',                    icon:'nav-forward', group:'Навигация',    shortcut:'Alt+→',        action:'nav-forward' },
+  { id:'nav-up',              label:'Вверх',                     icon:'nav-up',      group:'Навигация',    shortcut:'Alt+↑',        action:'nav-up' },
   { id:'toggle-expand-all',   label:'Развернуть/Свернуть все',   icon:'expand-all',  group:'Навигация',                             action:'toggle-expand-all' },
   { id:'move-up',             label:'Переместить вверх',         icon:'move-up',     group:'Навигация',                             action:'move-up' },
   { id:'move-down',           label:'Переместить вниз',          icon:'move-down',   group:'Навигация',                             action:'move-down' },
@@ -2434,6 +2440,7 @@ const CMD_REGISTRY = [
 const TOOLBAR_DEFS = CMD_REGISTRY;
 
 const DEFAULT_TOOLBAR = [
+  'nav-back', 'nav-forward', 'nav-up', '|',
   'toggle-menubar', '|',
   'new-link', 'new-folder', 'new-subfolder', '|',
   'delete-link', 'properties', '|',
@@ -3122,6 +3129,10 @@ function _syncExpandToggleUI() {
 function handleMenuAction(action) {
   closeAllMenus();
   switch (action) {
+    // ── Навигация по папкам ──
+    case 'nav-back':    goBack();    break;
+    case 'nav-forward': goForward(); break;
+    case 'nav-up':      goUp();      break;
     // ── Export (whole DB via root folder) ──
     case 'export-html': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
@@ -3341,6 +3352,10 @@ function handleMenuAction(action) {
 }
 
 document.addEventListener('keydown', e => {
+  const _editing = e.target.matches('input,textarea,select') || e.target.isContentEditable;
+  if (e.altKey && e.key === 'ArrowLeft'  && !_editing) { e.preventDefault(); goBack();    return; }
+  if (e.altKey && e.key === 'ArrowRight' && !_editing) { e.preventDefault(); goForward(); return; }
+  if (e.altKey && e.key === 'ArrowUp'    && !_editing) { e.preventDefault(); goUp();      return; }
   if (e.ctrlKey && e.key === 'f') {
     e.preventDefault(); handleMenuAction('find'); return;
   }
@@ -3451,6 +3466,9 @@ document.addEventListener('keydown', e => {
 let allNodes          = [];
 let allFolders        = [];
 let activeFolderId    = null;
+let navHistory = [];
+let navIndex = -1;
+let _navigatingHistory = false;
 let activeBookmarkNode = null;
 let dataDir           = ""; // absolute path to Data/ dir, set at startup
 
@@ -3769,6 +3787,7 @@ async function init() {
     invoke('get_data_dir').then(d => { dataDir = d; }).catch(() => {}),
   ]);
   buildToolbar();
+  _refreshNavButtons();
   await showApp();
 
   // Handle urlalbum:// deep link if app was launched via protocol
@@ -4821,6 +4840,15 @@ function selectFolder(folderId, expand = true, noTreeExpand = false) {
   clearTimeout(searchTimer);
   clearSearchUI();
   clearSelection();
+
+  // Folder navigation history (browser-style). Trash (-1) included; links never recorded.
+  if (!_navigatingHistory && folderId !== navHistory[navIndex]) {
+    navHistory = navHistory.slice(0, navIndex + 1);   // обрезать хвост «вперёд»
+    navHistory.push(folderId);
+    if (navHistory.length > 50) navHistory.shift();
+    navIndex = navHistory.length - 1;
+  }
+
   activeFolderId = folderId;
 
   // Update active style
@@ -4850,7 +4878,27 @@ function selectFolder(folderId, expand = true, noTreeExpand = false) {
     breadcrumb.textContent = folder ? buildBreadcrumbText(folderId) : "";
   }
 
-  return loadFolderContents(folderId);
+  return Promise.resolve(loadFolderContents(folderId)).finally(_refreshNavButtons);
+}
+
+// ── Folder navigation: Назад / Вперёд / Вверх ──────────────────────────────
+function getParentOf(id) { const n = allFolders.find(f => f.id === id); return n ? n.parent : null; }
+function _navTo(id) {
+  _navigatingHistory = true;
+  Promise.resolve(selectFolder(id)).finally(() => { _navigatingHistory = false; _refreshNavButtons(); });
+}
+function goBack()    { if (navIndex > 0)                     { navIndex--; _navTo(navHistory[navIndex]); } }
+function goForward() { if (navIndex < navHistory.length - 1) { navIndex++; _navTo(navHistory[navIndex]); } }
+function goUp() {
+  if (activeFolderId === -1) return;          // у Корзины нет родителя
+  const p = getParentOf(activeFolderId);
+  if (p != null) selectFolder(p);
+}
+function _refreshNavButtons() {
+  const b = id => toolbarEl?.querySelector(`[data-tb-cmd="${id}"]`);
+  b('nav-back')   ?.toggleAttribute('disabled', navIndex <= 0);
+  b('nav-forward')?.toggleAttribute('disabled', navIndex >= navHistory.length - 1);
+  b('nav-up')     ?.toggleAttribute('disabled', activeFolderId === -1 || getParentOf(activeFolderId) == null);
 }
 
 function buildBreadcrumbText(id) {
