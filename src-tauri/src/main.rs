@@ -1658,15 +1658,6 @@ struct DetectedBrowser {
 struct ImportSummary { links: usize, folders: usize }
 
 
-fn chromium_bookmarks_paths(base: &str, app_name: &str) -> Vec<String> {
-    // Standard Chromium profile layouts
-    vec![
-        format!("{}\\{}\\User Data\\Default\\Bookmarks", base, app_name),
-        format!("{}\\{}\\Default\\Bookmarks", base, app_name),
-        format!("{}\\{}\\Bookmarks", base, app_name),
-    ]
-}
-
 fn detect_browsers_list() -> Vec<DetectedBrowser> {
     let local   = std::env::var("LOCALAPPDATA").unwrap_or_default();
     let roaming = std::env::var("APPDATA").unwrap_or_default();
@@ -1684,13 +1675,36 @@ fn detect_browsers_list() -> Vec<DetectedBrowser> {
     ];
     for (id, name, rel) in local_apps {
         for base in &[&local as &str, &pf, &pf86] {
-            for path in chromium_bookmarks_paths(base, rel) {
-                if exe_exists(&path) && !out.iter().any(|b| b.id == *id) {
-                    out.push(DetectedBrowser { id: id.to_string(), name: name.to_string(),
-                        kind: "chromium".to_string(), bookmarks_path: path });
-                    break;
+            let user_data = format!("{}\\{}\\User Data", base, rel);
+            // Собрать все профили с файлом Bookmarks (Default, Profile 1/2, кастомные)
+            let mut profiles: Vec<(String, String)> = Vec::new();   // (имя папки, путь к Bookmarks)
+            if let Ok(entries) = std::fs::read_dir(&user_data) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    if !entry.path().is_dir() { continue; }
+                    let bm = entry.path().join("Bookmarks");
+                    if bm.exists() {                                  // нет Bookmarks → не профиль с закладками (System/Guest отсекаются)
+                        profiles.push((entry.file_name().to_string_lossy().into_owned(),
+                                       bm.to_string_lossy().into_owned()));
+                    }
                 }
             }
+            if profiles.is_empty() { continue; }                     // в этом base нет — пробуем следующий
+            // Default первым, затем Profile 1, 2, … по имени
+            profiles.sort_by(|a, b| {
+                let rank = |s: &str| if s == "Default" { 0 } else { 1 };
+                rank(&a.0).cmp(&rank(&b.0)).then(a.0.cmp(&b.0))
+            });
+            for (folder, bm_path) in profiles {
+                let pid = format!("{id}__{folder}");                 // уникальный id на профиль
+                if out.iter().any(|b| b.id == pid) { continue; }
+                out.push(DetectedBrowser {
+                    id: pid,
+                    name: format!("{name} — {folder}"),              // «Microsoft Edge — Default» / «Brave — Profile 1»
+                    kind: "chromium".to_string(),
+                    bookmarks_path: bm_path,
+                });
+            }
+            break;                                                   // профили найдены — другие base не сканируем
         }
     }
 
