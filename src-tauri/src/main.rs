@@ -521,16 +521,12 @@ async fn do_screenshot(
 ) -> Result<String, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
 
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let filename = format!("{id}_{ts}.png");
+    let filename = format!("{id}.png");
     let path = data_dir.join(&filename);
 
     let w = width.unwrap_or(1280);
     let h = height.unwrap_or(800);
-    let t = timeout.unwrap_or(10);
+    let t = timeout.unwrap_or(12);
 
     // Try Edge, then Chrome (headless --screenshot mode)
     let candidates = [
@@ -547,8 +543,12 @@ async fn do_screenshot(
     let tmp_dir_str = tmp_dir.to_string_lossy().into_owned();
     let path_str2 = path.to_string_lossy().into_owned();
 
-    // Run blocking browser process on a dedicated thread so the UI stays responsive
-    let status = tauri::async_runtime::spawn_blocking(move || {
+    // Удалить старый {id}.png ДО запуска — иначе поллинг увидит прошлую картинку как «готовую»
+    let _ = std::fs::remove_file(&path);
+
+    // Run blocking browser process on a dedicated thread so the UI stays responsive.
+    // kill по дедлайну/готовности НЕ считаем провалом — итоговое решение по факту наличия файла ниже.
+    let run: Result<(), String> = tauri::async_runtime::spawn_blocking(move || {
         #[cfg(windows)]
         use std::os::windows::process::CommandExt;
         let mut cmd = std::process::Command::new(&browser);
@@ -566,29 +566,60 @@ async fn do_screenshot(
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000);
         let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(t as u64);
+        // Запас 8с на холодный старт браузера + teardown под нагрузкой пакета (browser --timeout = t)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs((t + 8) as u64);
+        let mut last_size: u64 = 0;
+        let mut stable = 0;
         loop {
+            // Файл готов? размер >0 и стабилен 2 замера (~500мс) → сразу забрать, не ждать выхода/дедлайна
+            if let Ok(meta) = std::fs::metadata(&path_str2) {
+                let sz = meta.len();
+                if sz > 0 && sz == last_size {
+                    stable += 1;
+                    if stable >= 2 {
+                        child.kill().ok();
+                        child.wait().ok();
+                        return Ok(());
+                    }
+                } else {
+                    stable = 0;
+                    last_size = sz;
+                }
+            }
             match child.try_wait().map_err(|e| e.to_string())? {
-                Some(s) => return Ok(s),
+                Some(_) => return Ok(()),                 // браузер завершился сам
                 None => {
                     if std::time::Instant::now() >= deadline {
                         child.kill().ok();
                         child.wait().ok();
-                        return Err("timeout".to_string());
+                        std::thread::sleep(std::time::Duration::from_millis(300)); // дать дописать PNG
+                        return Ok(());                    // НЕ Err — решаем по path.exists() ниже
                     }
                     std::thread::sleep(std::time::Duration::from_millis(250));
                 }
             }
         }
-    }).await.map_err(|e| e.to_string())??;
+    }).await.map_err(|e| e.to_string())?;
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
-    if !status.success() || !path.exists() {
-        return Err("Не удалось создать скриншот".to_string());
+    // Гонка видимости файла: только что записанный браузером PNG может быть не виден метаданным
+    // сразу после выхода браузера (Windows Defender задерживает видимость на незнакомых путях).
+    // Ждём появления файла до t секунд (настройка), прежде чем признать неудачу.
+    let mut visible = path.exists();
+    if !visible {
+        let max_iters = (t as u64) * 10;                   // потолок = t секунд (шаг 100мс)
+        for _ in 0..max_iters {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if path.exists() { visible = true; break; }
+        }
     }
 
-    Ok(filename)
+    if visible {
+        Ok(filename)
+    } else {
+        Err(run.err().unwrap_or_else(|| "Не удалось создать скриншот".to_string()))
+    }
 }
 
 #[tauri::command]

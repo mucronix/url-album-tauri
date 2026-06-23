@@ -1178,7 +1178,7 @@ async function refreshThumb(node) {
       url: node.url,
       width:   appSettings.thumbWidth   || 1280,
       height:  appSettings.thumbHeight  || 800,
-      timeout: appSettings.thumbTimeout || 10,
+      timeout: appSettings.thumbTimeout || 12,
     });
 
     if (activeBookmarkNode?.id === node.id) activeBookmarkNode.thumb = newPath;
@@ -1200,6 +1200,13 @@ async function refreshThumb(node) {
 function _applyThumbToCard(id, title, newPath) {
   const n = allNodes.find(n => n.id === id);
   if (n) n.thumb = newPath;
+  // Если эта ссылка открыта в detail-view — обновить картинку сразу, без клика
+  if (activeBookmarkNode?.id === id) {
+    activeBookmarkNode.thumb = newPath;
+    detailImgEl.src = convertFileSrc(thumbFilePath(newPath)) + '?v=' + Date.now();
+    detailImgEl.style.display = '';
+    detailNoImgEl.style.display = 'none';
+  }
   const card = gridEl.querySelector(`.card[data-id="${id}"]`);
   if (!card) return;
   card.dataset.thumb = newPath;
@@ -1207,7 +1214,7 @@ function _applyThumbToCard(id, title, newPath) {
   if (!thumbDiv) return;
   thumbDiv.innerHTML = '';
   const img = document.createElement('img');
-  img.src = convertFileSrc(thumbFilePath(newPath));
+  img.src = convertFileSrc(thumbFilePath(newPath)) + '?v=' + Date.now();
   img.onerror = () => { img.remove(); thumbDiv.appendChild(makeNoImg(title)); };
   thumbDiv.appendChild(img);
 }
@@ -2747,7 +2754,7 @@ function tbMoveItem(dir) {
           id: newId, url,
           width:   appSettings.thumbWidth   || 1280,
           height:  appSettings.thumbHeight  || 800,
-          timeout: appSettings.thumbTimeout || 10,
+          timeout: appSettings.thumbTimeout || 12,
         }).then(newPath => { _applyThumbToCard(newId, name, newPath); }).catch(() => {});
       }
     } catch(e) { console.error(e); }
@@ -3501,7 +3508,7 @@ let appSettings = {
   // Рисунок
   thumbWidth:    1280,
   thumbHeight:   800,
-  thumbTimeout:  10,
+  thumbTimeout:  12,
   // Расширение браузера
   extensionToken:    '',
   compactMode:       false,
@@ -3717,7 +3724,7 @@ function applyColWidth(pct, persist = true) {
     document.getElementById('s-thumb-defaults').onclick = () => {
       document.getElementById('s-thumb-w').value       = 1280;
       document.getElementById('s-thumb-h').value       = 800;
-      document.getElementById('s-thumb-timeout').value = 10;
+      document.getElementById('s-thumb-timeout').value = 12;
     };
 
     raiseOverlay(overlay);
@@ -3750,7 +3757,7 @@ function applyColWidth(pct, persist = true) {
     // Рисунок
     appSettings.thumbWidth   = parseInt(document.getElementById('s-thumb-w').value)   || 1280;
     appSettings.thumbHeight  = parseInt(document.getElementById('s-thumb-h').value)   || 800;
-    appSettings.thumbTimeout = parseInt(document.getElementById('s-thumb-timeout').value) || 10;
+    appSettings.thumbTimeout = parseInt(document.getElementById('s-thumb-timeout').value) || 12;
 
     applySettings(true);
     overlay.classList.add('hidden');
@@ -4702,7 +4709,7 @@ function showDetailView(node) {
   // Viewer: show real thumbnail, or subtle domain placeholder
   detailThumbEl.style.display = "";
   if (node.thumb) {
-    detailImgEl.src = convertFileSrc(thumbFilePath(node.thumb));
+    detailImgEl.src = convertFileSrc(thumbFilePath(node.thumb)) + '?v=' + Date.now();
     detailImgEl.style.display = "";
     detailNoImgEl.style.display = "none";
     detailImgEl.onerror = () => {
@@ -5356,7 +5363,7 @@ function _runThumbWorker() {
     url:     item.url,
     width:   appSettings.thumbWidth   || 1280,
     height:  appSettings.thumbHeight  || 800,
-    timeout: appSettings.thumbTimeout || 10,
+    timeout: appSettings.thumbTimeout || 12,
   })
     .then(newPath => {
       if (!newPath) return;
