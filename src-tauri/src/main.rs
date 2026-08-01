@@ -2,6 +2,7 @@
 
 mod db;
 mod importer;
+mod relay;
 
 use std::sync::Mutex;
 use rusqlite::Connection;
@@ -337,7 +338,7 @@ const PROXY_TEST_URL: &str = "https://icons.duckduckgo.com/ip3/example.com.ico";
 /// Срезать схему и хвостовой слэш у адреса прокси: пользователь привычно
 /// пишет `http://10.0.0.1/`, а голый хост нужен и `reqwest::Proxy`, и флагу
 /// `--proxy-server`. Общая точка для `build_proxy` и `proxy_server_arg`.
-fn strip_proxy_scheme(host: &str) -> &str {
+pub(crate) fn strip_proxy_scheme(host: &str) -> &str {
     let h = host.trim();
     let lower = h.to_ascii_lowercase();
     let h = if lower.starts_with("http://")       { &h[7..] }
@@ -363,17 +364,17 @@ fn build_proxy(host: &str, port: u16, user: &str, pass: &str) -> Result<reqwest:
 /// Разобранные настройки прокси. Общая точка чтения для reqwest-клиента и для
 /// командной строки браузера — иначе разбор camelCase-ключей и порта
 /// «числом или строкой» пришлось бы держать в двух копиях.
-struct ProxyCfg {
-    host: String,
-    port: u16,
-    user: String,
-    pass: String,
+pub(crate) struct ProxyCfg {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) user: String,
+    pub(crate) pass: String,
 }
 
 /// Прокси из `settings.json` (файл пишет JS, ключи camelCase).
 /// Любая проблема — нет файла, кривой JSON, выключено, мусор в полях — даёт
 /// `None`: при плохих настройках сеть должна работать напрямую, а не падать.
-fn proxy_cfg_from_settings() -> Option<ProxyCfg> {
+pub(crate) fn proxy_cfg_from_settings() -> Option<ProxyCfg> {
     let raw = load_settings();
     if raw.is_empty() {
         return None;
@@ -417,17 +418,22 @@ fn proxy_from_settings() -> Option<reqwest::Proxy> {
 /// Прокси для командной строки headless-браузера (скриншоты): `host:port`,
 /// без схемы.
 ///
-/// Если задан пользователь — возвращаем `None` и флаг НЕ передаём. Chromium
-/// игнорирует учётные данные в `--proxy-server`: на 407 он показал бы диалог
-/// логина, которого в headless нет, и завершился бы молча, без картинки.
-/// Пойти напрямую хуже по приватности, но лучше, чем гарантированно остаться
-/// без скриншота. Прокси с авторизацией потребует локального релея.
+/// Прокси без авторизации отдаём браузеру напрямую. Для прокси с логином
+/// возвращаем адрес локального релея (`relay::ensure_relay`): Chromium
+/// игнорирует учётные данные в `--proxy-server` — на 407 он показал бы диалог
+/// логина, которого в headless нет, и завершился бы молча, без PNG. Релей
+/// слушает 127.0.0.1 без авторизации и сам подставляет `Proxy-Authorization`
+/// при походе на внешний прокси.
+///
+/// `None` — прокси выключен, настроен криво или релей не поднялся: в этом
+/// случае скриншот делается напрямую, без прокси.
 fn proxy_server_arg() -> Option<String> {
     let c = proxy_cfg_from_settings()?;
-    if !c.user.is_empty() {
-        return None;
+    if c.user.is_empty() {
+        return Some(format!("{}:{}", strip_proxy_scheme(&c.host), c.port));
     }
-    Some(format!("{}:{}", strip_proxy_scheme(&c.host), c.port))
+    let port = relay::ensure_relay()?;
+    Some(format!("127.0.0.1:{port}"))
 }
 
 /// Единая точка сборки HTTP-клиента: таймаут, User-Agent и — если прокси
