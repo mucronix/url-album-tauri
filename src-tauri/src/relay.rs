@@ -15,6 +15,7 @@ use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use crate::logger;
 use crate::{proxy_cfg_from_settings, strip_proxy_scheme, ProxyCfg};
 
 /// Порт релея. `None` — поднять не удалось; повторных попыток нет.
@@ -88,11 +89,15 @@ fn handle_conn(mut client: TcpStream) -> Option<()> {
 
     // Настройки читаем здесь, а не при старте релея — смена прокси в диалоге
     // подхватывается со следующего соединения, без перезапуска программы.
-    let cfg = proxy_cfg_from_settings()?;
+    let Some(cfg) = proxy_cfg_from_settings() else {
+        logger::log("релей: соединение закрыто — прокси выключен в настройках");
+        return None;
+    };
     // Релей нужен ТОЛЬКО для прокси с логином: без него do_screenshot указывает
     // браузеру внешний прокси напрямую, и звать нас незачем. Сокет закроется
     // при выходе из функции.
     if cfg.user.is_empty() {
+        logger::log("релей: соединение закрыто — прокси без логина, релей не нужен");
         return None;
     }
 
@@ -103,7 +108,15 @@ fn handle_conn(mut client: TcpStream) -> Option<()> {
     let method = parts.next()?;
     let target = parts.next()?;
 
-    let mut upstream = connect_upstream(&cfg)?;
+    // В журнал — только метод и цель. Голову целиком писать НЕЛЬЗЯ: в ней
+    // заголовок Proxy-Authorization с паролем пользователя.
+    logger::log(&format!("релей: {method} {target}"));
+
+    let Some(mut upstream) = connect_upstream(&cfg) else {
+        logger::log(&format!("релей: не удалось подключиться к прокси {}:{}",
+            strip_proxy_scheme(&cfg.host), cfg.port));
+        return None;
+    };
 
     let creds = format!("{}:{}", cfg.user, cfg.pass);
     let auth  = format!("Proxy-Authorization: Basic {}\r\n", base64_encode(creds.as_bytes()));
@@ -118,7 +131,10 @@ fn handle_conn(mut client: TcpStream) -> Option<()> {
 
         let resp = read_head(&mut upstream)?;
         if !status_is_2xx(&resp) {
-            return None; // 407 и прочее — молча закрываем обе стороны
+            // 407 сюда и приходит: прокси отверг наши учётные данные.
+            logger::log(&format!("релей: прокси ответил на CONNECT кодом {}",
+                status_code(&resp).map(|c| c.to_string()).unwrap_or_else(|| "?".into())));
+            return None;
         }
         client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").ok()?;
         client.flush().ok()?;
@@ -206,14 +222,16 @@ fn read_head(s: &mut TcpStream) -> Option<Vec<u8>> {
     }
 }
 
-fn status_is_2xx(head: &[u8]) -> bool {
+fn status_code(head: &[u8]) -> Option<u16> {
     let line = match find(head, b"\r\n") { Some(i) => &head[..i], None => head };
     String::from_utf8_lossy(line)
         .split_whitespace()
         .nth(1)
         .and_then(|c| c.parse::<u16>().ok())
-        .map(|c| (200..300).contains(&c))
-        .unwrap_or(false)
+}
+
+fn status_is_2xx(head: &[u8]) -> bool {
+    status_code(head).map(|c| (200..300).contains(&c)).unwrap_or(false)
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {

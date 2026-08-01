@@ -2,6 +2,7 @@
 
 mod db;
 mod importer;
+mod logger;
 mod relay;
 
 use std::sync::Mutex;
@@ -375,7 +376,7 @@ pub(crate) struct ProxyCfg {
 /// Любая проблема — нет файла, кривой JSON, выключено, мусор в полях — даёт
 /// `None`: при плохих настройках сеть должна работать напрямую, а не падать.
 pub(crate) fn proxy_cfg_from_settings() -> Option<ProxyCfg> {
-    let raw = load_settings();
+    let raw = read_settings_raw();
     if raw.is_empty() {
         return None;
     }
@@ -590,6 +591,7 @@ async fn fetch_favicon(
     // Шаги 5-8 под общим лимитом 12с: мёртвый URL сдаётся за ≤12с (вместо ~40с),
     // но DuckDuckGo (быстрый фолбэк) успевает дёрнуться даже после двух медленных первых шагов.
     let chain = async {
+    let mut strategy = "";   // какая из четырёх попыток дала картинку — для журнала
     // ── 5. Attempt favicon.ico ────────────────────────────────────────────
     let (raw_bytes, ext) = match client.get(&favicon_ico).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -606,6 +608,8 @@ async fn fetch_favicon(
         }
         _ => (None, "ico"),
     };
+
+    if raw_bytes.is_some() { strategy = "favicon.ico"; }
 
     // ── 6. Fallback: parse HTML <head> for <link rel="icon"> ─────────────
     let (raw_bytes, ext) = if raw_bytes.is_none() {
@@ -639,6 +643,8 @@ async fn fetch_favicon(
         (raw_bytes, ext)
     };
 
+    if strategy.is_empty() && raw_bytes.is_some() { strategy = "<link rel=icon>"; }
+
     // ── 7. Fallback: DuckDuckGo favicon service (handles Cloudflare-protected sites) ──
     let (raw_bytes, ext) = if raw_bytes.is_none() {
         let ddg_url = format!("https://icons.duckduckgo.com/ip3/{}.ico", domain);
@@ -660,6 +666,8 @@ async fn fetch_favicon(
     } else {
         (raw_bytes, ext)
     };
+
+    if strategy.is_empty() && raw_bytes.is_some() { strategy = "DuckDuckGo"; }
 
     // ── 8. Fallback: Google favicon service ──────────────────────────────
     let (raw_bytes, ext) = if raw_bytes.is_none() {
@@ -683,18 +691,27 @@ async fn fetch_favicon(
         (raw_bytes, ext)
     };
 
-        (raw_bytes, ext)
+        if strategy.is_empty() && raw_bytes.is_some() { strategy = "Google"; }
+
+        (raw_bytes, ext, strategy)
     };
-    let (raw_bytes, ext) = match tokio::time::timeout(std::time::Duration::from_secs(12), chain).await {
+    let (raw_bytes, ext, strategy) = match tokio::time::timeout(std::time::Duration::from_secs(12), chain).await {
         Ok(v)  => v,
-        Err(_) => return Ok(None),   // общий лимит истёк → «нет фавикона», без паники
+        Err(_) => {
+            logger::log(&format!("favicon {domain}: истёк общий лимит 12с"));
+            return Ok(None);         // «нет фавикона», без паники
+        }
     };
 
     // ── 9. Nothing found ─────────────────────────────────────────────────
     let bytes = match raw_bytes {
         Some(b) => b,
-        None => return Ok(None),
+        None => {
+            logger::log(&format!("favicon {domain}: все четыре стратегии не дали результата"));
+            return Ok(None);
+        }
     };
+    logger::log(&format!("favicon {domain}: получен через {strategy}"));
 
     // ── 10. Save file + update DB ────────────────────────────────────────
     let filename  = format!("{}.{}", safe, ext);
@@ -751,6 +768,14 @@ async fn do_screenshot(
     // командной строке, и в тексте ошибки ниже.
     let proxy_arg  = proxy_server_arg();
     let proxy_used = proxy_arg.is_some();
+
+    // Адрес прокси в журнал не пишем: при авторизации это адрес релея, но
+    // правило проще держать без исключений — только факт наличия флага.
+    logger::log(&format!(
+        "скриншот id={id}: {browser}, {w}x{h}, ожидание {t}с, прокси: {}",
+        if proxy_used { "да" } else { "нет" }
+    ));
+    let t_start = std::time::Instant::now();
 
     // Run blocking browser process on a dedicated thread so the UI stays responsive.
     // kill по дедлайну/готовности НЕ считаем провалом — итоговое решение по факту наличия файла ниже.
@@ -825,6 +850,12 @@ async fn do_screenshot(
             if path.exists() { visible = true; break; }
         }
     }
+
+    logger::log(&format!(
+        "скриншот id={id}: {} за {}мс",
+        if visible { "файл создан" } else { "файла нет" },
+        t_start.elapsed().as_millis()
+    ));
 
     if visible {
         Ok(filename)
@@ -936,8 +967,11 @@ async fn check_url(url: String) -> UrlCheckResult {
     let timeout = std::time::Duration::from_secs(8);
     let client = match http_client(timeout, "Mozilla/5.0 URL-Album-Checker/1.0") {
         Ok(c) => c,
-        Err(e) => return UrlCheckResult { url, status: 0, ok: false, timed_out: false,
-            redirect: None, ms: 0, err: Some(e), skipped: false },
+        Err(e) => {
+            logger::log(&format!("проверка {url}: клиент не создан: {e}"));
+            return UrlCheckResult { url, status: 0, ok: false, timed_out: false,
+                redirect: None, ms: 0, err: Some(e), skipped: false };
+        }
     };
     let resp = match client.head(&url).send().await {
         Ok(r) if r.status().as_u16() == 405 => client.get(&url).send().await,
@@ -956,6 +990,10 @@ async fn check_url(url: String) -> UrlCheckResult {
         }
         Err(e) => {
             let timed_out = e.is_timeout();
+            // Только ошибки: успешные ответы не пишем, иначе проверка папки
+            // на сотню ссылок раздует журнал до нечитаемости.
+            logger::log(&format!("проверка {url}: {}",
+                if timed_out { "таймаут 8с".to_string() } else { short_err(&e) }));
             UrlCheckResult { url, status: 0, ok: false, timed_out,
                 redirect: None, ms, err: Some(e.to_string()), skipped: false }
         }
@@ -1097,7 +1135,9 @@ fn last_db_file() -> Option<std::path::PathBuf> {
 
 fn save_last_db(path: &std::path::Path) {
     if let Some(f) = last_db_file() {
-        std::fs::write(f, path.to_string_lossy().as_bytes()).ok();
+        if let Err(e) = std::fs::write(f, path.to_string_lossy().as_bytes()) {
+            logger::log(&format!("не удалось записать last_db.txt: {e}"));
+        }
     }
 }
 
@@ -1119,7 +1159,9 @@ fn save_recent_db(path: &std::path::Path) {
         .chain(existing.lines().filter(|l| !l.trim().is_empty() && *l != path_str).map(String::from))
         .take(10)
         .collect();
-    std::fs::write(f, entries.join("\n")).ok();
+    if let Err(e) = std::fs::write(f, entries.join("\n")) {
+        logger::log(&format!("не удалось записать recent_dbs.txt: {e}"));
+    }
 }
 
 /// Internal: checkpoint current connection, open a new one at `new_path`, update AppState.
@@ -1138,6 +1180,7 @@ fn switch_db(state: tauri::State<'_, AppState>, new_path: std::path::PathBuf) ->
     *path_guard = new_path.clone();
     save_last_db(&new_path);
     save_recent_db(&new_path);
+    logger::log(&format!("открыта база: {}", new_path.display()));
     Ok(())
 }
 
@@ -1561,12 +1604,26 @@ async fn save_text_file(window: tauri::Window, content: String, default_name: Op
 
 // ── Settings (portable) ──────────────────────────────────────────────────────
 
-#[tauri::command]
-fn load_settings() -> String {
-    std::env::current_exe().ok()
+/// Прочитать `settings.json` как есть. Вынесено из команды `load_settings`:
+/// `#[tauri::command]` не позволяет пометить саму команду `pub(crate)` —
+/// генерируемые ею макросы конфликтуют по имени. Модулям (`logger`, `relay`)
+/// нужен доступ к содержимому, а знание о том, где лежит файл, должно
+/// оставаться в одном месте.
+pub(crate) fn read_settings_raw() -> String {
+    let raw = std::env::current_exe().ok()
         .and_then(|p| p.parent().map(|d| d.join("settings.json")))
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // BOM ломает serde_json МОЛЧА — теряются и настройки прокси, и флаг журнала.
+    // Пользователь получает BOM, просто сохранив файл блокнотом. То же лечит и
+    // JS-сторону: `load_settings` отдаёт эту же строку, а JSON.parse на BOM тоже
+    // падает — то есть слетали вообще все настройки. (Проверено, сессия 20.)
+    raw.trim_start_matches('\u{feff}').to_string()
+}
+
+#[tauri::command]
+fn load_settings() -> String {
+    read_settings_raw()
 }
 
 #[tauri::command]
@@ -2533,9 +2590,12 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
     let addr = format!("127.0.0.1:{port}");
     let server = match tiny_http::Server::http(&addr) {
         Ok(s)  => s,
-        Err(e) => { eprintln!("[HTTP] bind failed on {addr}: {e}"); return; }
+        Err(e) => {
+            logger::log(&format!("HTTP-сервер расширения не поднялся на {addr}: {e}"));
+            return;
+        }
     };
-    eprintln!("[HTTP] listening on {addr}");
+    logger::log(&format!("HTTP-сервер расширения слушает {addr}"));
 
     for mut req in server.incoming_requests() {
         // Validate Origin — only our extension is allowed
@@ -2766,7 +2826,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                     h2.emit("thumb-updated",
                         serde_json::json!({ "id": bookmark_id, "path": path })).ok();
                 }
-                Err(e) => eprintln!("[HTTP] screenshot failed for id={bookmark_id}: {e}"),
+                Err(e) => logger::log(&format!("расширение: скриншот id={bookmark_id} не создан: {e}")),
             }
         });
     }
@@ -2810,6 +2870,19 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
+            // Журнал — первым делом, чтобы всё дальнейшее могло писать в него.
+            logger::init_from_settings();
+            logger::log(&format!("=== запуск URL Album {} ===", env!("CARGO_PKG_VERSION")));
+            logger::log(&format!("exe: {}", std::env::current_exe()
+                .map(|p| p.display().to_string()).unwrap_or_default()));
+            // Логин и пароль прокси в журнал не попадают никогда.
+            match proxy_cfg_from_settings() {
+                Some(c) => logger::log(&format!("прокси: {}:{}{}",
+                    strip_proxy_scheme(&c.host), c.port,
+                    if c.user.is_empty() { "" } else { " (с авторизацией)" })),
+                None => logger::log("прокси: выключен"),
+            }
+
             // Portable mode: all files live next to the executable.
             let exe_dir = std::env::current_exe()?
                 .parent()
@@ -2831,6 +2904,7 @@ fn main() {
 
             // Persist the resolved path so the next startup knows what was open.
             save_last_db(&db_path);
+            logger::log(&format!("открыта база: {}", db_path.display()));
 
             // Parse urlalbum:// from command line if launched via protocol
             let pending = std::env::args().skip(1)
@@ -2994,8 +3068,10 @@ fn main() {
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     if let Ok(conn) = state.db.lock() {
-                        // Ошибки игнорируем — выход не блокируем.
-                        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").ok();
+                        // Ошибки игнорируем — выход не блокируем, только пишем в журнал.
+                        if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
+                            logger::log(&format!("выход: WAL-checkpoint не выполнен: {e}"));
+                        }
                     }
                 }
             }
