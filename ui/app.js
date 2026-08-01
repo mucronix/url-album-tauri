@@ -3808,6 +3808,17 @@ async function init() {
     }
     openNewItemDlg('link', { url: pending.url, title: pending.title });
   }).catch(() => {});
+
+  // Гасим родное меню WebView2 («Назад / Обновить / Сохранить как / Печать»)
+  // везде, где нет своего обработчика. На document и в фазе всплытия (без capture) —
+  // точечные обработчики (дерево, грид, detail-view) отрабатывают первыми
+  // и показывают наши меню как раньше. В полях ввода родное меню оставляем.
+  document.addEventListener('contextmenu', (e) => {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+              || t.isContentEditable)) return;
+    e.preventDefault();
+  });
 }
 
 // ── Welcome / first-run screen ────────────────────────────────────────────────
