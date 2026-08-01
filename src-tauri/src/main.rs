@@ -328,6 +328,165 @@ fn get_data_dir(state: tauri::State<AppState>) -> Result<String, String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
+// ── HTTP client / прокси ─────────────────────────────────────────────────────
+
+/// URL для проверки прокси. Тот же хост, что и в фолбэке favicon: раз он
+/// доступен там, где программа работает, годится и как пробный запрос.
+const PROXY_TEST_URL: &str = "https://icons.duckduckgo.com/ip3/example.com.ico";
+
+/// Собрать http-прокси из уже разобранных параметров. Общая точка для
+/// настроек (`proxy_from_settings`) и проверки из диалога (`test_proxy`) —
+/// формат URL и правило про basic-auth обязаны совпадать в обоих путях,
+/// иначе «Проверить» покажет успех для конфигурации, которой нет в бою.
+///
+/// Схему у хоста срезаем: пользователь привычно пишет `http://10.0.0.1`,
+/// а нам нужен голый хост — иначе вышло бы `http://http://10.0.0.1:8080`.
+/// Хвостовой слэш убираем по той же причине. Сам прокси всегда `http://`:
+/// https-прокси и SOCKS в этой версии не поддержаны.
+fn build_proxy(host: &str, port: u16, user: &str, pass: &str) -> Result<reqwest::Proxy, reqwest::Error> {
+    let h = host.trim();
+    let lower = h.to_ascii_lowercase();
+    let h = if lower.starts_with("http://")       { &h[7..] }
+            else if lower.starts_with("https://") { &h[8..] }
+            else                                  { h };
+    let h = h.trim_end_matches('/');
+
+    let proxy = reqwest::Proxy::all(format!("http://{h}:{port}"))?;
+    if user.is_empty() { Ok(proxy) } else { Ok(proxy.basic_auth(user, pass)) }
+}
+
+/// Прокси из `settings.json` (файл пишет JS, ключи camelCase).
+/// Любая проблема — нет файла, кривой JSON, выключено, мусор в полях — даёт
+/// `None`: при плохих настройках сеть должна работать напрямую, а не падать.
+/// Только `http://`-прокси; https-прокси и SOCKS в этой версии не поддержаны.
+fn proxy_from_settings() -> Option<reqwest::Proxy> {
+    let raw = load_settings();
+    if raw.is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+
+    if v.get("proxyEnabled").and_then(|x| x.as_bool()) != Some(true) {
+        return None;
+    }
+
+    let host = v.get("proxyHost").and_then(|x| x.as_str()).unwrap_or("").trim();
+    if host.is_empty() {
+        return None;
+    }
+
+    // Порт JS может записать и числом, и строкой (<input type="number">) — берём оба.
+    let port = match v.get("proxyPort") {
+        Some(serde_json::Value::Number(n)) => n.as_u64()?,
+        Some(serde_json::Value::String(s)) => s.trim().parse::<u64>().ok()?,
+        _ => return None,
+    };
+    if !(1..=65535).contains(&port) {
+        return None;
+    }
+
+    build_proxy(
+        host,
+        port as u16,                                    // порт уже проверен диапазоном 1..=65535
+        v.get("proxyUser").and_then(|x| x.as_str()).unwrap_or("").trim(),
+        v.get("proxyPass").and_then(|x| x.as_str()).unwrap_or(""),
+    ).ok()
+}
+
+/// Единая точка сборки HTTP-клиента: таймаут, User-Agent и — если прокси
+/// включён и корректно задан — маршрут через него. Без прокси поведение
+/// в точности прежнее.
+fn http_client(timeout: std::time::Duration, ua: &str) -> Result<reqwest::Client, String> {
+    let mut b = reqwest::Client::builder().timeout(timeout).user_agent(ua);
+    if let Some(p) = proxy_from_settings() {
+        b = b.proxy(p);
+    }
+    b.build().map_err(|e| e.to_string())
+}
+
+/// Вся цепочка текстов ошибки. Нужна, чтобы разглядеть «407» внутри ошибки
+/// CONNECT-туннеля: при https через прокси 407 не доходит до `r.status()`,
+/// а приходит ошибкой соединения — reqwest прячет суть во вложенной причине.
+fn err_chain_text(e: &reqwest::Error) -> String {
+    let mut s = e.to_string();
+    let mut src: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(c) = src {
+        s.push_str("; ");
+        s.push_str(&c.to_string());
+        src = c.source();
+    }
+    s
+}
+
+/// Короткая причина для показа человеку: самая глубокая ошибка в цепочке
+/// информативнее верхнего «error sending request for url (...)».
+fn short_err(e: &reqwest::Error) -> String {
+    let mut deepest = e.to_string();
+    let mut src: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(c) = src {
+        deepest = c.to_string();
+        src = c.source();
+    }
+    if deepest.chars().count() > 120 {
+        deepest = deepest.chars().take(117).collect::<String>() + "...";
+    }
+    deepest
+}
+
+/// Отказ авторизации на прокси. reqwest/hyper при CONNECT-туннеле пишет причину
+/// СЛОВАМИ, без кода статуса. Реальная цепочка (сессия 20, прокси с --basic-auth,
+/// пустой логин): «error sending request for url (...); client error (Connect);
+/// tunnel error: proxy authorization required», флаги connect=true, status=None.
+/// Отсюда две текстовые формулировки; «407» оставлен на случай прокси, который
+/// отвечает настоящим статусом (http-запрос без туннеля).
+fn is_proxy_auth_error(e: &reqwest::Error) -> bool {
+    let t = err_chain_text(e).to_lowercase();
+    t.contains("proxy authorization required")
+        || t.contains("proxy authentication required")
+        || t.contains("407")
+}
+
+/// Проверка прокси по параметрам ИЗ ПОЛЕЙ ДИАЛОГА, а не из `settings.json`:
+/// пользователь проверяет то, что сейчас введено, ещё до сохранения.
+#[tauri::command]
+async fn test_proxy(host: String, port: u16, user: String, pass: String) -> Result<String, String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("Укажите адрес прокси".to_string());
+    }
+    if port == 0 {
+        return Err("Неверный порт".to_string());
+    }
+    let user = user.trim();
+
+    let proxy = build_proxy(host, port, user, &pass)
+        .map_err(|_| "Неверный адрес прокси".to_string())?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent("Mozilla/5.0 URL-Album-Checker/1.0")
+        .proxy(proxy)
+        .build()
+        .map_err(|_| "Неверный адрес прокси".to_string())?;
+
+    match client.get(PROXY_TEST_URL).send().await {
+        Ok(r) if r.status().as_u16() == 407 =>
+            Err("Прокси требует авторизацию: проверьте логин и пароль".to_string()),
+        Ok(r) if r.status().is_success() =>
+            Ok(format!("Прокси работает (HTTP {})", r.status().as_u16())),
+        Ok(r) => Err(format!("Ошибка: сервер ответил HTTP {}", r.status().as_u16())),
+        Err(e) if e.is_timeout() =>
+            Err("Превышено время ожидания (8 сек)".to_string()),
+        // Обязательно ВЫШЕ is_connect: у отказа авторизации connect=true,
+        // и нижняя ветка перехватила бы случай раньше (проверено, сессия 20).
+        Err(e) if is_proxy_auth_error(&e) =>
+            Err("Прокси требует авторизацию: проверьте логин и пароль".to_string()),
+        Err(e) if e.is_connect() =>
+            Err("Прокси не отвечает: проверьте адрес и порт".to_string()),
+        Err(e) => Err(format!("Ошибка: {}", short_err(&e))),
+    }
+}
+
 #[tauri::command]
 async fn fetch_favicon(
     state: tauri::State<'_, AppState>,
@@ -378,11 +537,10 @@ async fn fetch_favicon(
     }
 
     // ── 4. HTTP client ───────────────────────────────────────────────────
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = http_client(
+        std::time::Duration::from_secs(5),
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    )?;
 
     let favicon_ico = format!("https://{}/favicon.ico", domain);
 
@@ -716,14 +874,10 @@ async fn check_url(url: String) -> UrlCheckResult {
     let url = normalize_url(&url);
     let t0 = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(8);
-    let client = match reqwest::Client::builder()
-        .timeout(timeout)
-        .user_agent("Mozilla/5.0 URL-Album-Checker/1.0")
-        .build()
-    {
+    let client = match http_client(timeout, "Mozilla/5.0 URL-Album-Checker/1.0") {
         Ok(c) => c,
         Err(e) => return UrlCheckResult { url, status: 0, ok: false, timed_out: false,
-            redirect: None, ms: 0, err: Some(e.to_string()), skipped: false },
+            redirect: None, ms: 0, err: Some(e), skipped: false },
     };
     let resp = match client.head(&url).send().await {
         Ok(r) if r.status().as_u16() == 405 => client.get(&url).send().await,
@@ -2703,6 +2857,7 @@ fn main() {
             open_url,
             open_url_with,
             check_url,
+            test_proxy,
             sort_folder,
             sort_all_bookmarks,
             backup_db,
