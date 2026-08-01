@@ -334,32 +334,46 @@ fn get_data_dir(state: tauri::State<AppState>) -> Result<String, String> {
 /// доступен там, где программа работает, годится и как пробный запрос.
 const PROXY_TEST_URL: &str = "https://icons.duckduckgo.com/ip3/example.com.ico";
 
-/// Собрать http-прокси из уже разобранных параметров. Общая точка для
-/// настроек (`proxy_from_settings`) и проверки из диалога (`test_proxy`) —
-/// формат URL и правило про basic-auth обязаны совпадать в обоих путях,
-/// иначе «Проверить» покажет успех для конфигурации, которой нет в бою.
-///
-/// Схему у хоста срезаем: пользователь привычно пишет `http://10.0.0.1`,
-/// а нам нужен голый хост — иначе вышло бы `http://http://10.0.0.1:8080`.
-/// Хвостовой слэш убираем по той же причине. Сам прокси всегда `http://`:
-/// https-прокси и SOCKS в этой версии не поддержаны.
-fn build_proxy(host: &str, port: u16, user: &str, pass: &str) -> Result<reqwest::Proxy, reqwest::Error> {
+/// Срезать схему и хвостовой слэш у адреса прокси: пользователь привычно
+/// пишет `http://10.0.0.1/`, а голый хост нужен и `reqwest::Proxy`, и флагу
+/// `--proxy-server`. Общая точка для `build_proxy` и `proxy_server_arg`.
+fn strip_proxy_scheme(host: &str) -> &str {
     let h = host.trim();
     let lower = h.to_ascii_lowercase();
     let h = if lower.starts_with("http://")       { &h[7..] }
             else if lower.starts_with("https://") { &h[8..] }
             else                                  { h };
-    let h = h.trim_end_matches('/');
+    h.trim_end_matches('/')
+}
 
+/// Собрать http-прокси из уже разобранных параметров. Общая точка для
+/// настроек (`proxy_from_settings`) и проверки из диалога (`test_proxy`) —
+/// формат URL и правило про basic-auth обязаны совпадать в обоих путях,
+/// иначе «Проверить» покажет успех для конфигурации, которой нет в бою.
+///
+/// Схему у хоста срезаем (`strip_proxy_scheme`): иначе из привычного
+/// `http://10.0.0.1` вышло бы `http://http://10.0.0.1:8080`. Сам прокси
+/// всегда `http://`: https-прокси и SOCKS в этой версии не поддержаны.
+fn build_proxy(host: &str, port: u16, user: &str, pass: &str) -> Result<reqwest::Proxy, reqwest::Error> {
+    let h = strip_proxy_scheme(host);
     let proxy = reqwest::Proxy::all(format!("http://{h}:{port}"))?;
     if user.is_empty() { Ok(proxy) } else { Ok(proxy.basic_auth(user, pass)) }
+}
+
+/// Разобранные настройки прокси. Общая точка чтения для reqwest-клиента и для
+/// командной строки браузера — иначе разбор camelCase-ключей и порта
+/// «числом или строкой» пришлось бы держать в двух копиях.
+struct ProxyCfg {
+    host: String,
+    port: u16,
+    user: String,
+    pass: String,
 }
 
 /// Прокси из `settings.json` (файл пишет JS, ключи camelCase).
 /// Любая проблема — нет файла, кривой JSON, выключено, мусор в полях — даёт
 /// `None`: при плохих настройках сеть должна работать напрямую, а не падать.
-/// Только `http://`-прокси; https-прокси и SOCKS в этой версии не поддержаны.
-fn proxy_from_settings() -> Option<reqwest::Proxy> {
+fn proxy_cfg_from_settings() -> Option<ProxyCfg> {
     let raw = load_settings();
     if raw.is_empty() {
         return None;
@@ -385,12 +399,35 @@ fn proxy_from_settings() -> Option<reqwest::Proxy> {
         return None;
     }
 
-    build_proxy(
-        host,
-        port as u16,                                    // порт уже проверен диапазоном 1..=65535
-        v.get("proxyUser").and_then(|x| x.as_str()).unwrap_or("").trim(),
-        v.get("proxyPass").and_then(|x| x.as_str()).unwrap_or(""),
-    ).ok()
+    Some(ProxyCfg {
+        host: host.to_string(),
+        port: port as u16,                              // порт уже проверен диапазоном 1..=65535
+        user: v.get("proxyUser").and_then(|x| x.as_str()).unwrap_or("").trim().to_string(),
+        pass: v.get("proxyPass").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+    })
+}
+
+/// Прокси для reqwest (`fetch_favicon`, `check_url`). Только `http://`-прокси;
+/// https-прокси и SOCKS в этой версии не поддержаны.
+fn proxy_from_settings() -> Option<reqwest::Proxy> {
+    let c = proxy_cfg_from_settings()?;
+    build_proxy(&c.host, c.port, &c.user, &c.pass).ok()
+}
+
+/// Прокси для командной строки headless-браузера (скриншоты): `host:port`,
+/// без схемы.
+///
+/// Если задан пользователь — возвращаем `None` и флаг НЕ передаём. Chromium
+/// игнорирует учётные данные в `--proxy-server`: на 407 он показал бы диалог
+/// логина, которого в headless нет, и завершился бы молча, без картинки.
+/// Пойти напрямую хуже по приватности, но лучше, чем гарантированно остаться
+/// без скриншота. Прокси с авторизацией потребует локального релея.
+fn proxy_server_arg() -> Option<String> {
+    let c = proxy_cfg_from_settings()?;
+    if !c.user.is_empty() {
+        return None;
+    }
+    Some(format!("{}:{}", strip_proxy_scheme(&c.host), c.port))
 }
 
 /// Единая точка сборки HTTP-клиента: таймаут, User-Agent и — если прокси
@@ -704,6 +741,11 @@ async fn do_screenshot(
     // Удалить старый {id}.png ДО запуска — иначе поллинг увидит прошлую картинку как «готовую»
     let _ = std::fs::remove_file(&path);
 
+    // Прокси для браузера: читаем ДО spawn_blocking — значение нужно и в
+    // командной строке, и в тексте ошибки ниже.
+    let proxy_arg  = proxy_server_arg();
+    let proxy_used = proxy_arg.is_some();
+
     // Run blocking browser process on a dedicated thread so the UI stays responsive.
     // kill по дедлайну/готовности НЕ считаем провалом — итоговое решение по факту наличия файла ниже.
     let run: Result<(), String> = tauri::async_runtime::spawn_blocking(move || {
@@ -719,8 +761,13 @@ async fn do_screenshot(
             &format!("--timeout={}", t * 1000),
             &format!("--user-data-dir={tmp_dir_str}"),
             &format!("--screenshot={path_str2}"),
-            &url,
         ]);
+        // Прокси и URL — отдельно: массив выше фиксированной длины, а флаг
+        // обязан идти ДО позиционного аргумента с адресом.
+        if let Some(p) = proxy_arg {
+            cmd.arg(format!("--proxy-server={p}"));
+        }
+        cmd.arg(&url);
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000);
         let mut child = cmd.spawn().map_err(|e| e.to_string())?;
@@ -776,7 +823,14 @@ async fn do_screenshot(
     if visible {
         Ok(filename)
     } else {
-        Err(run.err().unwrap_or_else(|| "Не удалось создать скриншот".to_string()))
+        let base = run.err().unwrap_or_else(|| "Не удалось создать скриншот".to_string());
+        if proxy_used {
+            // Приписка только когда флаг реально передан: при прокси с логином
+            // мы идём напрямую, и упоминание прокси было бы ложным следом.
+            Err(format!("{base} (включён прокси — проверьте его доступность)"))
+        } else {
+            Err(base)
+        }
     }
 }
 
