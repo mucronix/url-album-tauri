@@ -1776,6 +1776,21 @@ fn hide_window(window: tauri::Window) {
     window.hide().ok();
 }
 
+/// Включить/выключить журнал без перезапуска — зовётся при сохранении настроек.
+#[tauri::command]
+fn set_log_enabled(enabled: bool) {
+    logger::set_enabled(enabled);
+}
+
+/// Путь к журналу для кнопки «Открыть журнал». `None` — файла ещё нет.
+/// Отсутствие сообщаем именно здесь: `open_file` на несуществующем пути ошибки
+/// НЕ вернёт (spawn `cmd` успешен в любом случае), полагаться на него нельзя.
+#[tauri::command]
+fn get_log_path() -> Option<String> {
+    let p = logger::log_path()?;
+    p.exists().then(|| p.to_string_lossy().into_owned())
+}
+
 /// Force WAL checkpoint — incorporate all WAL data into the main DB file.
 #[tauri::command]
 fn checkpoint_db(state: tauri::State<AppState>) -> Result<(), String> {
@@ -3044,6 +3059,8 @@ fn main() {
             get_db_path,
             set_window_title,
             hide_window,
+            set_log_enabled,
+            get_log_path,
             checkpoint_db,
             open_file,
             get_data_dir,

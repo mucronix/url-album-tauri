@@ -1272,13 +1272,23 @@ const noticeOverlay = document.getElementById("notice-overlay");
 const noticeTitle   = document.getElementById("notice-title");
 const noticeMsg     = document.getElementById("notice-msg");
 
-function showNotice(title, message) {
+let _noticeCb = null;
+
+function showNotice(title, message, onClose) {
   noticeTitle.textContent = title;
   noticeMsg.textContent   = message;
+  _noticeCb = onClose || null;
   raiseOverlay(noticeOverlay);
   setTimeout(() => document.getElementById("notice-ok")?.focus(), 20);
 }
-function closeNotice() { noticeOverlay.classList.add("hidden"); }
+// Колбэк срабатывает при ЛЮБОМ закрытии — OK, крестик, Esc: все три пути
+// проходят через closeNotice (Esc глобальный хэндлер кликает по .dlg-close).
+function closeNotice() {
+  noticeOverlay.classList.add("hidden");
+  const cb = _noticeCb;
+  _noticeCb = null;
+  cb?.();
+}
 
 document.getElementById("notice-x").onclick  = closeNotice;   // крестик
 document.getElementById("notice-ok").onclick = closeNotice;   // OK
@@ -3527,6 +3537,8 @@ let appSettings = {
   confirmDelete: true,
   noDuplicateUrls: false,
   uiFontSize:    13,
+  // Диагностика
+  logEnabled:    false,
   // Прокси
   proxyEnabled:  false,
   proxyHost:     '',
@@ -3719,6 +3731,36 @@ function applyColWidth(pct, persist = true) {
   const fontVal    = document.getElementById('s-font-size-val');
   fontSlider.addEventListener('input', () => { fontVal.textContent = fontSlider.value; });
 
+  // ── Журнал: кнопка «Открыть журнал» ──
+  // Активна всегда, к галочке не привязана: человек мог вести журнал вчера
+  // и хотеть посмотреть его сегодня, уже выключив запись.
+  document.getElementById('s-log-open').addEventListener('click', async () => {
+    try {
+      const p = await invoke('get_log_path');
+      if (!p) {
+        showNotice('Журнал', 'Журнал пуст — включите запись и повторите действие, которое даёт сбой.');
+        return;
+      }
+      // Файл есть, но запись выключена: в нём только прошлые сеансы. Без этого
+      // предупреждения человек ищет свою ошибку в старых записях и не находит.
+      if (!appSettings.logEnabled) {
+        // Блокнот открываем только ПОСЛЕ закрытия окна: showNotice не блокирует,
+        // и без колбэка предупреждение мелькнуло бы под окном блокнота.
+        showNotice('Журнал',
+          'Запись журнала сейчас выключена — в файле только записи прошлых сеансов, ' +
+          'сегодняшней ошибки в нём не будет.\n\n' +
+          'Чтобы её записать: включите «Вести журнал», сохраните настройки ' +
+          'и повторите действие, которое даёт сбой.',
+          () => invoke('open_file', { path: p })
+                  .catch(() => showNotice('Журнал', 'Не удалось открыть журнал')));
+        return;
+      }
+      await invoke('open_file', { path: p });
+    } catch (e) {
+      showNotice('Журнал', typeof e === 'string' ? e : 'Не удалось открыть журнал');
+    }
+  });
+
   // ── Прокси: доступность полей по чекбоксу ──
   const proxyEnEl    = document.getElementById('s-proxy-en');
   const proxyFields  = ['s-proxy-host','s-proxy-port','s-proxy-user','s-proxy-pass'];
@@ -3797,6 +3839,7 @@ function applyColWidth(pct, persist = true) {
       document.getElementById(id).onchange = updateHotkeyPreview);
     fontSlider.value = appSettings.uiFontSize || 13;
     fontVal.textContent = fontSlider.value;
+    document.getElementById('s-log-enabled').checked = !!appSettings.logEnabled;
     // Прокси
     proxyEnEl.checked = appSettings.proxyEnabled;
     document.getElementById('s-proxy-host').value = appSettings.proxyHost;
@@ -3842,6 +3885,9 @@ function applyColWidth(pct, persist = true) {
     appSettings.extensionAddMode = document.getElementById('s-ext-dialog').checked ? 'dialog' : 'quick';
     appSettings.hotkey           = buildHotkeyString();
     appSettings.uiFontSize       = parseInt(fontSlider.value) || 13;
+    // Журнал: применяем сразу, чтобы галочка действовала без перезапуска.
+    appSettings.logEnabled       = document.getElementById('s-log-enabled').checked;
+    invoke('set_log_enabled', { enabled: appSettings.logEnabled }).catch(console.error);
     // Прокси
     appSettings.proxyEnabled = proxyEnEl.checked;
     appSettings.proxyHost    = document.getElementById('s-proxy-host').value.trim();
