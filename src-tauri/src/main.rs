@@ -927,6 +927,37 @@ fn switch_db(state: tauri::State<'_, AppState>, new_path: std::path::PathBuf) ->
     Ok(())
 }
 
+/// WAL-checkpoint перед копированием файла базы. Копируется только `*.db`,
+/// сайдкар `*.db-wal` — нет, поэтому всё, что ещё лежит в WAL, в резервную
+/// копию не попадёт. Возвращает текст ошибки, если checkpoint не прошёл:
+/// копию в этом случае всё равно делаем — файл валиден, просто без самых
+/// свежих записей.
+///
+/// Функция синхронная: guard живёт до конца её тела и отпускается до возврата,
+/// поэтому MutexGuard заведомо не удерживается через `.await` у вызывающего.
+fn checkpoint_before_copy(state: &tauri::State<'_, AppState>) -> Option<String> {
+    let conn = match state.db.lock() {
+        Ok(c)  => c,
+        Err(e) => return Some(format!("база занята ({e})")),
+    };
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .err()
+        .map(|e| e.to_string())
+}
+
+/// Собрать возвращаемое значение резервного копирования: путь + опциональное
+/// предупреждение о непройденном checkpoint. Строка целиком уходит в showNotice.
+fn backup_result(path: &std::path::Path, wal_warn: Option<String>) -> String {
+    let mut s = path.to_string_lossy().to_string();
+    if let Some(w) = wal_warn {
+        s.push_str(&format!(
+            "\n\n⚠ WAL-checkpoint не выполнен ({w}).\n\
+             Копия создана, но в неё могли не попасть самые последние изменения."
+        ));
+    }
+    s
+}
+
 #[tauri::command]
 async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<String, String> {
     let (src, src_dir, src_name) = {
@@ -942,8 +973,11 @@ async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> 
         .set_file_name(&src_name)
         .set_directory(&src_dir)
         .save_file().await.ok_or("Отменено")?;
+
+    // Диалог уже закрыт — дальше ни одного .await, guard внутри хелпера безопасен.
+    let wal_warn = checkpoint_before_copy(&state);
     std::fs::copy(&src, file.path()).map_err(|e| e.to_string())?;
-    Ok(file.path().to_string_lossy().to_string())
+    Ok(backup_result(file.path(), wal_warn))
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
@@ -984,6 +1018,8 @@ async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::W
     }
 
     // Copy the DB file itself
+    // Диалог уже закрыт — дальше ни одного .await, guard внутри хелпера безопасен.
+    let wal_warn = checkpoint_before_copy(&state);
     std::fs::copy(&db_src, dest.join(&db_name)).map_err(|e| e.to_string())?;
 
     // Bug 1 fix: recursively copy Data/ so favicons/ subdirectory is included
@@ -991,7 +1027,7 @@ async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::W
     if data_src.exists() {
         copy_dir_recursive(&data_src, &dest.join("Data"))?;
     }
-    Ok(dest.join(&db_name).to_string_lossy().to_string())
+    Ok(backup_result(&dest.join(&db_name), wal_warn))
 }
 
 #[tauri::command]
@@ -2725,14 +2761,20 @@ fn main() {
             analyze_import_db,
             execute_import_db,
         ])
-        .on_window_event(|_window, event| {
-            // Checkpoint WAL into main file on every window close so data
-            // is always fully persisted even if the OS doesn't flush.
-            if let tauri::WindowEvent::Destroyed = event {
-                // AppState is already dropped by this point; checkpoint happens
-                // automatically via rusqlite Connection::drop → sqlite3_close.
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Единственная точка, где WAL-checkpoint гарантированно выполняется при выходе.
+            // Managed-состояние (AppState) при завершении Tauri НЕ дропается, поэтому
+            // Connection::drop → sqlite3_close не вызывается и -wal/-shm остаются на диске.
+            // app.exit(0) из трея приходит сюда же — отдельный checkpoint там не нужен.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    if let Ok(conn) = state.db.lock() {
+                        // Ошибки игнорируем — выход не блокируем.
+                        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").ok();
+                    }
+                }
             }
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        });
 }
