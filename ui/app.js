@@ -3527,6 +3527,12 @@ let appSettings = {
   confirmDelete: true,
   noDuplicateUrls: false,
   uiFontSize:    13,
+  // Прокси
+  proxyEnabled:  false,
+  proxyHost:     '',
+  proxyPort:     8080,
+  proxyUser:     '',
+  proxyPass:     '',
   // Рисунок
   thumbWidth:    1280,
   thumbHeight:   800,
@@ -3713,6 +3719,58 @@ function applyColWidth(pct, persist = true) {
   const fontVal    = document.getElementById('s-font-size-val');
   fontSlider.addEventListener('input', () => { fontVal.textContent = fontSlider.value; });
 
+  // ── Прокси: доступность полей по чекбоксу ──
+  const proxyEnEl    = document.getElementById('s-proxy-en');
+  const proxyFields  = ['s-proxy-host','s-proxy-port','s-proxy-user','s-proxy-pass'];
+  const proxyTestBtn = document.getElementById('s-proxy-test');
+  const proxyStatus  = document.getElementById('s-proxy-status');
+
+  function setProxyStatus(text, kind) {
+    proxyStatus.textContent = text || '';
+    proxyStatus.className = kind ? 'sp-status ' + kind : 'sp-status';
+  }
+
+  // Поля гасим через readOnly, а не disabled: у disabled-элементов Chromium не
+  // доводит contextmenu до глобального перехватчика в init() → всплывает родное
+  // меню WebView2. readonly оставляет элемент нормальной целью событий; ввод и
+  // вставку блокирует, копирование значения — нет. Кнопке readonly не подходит —
+  // ей нужен именно disabled.
+  function syncProxyFields() {
+    const off = !proxyEnEl.checked;
+    proxyFields.forEach(id => { document.getElementById(id).readOnly = off; });
+    proxyTestBtn.disabled = off;
+  }
+  proxyEnEl.addEventListener('change', syncProxyFields);
+
+  // Результат проверки относится к конкретным значениям полей — при любой правке
+  // гасим, иначе зелёное «Прокси работает» останется висеть над новым адресом.
+  proxyEnEl.addEventListener('change', () => setProxyStatus(''));
+  proxyFields.forEach(id =>
+    document.getElementById(id).addEventListener('input', () => setProxyStatus('')));
+
+  proxyTestBtn.addEventListener('click', async () => {
+    const host = document.getElementById('s-proxy-host').value.trim();
+    const port = parseInt(document.getElementById('s-proxy-port').value, 10);
+    const user = document.getElementById('s-proxy-user').value.trim();
+    const pass = document.getElementById('s-proxy-pass').value;
+    if (!host) { setProxyStatus('Укажите адрес прокси', 'err'); return; }
+    // Tauri не десериализует u16 > 65535 и вернул бы сырую ошибку — режем здесь.
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      setProxyStatus('Неверный порт', 'err');
+      return;
+    }
+    proxyTestBtn.disabled = true;
+    setProxyStatus('Проверка...', null);
+    try {
+      setProxyStatus(await invoke('test_proxy', { host, port, user, pass }), 'ok');
+    } catch (e) {
+      setProxyStatus(typeof e === 'string' ? e : 'Не удалось проверить прокси', 'err');
+    } finally {
+      // Не просто false: при снятой галке кнопка обязана остаться погашенной.
+      proxyTestBtn.disabled = !proxyEnEl.checked;
+    }
+  });
+
   // ── Open dialog: populate fields ──
   window.openSettingsDialog = function() {
     // Show actual DB path
@@ -3739,6 +3797,14 @@ function applyColWidth(pct, persist = true) {
       document.getElementById(id).onchange = updateHotkeyPreview);
     fontSlider.value = appSettings.uiFontSize || 13;
     fontVal.textContent = fontSlider.value;
+    // Прокси
+    proxyEnEl.checked = appSettings.proxyEnabled;
+    document.getElementById('s-proxy-host').value = appSettings.proxyHost;
+    document.getElementById('s-proxy-port').value = appSettings.proxyPort;
+    document.getElementById('s-proxy-user').value = appSettings.proxyUser;
+    document.getElementById('s-proxy-pass').value = appSettings.proxyPass;
+    syncProxyFields();
+    setProxyStatus('');
     // Рисунок
     document.getElementById('s-thumb-w').value       = appSettings.thumbWidth;
     document.getElementById('s-thumb-h').value       = appSettings.thumbHeight;
@@ -3776,6 +3842,12 @@ function applyColWidth(pct, persist = true) {
     appSettings.extensionAddMode = document.getElementById('s-ext-dialog').checked ? 'dialog' : 'quick';
     appSettings.hotkey           = buildHotkeyString();
     appSettings.uiFontSize       = parseInt(fontSlider.value) || 13;
+    // Прокси
+    appSettings.proxyEnabled = proxyEnEl.checked;
+    appSettings.proxyHost    = document.getElementById('s-proxy-host').value.trim();
+    appSettings.proxyPort    = parseInt(document.getElementById('s-proxy-port').value) || 8080;
+    appSettings.proxyUser    = document.getElementById('s-proxy-user').value.trim();
+    appSettings.proxyPass    = document.getElementById('s-proxy-pass').value;
     // Рисунок
     appSettings.thumbWidth   = parseInt(document.getElementById('s-thumb-w').value)   || 1280;
     appSettings.thumbHeight  = parseInt(document.getElementById('s-thumb-h').value)   || 800;
@@ -3832,10 +3904,11 @@ async function init() {
   // Гасим родное меню WebView2 («Назад / Обновить / Сохранить как / Печать»)
   // везде, где нет своего обработчика. На document и в фазе всплытия (без capture) —
   // точечные обработчики (дерево, грид, detail-view) отрабатывают первыми
-  // и показывают наши меню как раньше. В полях ввода родное меню оставляем.
+  // и показывают наши меню как раньше. Родное меню оставляем только в
+  // РЕДАКТИРУЕМЫХ полях: у readonly/disabled WebView2 показывает меню страницы.
   document.addEventListener('contextmenu', (e) => {
     const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+    if (t && (((t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') && !t.readOnly && !t.disabled)
               || t.isContentEditable)) return;
     e.preventDefault();
   });
