@@ -1498,6 +1498,13 @@ fn set_window_title(window: tauri::Window, title: String) {
     window.set_title(&title).ok();
 }
 
+/// Спрятать окно в трей. Окно не закрывается — процесс живёт, иконка в трее
+/// и глобальный хоткей F8 продолжают работать; возврат — «Показать URL-Album».
+#[tauri::command]
+fn hide_window(window: tauri::Window) {
+    window.hide().ok();
+}
+
 /// Force WAL checkpoint — incorporate all WAL data into the main DB file.
 #[tauri::command]
 fn checkpoint_db(state: tauri::State<AppState>) -> Result<(), String> {
@@ -2747,6 +2754,7 @@ fn main() {
             create_new_db,
             get_db_path,
             set_window_title,
+            hide_window,
             checkpoint_db,
             open_file,
             get_data_dir,

@@ -2289,6 +2289,7 @@ const ICONS = {
   trash:  `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h10M5 4V2.5h4V4M3.5 4l1 7.5h5l1-7.5"/></svg>`,
   new: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M0.7 3h4.6l1.2 1.6H13.3V11.4H0.7V3z"/><path d="M7 6.2v3.4M5.3 7.9h3.4"/></svg>`,
   favicon: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="5.3"/><path d="M1.7 7h10.6M7 1.7c1.5 1.4 2.3 3.3 2.3 5.3S8.5 11.9 7 12.3M7 1.7C5.5 3.1 4.7 5 4.7 7S5.5 11.9 7 12.3"/></svg>`,
+  tray: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 1.6v4.8M5.1 4.5L7 6.4l1.9-1.9"/><path d="M1.9 8.2h2.9l.9 1.3h2.6l.9-1.3h2.9"/><path d="M1.9 8.2v3.9h10.2V8.2"/></svg>`,
   backup: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2v7M4.5 6.5L7 9l2.5-2.5"/><path d="M2 11h10"/></svg>`,
   import: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 8.5v2.5H3V8.5M7 2v7M4.5 6L7 8.5 9.5 6"/></svg>`,
   open:   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2.5L11 7 7 11.5M3 7h8"/></svg>`,
@@ -2332,6 +2333,8 @@ const MENU_DATA = [
       { label: 'Свойства базы',  icon: 'props',  action: 'db-properties' },
       '---',
       { label: 'Настройки',      icon: 'gear',   action: 'settings'   },
+      '---',
+      { label: 'Свернуть в трей', icon: 'tray',  action: 'tray-hide'  },
     ]
   },
   {
@@ -2419,6 +2422,7 @@ const CMD_REGISTRY = [
   { id:'move-up',             label:'Переместить вверх',         icon:'move-up',     group:'Навигация',                             action:'move-up' },
   { id:'move-down',           label:'Переместить вниз',          icon:'move-down',   group:'Навигация',                             action:'move-down' },
   { id:'toggle-menubar',      label:'Переключить меню',          icon:'menu-toggle', group:'Навигация',                             action:'toggle-menubar' },
+  { id:'tray-hide',           label:'Свернуть в трей',           icon:'tray',        group:'Навигация',                             action:'tray-hide' },
   // Поиск
   { id:'find',                label:'Поиск',                     icon:'search',      group:'Поиск',        shortcut:'Ctrl+F',       action:'find' },
   { id:'find-dupes',          label:'Поиск дубликатов',          icon:'dupes',       group:'Поиск',                                 action:'find-dupes' },
@@ -3105,6 +3109,19 @@ function buildMenubar() {
     });
   }
 
+  // Кнопка «Свернуть в трей» — правый край строки меню, под системной ×.
+  // margin-left:auto в CSS; группы меню остаются шириной по контенту.
+  const trayBtn = document.createElement('button');
+  trayBtn.className = 'menu-tray-btn';
+  trayBtn.title = 'Свернуть в трей';
+  trayBtn.innerHTML = ICONS['tray'];
+  trayBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeAllMenus();
+    handleMenuAction('tray-hide');
+  });
+  bar.appendChild(trayBtn);
+
   document.addEventListener('click', closeAllMenus);
   window.addEventListener('blur', closeAllMenus);
   document.addEventListener('blur', closeAllMenus, true); // capture phase
@@ -3282,6 +3299,9 @@ function handleMenuAction(action) {
     }
     case 'settings':
       openSettingsDialog();
+      break;
+    case 'tray-hide':
+      invoke('hide_window').catch(console.error);
       break;
 
     // ── Database ──

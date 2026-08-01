@@ -134,6 +134,21 @@ body {
   color: #fff;
 }
 
+/* «Свернуть в трей» — единственный auto-отступ в баре, прижимает кнопку вправо.
+   cursor: default — как у .menu-label, чтобы строка меню была единообразной. */
+#menubar .menu-tray-btn {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  cursor: default;
+  line-height: 0;
+}
+#menubar .menu-tray-btn:hover { background: var(--accent); color: #fff; }
+
 .menu-dropdown {
   display: none;
   position: absolute;
