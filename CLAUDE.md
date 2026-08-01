@@ -150,6 +150,16 @@ Portable-файлы рядом с exe (в `target\debug\`):
 - Диалоги открытия/создания БД стартуют в папке текущей базы
 - Полностью portable: в реестр ничего не пишется; `reg query` используется только read-only для автодетектирования браузеров
 
+### Трей и глобальный хоткей
+- Иконка трея вшита: `Image::from_bytes(include_bytes!("../icons/icon.ico"))` — не полагаемся на `default_window_icon`
+- **`TrayIcon` обязан пережить `setup`** — держим в `app.manage(tray)`, иначе `Drop` убирает иконку через секунду после старта
+- Меню трея (`MenuItem::with_id` + `on_menu_event`): «Показать URL-Album» (`show`) / «Добавить из буфера» (`add_clip`) / «Выход» (`quit`)
+- «Выход» = `app.exit(0)` → приводит к `RunEvent::Exit`, где выполняется WAL-checkpoint (см. Критические ловушки)
+- Глобальный хоткей **F8** — плагин `tauri-plugin-global-shortcut`; реагировать **только на `ShortcutState::Pressed`**, иначе срабатывает дважды (нажатие + отпускание). Доп. пользовательский хоткей — `AppState.user_hotkey` / команда `set_hotkey`
+- `add_from_clipboard(app)` — общая функция для трея и F8: `show/unminimize/set_focus` окна + `app.emit("tray-add-from-clipboard", ())`. Буфер читает **JS** (`navigator.clipboard.readText()` с задержкой 150мс), payload не передаётся. Если буфер начнёт приходить пустым — читать в Rust через `arboard` и слать готовый текст payload'ом
+- `hide_window()` — команда «спрятать окно в трей». UI: кнопка у правого края menubar (`.menu-tray-btn`, прижата `margin-left: auto`) + пункт «Файл → Свернуть в трей» + команда `tray-hide` в `CMD_REGISTRY` (можно вынести на тулбар — актуально для компактного режима, где `#menubar` скрыт целиком)
+- Возврат из трея: «Показать URL-Album» или F8 — оба зовут `show()/unminimize()/set_focus()`
+
 ### DB Schema
 ```sql
 CREATE TABLE nodes (
@@ -270,6 +280,10 @@ CREATE TABLE nodes (
 - [ ] Массовое выделение / batch operations
 - [ ] Favicon: force refresh / TTL (YAGNI пока)
 - [ ] **Локализация (i18n)** — крупная задача, делать отдельной сессией (см. ниже)
+- [ ] `backup_db` / `backup_db_with_data`: структурный возврат `BackupResult { path, wal_warning: Option<String> }` вместо строки с приклеенным предупреждением. Ломает текущий `showNotice` (`app.js`, конкатенация строки) — ехать одним коммитом с правкой JS (~2 строки)
+- [ ] **`tauri-plugin-single-instance` не подключён.** Со свёрнутым в трей окном запуск второй копии ничем не блокируется: две копии на одной SQLite + конфликт за порт HTTP-сервера расширения + конфликт за глобальный F8. Подключить, в колбэке плагина показывать уже запущенное окно
+- [ ] Перехват `WindowEvent::CloseRequested` + `api.prevent_close()` — сворачивание в трей по крестику вместо выхода. Обсуждалось, отложено до отзывов с форума (заодно решить, чем выходить, кроме пункта «Выход» в трее)
+- [ ] Убрать `.set_parent(&window)` из `backup_db` — для единообразия с `open_db`, где он снят из-за DPI-бага (см. «Активные проблемы»)
 
 ### DnD — состояние (проверено 2026-06-04)
 - Защита от циклов: **двойная** — JS `_isDragValid` (walk up через `allNodes`) + Rust `move_node` (walk up через БД). Потеря данных невозможна.
@@ -320,6 +334,10 @@ CREATE TABLE nodes (
 
 - **`eprintln!`/`dbg!` не видны в GUI-сборке** (`windows_subsystem = "windows"`). DevTools в release отключены. Для отладки: `"devtools": true` в `tauri.conf.json` временно, или писать в файл (`OpenOptions::append`).
 
+- **WAL-checkpoint при выходе возможен только в `RunEvent::Exit`.** Managed-состояние (`app.manage`) при завершении Tauri **не дропается** — `Connection::drop` → `sqlite3_close` не вызывается, WAL не вливается в базу. Форма `.run(tauri::generate_context!())` без колбэка `RunEvent` не видит вообще. Решение: `.build(ctx)?.run(|app_handle, event| …)`, внутри `if let RunEvent::Exit` → `app_handle.try_state::<AppState>()` → `PRAGMA wal_checkpoint(TRUNCATE)`, ошибки игнорировать (выход не блокировать). `app.exit(0)` из трея приходит сюда же — отдельный checkpoint в обработчике трея не нужен. **Файлы `-wal`/`-shm` при этом остаются на диске — это норма**: соединение не закрывается, checkpoint лишь переливает данные в основной файл. (Сессия 20, `36defd3`.)
+
+- **Обработчики `contextmenu` в JS точечные — дыры неизбежны.** Они висят на конкретных элементах (дерево, грид, detail-view, строки диалогов), а в непокрытых местах — пустота под деревом, отступы, тулбар, breadcrumb, `gridEl` мимо `.card` — всплывает родное меню WebView2 («Назад / Обновить / Сохранить как / Печать»), иногда поверх нашего. Решение: один глобальный перехватчик на `document` в **фазе всплытия** (без `capture`) в конце `init()` — точечные обработчики отрабатывают первыми, `e.preventDefault()` гасит остаток. `INPUT`/`TEXTAREA`/`isContentEditable` исключены, иначе пропадёт «Вырезать/Копировать/Вставить». (Сессия 20, `bbb43b1`.)
+
 ### Rust — IPC и блокировки
 
 - **Блокирующие команды (`std::process::Command::status()` и т.п.) — обязательно `async fn` + `spawn_blocking`.** Иначе IPC-поток замерзает и UI не реагирует. Касается: `refresh_thumb`, любой команды, запускающей внешний процесс.
@@ -337,6 +355,8 @@ CREATE TABLE nodes (
 - **`sort_idx` обязан быть в SELECT и в `struct TreeNode`.** Без поля `pub sort_idx: i64` в `TreeNode` фронтенд получает `undefined` — все `.sort((a,b) => (a.sort_idx??0)-...)` тихо сводятся к сортировке по `id`. Симптом: порядок сбрасывается при каждом перезапуске, хотя в БД записано верно. Дерево "работало" случайно — V8 стабильная сортировка сохраняла порядок из `ORDER BY sort_idx,id`.
 
 - **`thumb` хранит полный абсолютный путь (legacy); `favicon` — только filename.** Путь favicon строится в runtime: `exe_dir/Data/favicons/{filename}`. При переносе папки скриншоты ломаются — известное ограничение.
+
+- **`backup_db` / `backup_db_with_data` копируют только `*.db`, без сайдкара `*.db-wal`** — всё, что лежит в WAL, в копию не попадёт. Перед `std::fs::copy` обязателен `PRAGMA wal_checkpoint(TRUNCATE)`, и делать его **после** `save_file().await` / `pick_folder().await` (диалог асинхронный). **`MutexGuard` через `.await` не держать** — checkpoint вынесен в синхронную `checkpoint_before_copy()`, где guard берётся и отпускается целиком внутри тела, так что нарушить правило структурно невозможно. Неудачный checkpoint не отменяет копирование (файл валиден, просто без свежих записей) — предупреждение уходит наверх текстом через `backup_result()`. (Сессия 20, `36defd3`.)
 
 ### Скриншоты (thumbnails)
 
@@ -423,3 +443,8 @@ CREATE TABLE nodes (
 ## История изменений (крупные сессии)
 
 > Полная история (сессии 1-18, релизы до 2.2.4-beta включительно) перенесена в HISTORY.md.
+
+**Сессия 20 (2026-08-01)** — надёжность WAL и мелочи UX:
+- `36defd3` — WAL-checkpoint при выходе (`RunEvent::Exit`) и перед резервным копированием; удалён пустой `on_window_event` с неверным комментарием про `Connection::drop`
+- `bbb43b1` — глобальное подавление родного контекстного меню WebView2 вне полей ввода; `TASK-*.md` в `.gitignore`
+- `6e8d30c` — команда `hide_window`, кнопка «Свернуть в трей» у правого края menubar и пункт в меню «Файл»
