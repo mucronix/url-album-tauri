@@ -2485,7 +2485,7 @@ const TOOLBAR_DEFS = CMD_REGISTRY;
 
 const DEFAULT_TOOLBAR = [
   'nav-back', 'nav-forward', 'nav-up', '|',
-  'toggle-menubar', '|',
+  'toggle-menubar', 'tray-hide', '|',
   'new-link', 'new-folder', 'new-subfolder', '|',
   'delete-link', 'properties', '|',
   'find', '|',
