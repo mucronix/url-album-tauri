@@ -20,9 +20,11 @@
 C:\Projects\url-album-tauri\
 ├── src-tauri\               ← Rust/Tauri backend
 │   ├── src\
-│   │   ├── main.rs          ← все Tauri-команды (~1700+ строк)
+│   │   ├── main.rs          ← все Tauri-команды (~3000 строк)
 │   │   ├── db.rs            ← SQLite схема, запросы, экспорт/импорт
-│   │   └── importer.rs      ← парсер ua.dat (Windows-1251)
+│   │   ├── importer.rs      ← парсер ua.dat (Windows-1251)
+│   │   ├── logger.rs        ← журнал диагностики (url-album.log)
+│   │   └── relay.rs         ← локальный релей для прокси с авторизацией
 │   ├── Cargo.toml
 │   ├── tauri.conf.json      ← frontendDist: "../ui", center:true, minWidth:500
 │   └── build.rs
@@ -34,9 +36,6 @@ C:\Projects\url-album-tauri\
 │       ├── folder-closed.png  ← пиксельная иконка закрытой папки
 │       └── folder-open.png    ← пиксельная иконка открытой папки
 ├── CLAUDE.md                ← этот файл
-├── docs\superpowers\
-│   ├── specs\               ← design docs
-│   └── plans\               ← implementation plans
 └── Data\                    ← thumbnails/скриншоты закладок (legacy)
 ```
 
@@ -195,14 +194,29 @@ CREATE TABLE nodes (
     kind     TEXT NOT NULL DEFAULT 'bookmark',
     title    TEXT NOT NULL,
     url      TEXT,
-    thumb    TEXT,         -- полный абсолютный путь к screenshot PNG
+    thumb    TEXT,         -- только filename ("{id}.png"), путь собирается в runtime
     note     TEXT,
     created  TEXT,
     visited  TEXT,
     sort_idx INTEGER DEFAULT 0,
-    favicon  TEXT          -- только filename (напр. "github.com.png"), путь собирается в runtime
+    -- ниже: добавляются миграциями в db::init (ALTER TABLE ... .ok()), тихо на старых базах
+    favicon        TEXT,     -- только filename (напр. "github.com.png")
+    deleted        INTEGER DEFAULT 0,  -- мягкое удаление: 1 = в корзине
+    deleted_parent INTEGER,  -- где лежала до удаления (для восстановления)
+    opener         TEXT      -- «Открывать через…» для папки: NULL | ключ браузера | custom:путь
 );
 ```
+Индекс: `idx_parent ON nodes (parent, kind, sort_idx)`.
+
+### Формат ua.dat (оригинал, для `importer.rs`)
+- Кодировка: Windows-1251
+- Структура: tab-indented TSV
+- Глубина = количество ведущих `\t`
+- Колонки: `Title\tURL\tThumb.png\tNote\tCreated\tVisited\tFlag`
+- URL == `#` -> папка
+- Корневой узел: `title!!!` на глубине 0
+- Примечания: `^^` = перенос строки
+- Скриншоты: `Data/{timestamp}.png`
 
 ### Frontend (app.js / ~4900+ строк)
 
@@ -301,10 +315,10 @@ CREATE TABLE nodes (
 ### Архитектурные ограничения
 - `rfd::AsyncFileDialog` без `set_parent` на Windows (убрано из `open_db` из-за DPI-бага)
 - `allNodes` — полная перезагрузка при каждом изменении через `invoke('get_tree')`
-- `thumb` хранит полный абсолютный путь в DB (legacy, в отличие от `favicon` который хранит только filename)
 
 ### Что НЕ сделано / очередь
-- [ ] `thumb` хранит абсолютный путь в DB → перейти на filename как у `favicon` (при переносе папки скриншоты ломаются)
+- [ ] Восстановление из резервной копии (сейчас есть только создание копии)
+- [ ] Скриншоты через WebView2, без внешнего Edge/Chrome
 - [ ] Browser import (`import_chromium`, `import_firefox`) → добавить `parent_id` (сейчас всегда в корень)
 - [ ] Favicon: очистка orphaned файлов из `Data/favicons/` при удалении закладок
 - [ ] Массовое выделение / batch operations
@@ -386,7 +400,7 @@ CREATE TABLE nodes (
 
 - **`sort_idx` обязан быть в SELECT и в `struct TreeNode`.** Без поля `pub sort_idx: i64` в `TreeNode` фронтенд получает `undefined` — все `.sort((a,b) => (a.sort_idx??0)-...)` тихо сводятся к сортировке по `id`. Симптом: порядок сбрасывается при каждом перезапуске, хотя в БД записано верно. Дерево "работало" случайно — V8 стабильная сортировка сохраняла порядок из `ORDER BY sort_idx,id`.
 
-- **`thumb` хранит полный абсолютный путь (legacy); `favicon` — только filename.** Путь favicon строится в runtime: `exe_dir/Data/favicons/{filename}`. При переносе папки скриншоты ломаются — известное ограничение.
+- **И `thumb`, и `favicon` хранят только filename**, путь собирается в runtime: `exe_dir/Data/{thumb}` и `exe_dir/Data/favicons/{favicon}`. Старые базы с абсолютными путями в `thumb` чинит `migrate_thumb_to_filename` при открытии базы — она же вызывается в `switch_db`. Раньше `thumb` хранил абсолютный путь, и при переносе папки скриншоты ломались; сейчас нет.
 
 - **`backup_db` / `backup_db_with_data` копируют только `*.db`, без сайдкара `*.db-wal`** — всё, что лежит в WAL, в копию не попадёт. Перед `std::fs::copy` обязателен `PRAGMA wal_checkpoint(TRUNCATE)`, и делать его **после** `save_file().await` / `pick_folder().await` (диалог асинхронный). **`MutexGuard` через `.await` не держать** — checkpoint вынесен в синхронную `checkpoint_before_copy()`, где guard берётся и отпускается целиком внутри тела, так что нарушить правило структурно невозможно. Неудачный checkpoint не отменяет копирование (файл валиден, просто без свежих записей) — предупреждение уходит наверх текстом через `backup_result()`. (Сессия 20, `36defd3`.)
 
@@ -495,6 +509,14 @@ CREATE TABLE nodes (
 - `.tree-item:hover > .label` / `.tree-item.active > .label` — серый фон только на тексте
 - `.fsvg-closed` / `.fsvg-open` + `.tree-item.open` — CSS переключение иконок папок
 - `.folder-icon img` — `image-rendering: pixelated`, 18×18px
+
+### Принятые решения (почему так)
+
+Перенесено из `DECISIONS.md` — только то, что не выводится из здравого смысла и до сих пор верно.
+
+- **`asset://` для PNG, не base64 через IPC.** base64 означал бы копирование картинки через IPC на каждую карточку; `asset://` отдаёт файл напрямую WebView-ом. Заметно на больших папках — меньше памяти и быстрее рендер.
+- **Единая таблица `nodes` с полем `kind`, а не отдельные `folders` и `bookmarks`.** Дерево строится из одной таблицы, без JOIN-ов, глубина иерархии не ограничена (adjacency list).
+- **Vanilla JS без фреймворка.** Нет бандлера — нет шага сборки фронтенда, `node_modules` и версионных конфликтов; `withGlobalTauri: true` даёт `window.__TAURI__`, этого достаточно.
 
 ---
 
