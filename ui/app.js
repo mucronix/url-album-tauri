@@ -7,6 +7,12 @@ const { convertFileSrc } = window.__TAURI__.core;
 const MAX_FAVICON_CONCURRENCY = 5; // intentional per-domain rate limiting
 const APP_VERSION = '2.3.0-beta';
 
+// Записать строку в журнал программы. console.error в release-сборке
+// недоступен (DevTools отключены), поэтому причины отказов уходят сюда.
+function logUi(message) {
+  invoke('log_from_ui', { message: String(message) }).catch(() => {});
+}
+
 // ── Link checker ─────────────────────────────────────────────────────────
 // Column config: id → CSS-var suffix, label, default width
 const CHK_COLS = [
@@ -395,6 +401,8 @@ document.getElementById("chk-collapse").onclick = () => {
 function showFaviconPanel(total) {
   _faviconTotal = total;
   _faviconDone  = 0;
+  _faviconFailed  = 0;
+  _faviconStarted = Date.now();
   document.getElementById('fv-done').textContent  = '0';
   document.getElementById('fv-total').textContent = total;
   document.getElementById('fv-bar-fill').style.width = '0%';
@@ -417,6 +425,10 @@ function hideFaviconPanel() {
 function _finishFaviconBatch() {
   document.getElementById('fv-domain').textContent = 'Готово';
   setStatus(`Загружено ${_faviconDone} favicon`);
+  // Одна строка на весь пакет: для «у меня половина иконок не грузится»
+  // сводка полезнее, чем сотня отдельных записей.
+  logUi(`favicon, итог пакета: всего ${_faviconTotal}, удалось ${_faviconDone - _faviconFailed}, `
+      + `не удалось ${_faviconFailed}, ${Math.round((Date.now() - _faviconStarted) / 1000)}с`);
   const openIds = saveOpenState();
   renderTree();
   restoreOpenState(openIds);
@@ -439,6 +451,8 @@ document.getElementById('fv-close-btn').addEventListener('click', () => {
 function showThumbPanel(total) {
   _thumbTotal = total;
   _thumbDone  = 0;
+  _thumbFailed  = 0;
+  _thumbStarted = Date.now();
   document.getElementById('tp-done').textContent  = '0';
   document.getElementById('tp-total').textContent = total;
   document.getElementById('tp-bar-fill').style.width = '0%';
@@ -461,6 +475,8 @@ function hideThumbPanel() {
 function _finishThumbBatch() {
   document.getElementById('tp-label').textContent = 'Готово';
   setStatus(`Обновлено ${_thumbDone} рисунков`);
+  logUi(`скриншоты, итог пакета: всего ${_thumbTotal}, удалось ${_thumbDone - _thumbFailed}, `
+      + `не удалось ${_thumbFailed}, ${Math.round((Date.now() - _thumbStarted) / 1000)}с`);
   setTimeout(hideThumbPanel, 2000);
   if (activeFolderId != null) loadFolderContents(activeFolderId);
   if (activeBookmarkNode) {
@@ -865,7 +881,12 @@ function buildExportSubmenu(folderNode) {
     if (withImages !== undefined) args.withImages = withImages;
     invoke(cmd, args)
       .then(() => setStatus('Экспорт завершён'))
-      .catch(err => { if (err !== "Отменено") { console.error(err); setStatus('Ошибка экспорта'); } });
+      .catch(err => { if (err !== "Отменено") {
+        // console.error в release недоступен — причина (нет прав, диск полон)
+        // терялась целиком, пользователь видел только «Ошибка экспорта».
+        logUi(`экспорт (${cmd}) не удался: ${err}`);
+        setStatus('Ошибка экспорта');
+      } });
   };
 
   sub.appendChild(ctxItem("import", "HTML файл",       null, () => doExport("export_folder_html")));
@@ -3174,28 +3195,28 @@ function handleMenuAction(action) {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
       if (fid != null) invoke("export_folder_html", { folderId: fid })
         .then(() => setStatus('Экспорт в HTML завершён'))
-        .catch(e => { console.error(e); setStatus('Ошибка экспорта'); });
+        .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
       break;
     }
     case 'export-txt': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
       if (fid != null) invoke("export_folder_txt", { folderId: fid })
         .then(() => setStatus('Экспорт в текст завершён'))
-        .catch(e => { console.error(e); setStatus('Ошибка экспорта'); });
+        .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
       break;
     }
     case 'export-sync-with': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
       if (fid != null) invoke("export_folder_sync", { folderId: fid, withImages: true })
         .then(() => setStatus('Экспорт (с рисунками) завершён'))
-        .catch(e => { console.error(e); setStatus('Ошибка экспорта'); });
+        .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
       break;
     }
     case 'export-sync-without': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
       if (fid != null) invoke("export_folder_sync", { folderId: fid, withImages: false })
         .then(() => setStatus('Экспорт завершён'))
-        .catch(e => { console.error(e); setStatus('Ошибка экспорта'); });
+        .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
       break;
     }
     // ── Backup ──
@@ -3517,6 +3538,8 @@ let _faviconActive    = 0;    // current in-flight invoke count
 let _faviconCancelled = false;
 let _faviconTotal     = 0;
 let _faviconDone      = 0;
+let _faviconFailed    = 0;   // для сводки пакета
+let _faviconStarted   = 0;
 
 // ── Thumb batch state ─────────────────────────────────────────────────────
 const MAX_THUMB_CONCURRENCY = 1;
@@ -3525,6 +3548,8 @@ let _thumbActive    = 0;
 let _thumbCancelled = false;
 let _thumbTotal     = 0;
 let _thumbDone      = 0;
+let _thumbFailed    = 0;     // для сводки пакета
+let _thumbStarted   = 0;
 
 // ── App settings ──────────────────────────────────────────────────────────────
 
@@ -5447,7 +5472,7 @@ function _runFaviconWorker() {
     .then(filename => {
       if (filename) applyFaviconToDOM(item, filename);
     })
-    .catch(() => {})
+    .catch(() => { _faviconFailed++; })
     .finally(() => {
       _faviconDone++;
       _faviconActive--;
@@ -5547,6 +5572,7 @@ function _runThumbWorker() {
       _applyThumbToCard(item.id, item.title, newPath);
     })
     .catch(err => {
+      _thumbFailed++;
       setStatus('Ошибка рисунка: ' + (err?.message ?? String(err)));
     })
     .finally(() => {

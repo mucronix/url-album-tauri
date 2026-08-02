@@ -98,22 +98,40 @@ fn set_folder_opener(state: tauri::State<AppState>, id: i64, opener: Option<Stri
 #[tauri::command]
 fn delete_folder(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    // (а) mark all descendants (excluding root) as deleted, keep their parent links intact
-    conn.execute(
-        "WITH RECURSIVE sub(id) AS (
-             VALUES(?1)
-             UNION ALL
-             SELECT n.id FROM nodes n JOIN sub s ON n.parent = s.id
-         )
-         UPDATE nodes SET deleted=1 WHERE id IN (SELECT id FROM sub) AND id != ?1",
-        rusqlite::params![id],
-    ).map_err(|e| e.to_string())?;
-    // (б) detach root from tree and mark deleted, saving its original parent for restore
-    conn.execute(
-        "UPDATE nodes SET deleted=1, deleted_parent=parent, parent=NULL WHERE id=?1",
-        rusqlite::params![id],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+    // Оба шага обязаны быть атомарными: отказ между ними пометил бы содержимое
+    // удалённым, оставив саму папку в дереве — визуально пустая папка, и
+    // содержимого нет даже в корзине.
+    conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+    let res = (|| -> rusqlite::Result<()> {
+        // (а) mark all descendants (excluding root) as deleted, keep their parent links intact
+        conn.execute(
+            "WITH RECURSIVE sub(id) AS (
+                 VALUES(?1)
+                 UNION ALL
+                 SELECT n.id FROM nodes n JOIN sub s ON n.parent = s.id
+             )
+             UPDATE nodes SET deleted=1 WHERE id IN (SELECT id FROM sub) AND id != ?1",
+            rusqlite::params![id],
+        )?;
+        // (б) detach root from tree and mark deleted, saving its original parent for restore
+        conn.execute(
+            "UPDATE nodes SET deleted=1, deleted_parent=parent, parent=NULL WHERE id=?1",
+            rusqlite::params![id],
+        )?;
+        Ok(())
+    })();
+
+    match res {
+        Ok(()) => {
+            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        Err(e) => {
+            conn.execute_batch("ROLLBACK").ok();
+            logger::log(&format!("удаление папки id={id} отменено, изменений нет: {e}"));
+            Err(e.to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -752,9 +770,14 @@ async fn do_screenshot(
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     ];
+    // Самая частая жалоба про скриншоты. Раньше возврат происходил ДО строки
+    // журнала о запуске браузера, и в журнале не оставалось ничего.
     let browser = candidates.iter()
         .find(|p| std::path::Path::new(p).exists())
-        .ok_or("Edge или Chrome не найден")?
+        .ok_or_else(|| {
+            logger::log(&format!("скриншот id={id}: Edge или Chrome не найден ни по одному из {} путей", candidates.len()));
+            "Edge или Chrome не найден".to_string()
+        })?
         .to_string();
 
     let tmp_dir = std::env::temp_dir().join(format!("ua_screenshot_{id}"));
@@ -2428,20 +2451,42 @@ fn detect_browsers() -> Vec<DetectedBrowser> { detect_browsers_list() }
 #[tauri::command]
 fn import_from_browser(state: tauri::State<AppState>, browser_id: String) -> Result<ImportSummary, String> {
     let browsers = detect_browsers_list();
-    let b = browsers.iter().find(|b| b.id == browser_id).ok_or("Браузер не найден")?;
+    logger::log(&format!("импорт из браузера: найдено профилей {}, запрошен «{browser_id}»", browsers.len()));
+    let b = browsers.iter().find(|b| b.id == browser_id).ok_or_else(|| {
+        logger::log(&format!("импорт: профиль «{browser_id}» не найден среди обнаруженных"));
+        "Браузер не найден".to_string()
+    })?;
     let kind = b.kind.clone();
     let name = b.name.clone();
     let path = b.bookmarks_path.clone();
     drop(browsers);
+    logger::log(&format!("импорт «{name}» ({kind}) из {path}"));
 
     let (links, folders) = if kind == "firefox" {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        db::import_firefox(&conn, &path, &name).map_err(|e| e.to_string())?
+        db::import_firefox(&conn, &path, &name).map_err(|e| {
+            logger::log(&format!("импорт «{name}» не удался: {e}"));
+            e.to_string()
+        })?
     } else {
-        let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        // Частая причина «ноль закладок» — файл занят браузером (os error 32).
+        let json = std::fs::read_to_string(&path).map_err(|e| {
+            logger::log(&format!("импорт «{name}»: файл закладок не прочитан ({e})"));
+            e.to_string()
+        })?;
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        db::import_chromium(&conn, &json, &name).map_err(|e| e.to_string())?
+        db::import_chromium(&conn, &json, &name).map_err(|e| {
+            logger::log(&format!("импорт «{name}» не удался: {e}"));
+            e.to_string()
+        })?
     };
+    // Ноль — не ошибка, но именно с этим приходят с жалобой: структура файла
+    // оказалась не той, что ждём, или все секции закладок пусты.
+    if links == 0 && folders == 0 {
+        logger::log(&format!("импорт «{name}»: разобрано 0 закладок — структура файла не та или секции пусты"));
+    } else {
+        logger::log(&format!("импорт «{name}»: {links} ссылок, {folders} папок"));
+    }
     Ok(ImportSummary { links, folders })
 }
 
@@ -2687,7 +2732,10 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
         if req.method() == &tiny_http::Method::Options {
             match cors {
                 Some(o) => respond_cors_preflight(req, o),
-                None    => respond_json(req, 403, r#"{"error":"forbidden"}"#, None),
+                None    => {
+                    logger::log(&format!("расширение: 403 preflight, чужой Origin «{origin}»"));
+                    respond_json(req, 403, r#"{"error":"forbidden"}"#, None)
+                }
             }
             continue;
         }
@@ -2695,7 +2743,10 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
         // GET /api/v1/handshake — returns token to the extension (Origin-gated)
         if req.method() == &tiny_http::Method::Post && req.url() == "/api/v1/handshake" {
             match cors {
-                None    => respond_json(req, 403, r#"{"error":"forbidden"}"#, None),
+                None    => {
+                    logger::log(&format!("расширение: 403 handshake, чужой Origin «{origin}»"));
+                    respond_json(req, 403, r#"{"error":"forbidden"}"#, None)
+                }
                 Some(o) => respond_json(req, 200,
                     &format!(r#"{{"token":"{}"}}"#, token), Some(o)),
             }
@@ -2705,6 +2756,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
         // GET /api/v1/folders — list root folders (Token gated; Origin allowed if absent or matching)
         if req.method() == &tiny_http::Method::Get && req.url() == "/api/v1/folders" {
             if !origin.is_empty() && cors.is_none() {
+                logger::log(&format!("расширение: 403 /folders, чужой Origin «{origin}»"));
                 respond_json(req, 403, r#"{"error":"forbidden"}"#, None);
                 continue;
             }
@@ -2713,6 +2765,9 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                     && h.value.as_str() == token
             });
             if !ok {
+                // Самый частый случай: расширение переустановили или settings.json
+                // пересоздан — токены разошлись, и «кнопка в браузере не работает».
+                logger::log("расширение: 401 /folders, токен не совпал");
                 respond_json(req, 401, r#"{"error":"unauthorized"}"#, Some(ALLOWED_ORIGIN));
                 continue;
             }
@@ -2720,6 +2775,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
             let conn = match state.db.lock() {
                 Ok(c)  => c,
                 Err(e) => {
+                    logger::log(&format!("расширение: 500 /folders, ошибка базы: {e}"));
                     respond_json(req, 500,
                         &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), Some(ALLOWED_ORIGIN));
                     continue;
@@ -2732,6 +2788,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
             ) {
                 Ok(s)  => s,
                 Err(e) => {
+                    logger::log(&format!("расширение: 500 /folders, ошибка базы: {e}"));
                     respond_json(req, 500,
                         &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), Some(ALLOWED_ORIGIN));
                     continue;
@@ -2742,6 +2799,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
             }) {
                 Ok(r)  => r,
                 Err(e) => {
+                    logger::log(&format!("расширение: 500 /folders, ошибка базы: {e}"));
                     respond_json(req, 500,
                         &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), Some(ALLOWED_ORIGIN));
                     continue;
@@ -2758,12 +2816,14 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
 
         // All other non-POST or wrong path
         if req.method() != &tiny_http::Method::Post || req.url() != "/api/v1/bookmarks" {
+            logger::log(&format!("расширение: 404 {} {}", req.method(), req.url()));
             respond_json(req, 404, r#"{"error":"not found"}"#, None);
             continue;
         }
 
         // POST /api/v1/bookmarks — Origin check
         if cors.is_none() {
+            logger::log(&format!("расширение: 403 /bookmarks, чужой Origin «{origin}»"));
             respond_json(req, 403, r#"{"error":"forbidden"}"#, None);
             continue;
         }
@@ -2774,18 +2834,24 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                 && h.value.as_str() == token
         });
         if !ok {
+            logger::log("расширение: 401 /bookmarks, токен не совпал");
             respond_json(req, 401, r#"{"error":"unauthorized"}"#, cors);
             continue;
         }
 
         let mut body = String::new();
         if req.as_reader().read_to_string(&mut body).is_err() {
+            logger::log("расширение: 400 /bookmarks, тело запроса не прочитано");
             respond_json(req, 400, r#"{"error":"bad request"}"#, cors);
             continue;
         }
         let v: serde_json::Value = match serde_json::from_str(&body) {
             Ok(v)  => v,
-            Err(_) => { respond_json(req, 400, r#"{"error":"invalid json"}"#, cors); continue; }
+            Err(e) => {
+                logger::log(&format!("расширение: 400 /bookmarks, тело не разобрано: {e}"));
+                respond_json(req, 400, r#"{"error":"invalid json"}"#, cors);
+                continue;
+            }
         };
 
         let url   = v["url"].as_str().unwrap_or("").trim().to_string();
@@ -2795,6 +2861,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
             .filter(|s| !s.is_empty());
 
         if url.is_empty() {
+            logger::log("расширение: 400 /bookmarks, в запросе нет адреса");
             respond_json(req, 400, r#"{"error":"url required"}"#, cors);
             continue;
         }
@@ -2824,6 +2891,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
             let conn = match state.db.lock() {
                 Ok(c)  => c,
                 Err(e) => {
+                    logger::log(&format!("расширение: 500 /bookmarks, ошибка базы: {e}"));
                     respond_json(req, 500,
                         &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), cors);
                     continue;
@@ -2842,6 +2910,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                     None => match find_or_create_inbox_folder(&conn) {
                         Ok(id) => id,
                         Err(e) => {
+                            logger::log(&format!("расширение: 500 /bookmarks, папка не создана: {e}"));
                             respond_json(req, 500,
                                 &format!(r#"{{"error":"{}"}}"#, e.replace('"', "\\\"")), cors);
                             continue;
@@ -2860,6 +2929,7 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
             ) {
                 Ok(_)  => conn.last_insert_rowid(),
                 Err(e) => {
+                    logger::log(&format!("расширение: 500 /bookmarks, ошибка базы: {e}"));
                     respond_json(req, 500,
                         &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), cors);
                     continue;
