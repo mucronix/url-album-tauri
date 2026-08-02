@@ -1936,7 +1936,13 @@ fn set_hotkey(state: tauri::State<AppState>, app: tauri::AppHandle, combo: Optio
     // Пусто/None → снять старый, очистить (остаётся встроенный F8)
     let new = match combo.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         None => {
-            if let Some(old) = current.as_deref() { gs.unregister(old).ok(); }
+            if let Some(old) = current.as_deref() {
+                if let Err(e) = gs.unregister(old) {
+                    // Не снялась — комбинация продолжит срабатывать, и активными
+                    // окажутся сразу две. Симптом: «старая клавиша всё ещё работает».
+                    logger::log(&format!("хоткей {old} не снят: {e}"));
+                }
+            }
             *state.user_hotkey.lock().map_err(|e| e.to_string())? = None;
             return Ok(());
         }
@@ -1965,10 +1971,17 @@ fn set_hotkey(state: tauri::State<AppState>, app: tauri::AppHandle, combo: Optio
         if event.state() == ShortcutState::Pressed {
             add_from_clipboard(app);
         }
-    }).map_err(|_| "Не удалось зарегистрировать комбинацию.\nВозможно, она уже используется другой программой.".to_string())?;
+    }).map_err(|e| {
+        logger::log(&format!("хоткей {new} не зарегистрирован: {e}"));
+        "Не удалось зарегистрировать комбинацию.\nВозможно, она уже используется другой программой.".to_string()
+    })?;
 
     // Успех → снять старый и записать новый (берём lock заново)
-    if let Some(old) = current.as_deref() { gs.unregister(old).ok(); }
+    if let Some(old) = current.as_deref() {
+        if let Err(e) = gs.unregister(old) {
+            logger::log(&format!("хоткей {old} не снят: {e}"));
+        }
+    }
     *state.user_hotkey.lock().map_err(|e| e.to_string())? = Some(new);
     Ok(())
 }
@@ -2882,11 +2895,29 @@ fn add_from_clipboard(app: &tauri::AppHandle) {
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
+    // Журнал — до всего остального: хук паники ниже пишет только при включённом
+    // флаге, а паника может случиться ещё до setup().
+    logger::init_from_settings();
+
+    // Паника: в release `panic = "abort"`, раскрутки стека нет — но хук
+    // вызывается ДО аборта и записать строку успевает. Без него окно просто
+    // исчезает, а журнал обрывается на полуслове, и причины нет нигде.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let place = info.location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "место неизвестно".to_string());
+        let msg = info.payload().downcast_ref::<&str>().map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "причина неизвестна".to_string());
+        logger::log(&format!("ПАНИКА в {place}: {msg}"));
+        prev_hook(info);   // прежнее поведение не теряем
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
-            // Журнал — первым делом, чтобы всё дальнейшее могло писать в него.
-            logger::init_from_settings();
+            // Флаг журнала уже прочитан в main() — здесь только шапка.
             logger::log(&format!("=== запуск URL Album {} ===", env!("CARGO_PKG_VERSION")));
             logger::log(&format!("exe: {}", std::env::current_exe()
                 .map(|p| p.display().to_string()).unwrap_or_default()));
@@ -2911,10 +2942,19 @@ fn main() {
             let db_path = load_last_db()
                 .unwrap_or_else(|| exe_dir.join("album.db"));
 
+            // Отказ здесь = окна не будет вообще. Раньше причина не сохранялась
+            // нигде: повреждённая база, носитель только для чтения, файл занят —
+            // всё выглядело как «программа не запускается».
             let conn = Connection::open(&db_path)
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+                .map_err(|e| {
+                    logger::log(&format!("не удалось открыть базу {}: {e}", db_path.display()));
+                    Box::new(e) as Box<dyn std::error::Error>
+                })?;
             db::init(&conn)
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+                .map_err(|e| {
+                    logger::log(&format!("не удалось подготовить базу {}: {e}", db_path.display()));
+                    Box::new(e) as Box<dyn std::error::Error>
+                })?;
             migrate_thumb_to_filename(&conn, &db_path.parent().unwrap_or(&db_path).join("Data"));
 
             // Persist the resolved path so the next startup knows what was open.
@@ -2989,11 +3029,16 @@ fn main() {
             app.manage(tray);
 
             // Глобальный хоткей. "F8" — единственное место смены комбинации (например на "Ctrl+Alt+A").
-            app.global_shortcut().on_shortcut("F8", |app, _shortcut, event| {
+            // Хоткей не критичен для запуска: комбинацию мог занять чужой процесс.
+            // Раньше здесь стоял `?`, и такой отказ ронял setup целиком — окно
+            // не появлялось вовсе, без единого следа.
+            if let Err(e) = app.global_shortcut().on_shortcut("F8", |app, _shortcut, event| {
                 if event.state() == ShortcutState::Pressed {   // ТОЛЬКО нажатие, не отпускание — иначе сработает дважды
                     add_from_clipboard(app);
                 }
-            })?;
+            }) {
+                logger::log(&format!("F8 не зарегистрирован (занят другой программой?): {e}"));
+            }
 
             Ok(())
         })
