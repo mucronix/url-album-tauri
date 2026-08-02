@@ -25,7 +25,7 @@
 
 ## Скачать последнюю версию
 
-**[URL-Album-2.2.5-beta.zip](https://github.com/skljar/url-album-tauri/releases/download/v2.2.5-beta/URL-Album-2.2.5-beta.zip)** — Windows 10/11 (64-bit), портативная.
+**[URL-Album-2.3.0-beta.zip](https://github.com/skljar/url-album-tauri/releases/download/v2.3.0-beta/URL-Album-2.3.0-beta.zip)** — Windows 10/11 (64-bit), портативная.
 Требования: WebView2 (уже встроен в Windows 10/11).
 
 ## Почему не браузерные закладки?

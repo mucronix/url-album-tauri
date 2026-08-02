@@ -5,7 +5,7 @@ const { invoke }         = window.__TAURI__.core;
 const { convertFileSrc } = window.__TAURI__.core;
 
 const MAX_FAVICON_CONCURRENCY = 5; // intentional per-domain rate limiting
-const APP_VERSION = '2.2.5-beta';
+const APP_VERSION = '2.3.0-beta';
 
 // ── Link checker ─────────────────────────────────────────────────────────
 // Column config: id → CSS-var suffix, label, default width
