@@ -1083,18 +1083,38 @@ fn clear_screenshots(state: tauri::State<AppState>) -> Result<usize, String> {
 #[tauri::command]
 fn clear_db(state: tauri::State<AppState>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute_batch(
+
+    // Раньше здесь были ещё DELETE из entries и folders — таблиц старой схемы,
+    // которых db::init не создаёт. execute_batch падал на них уже ПОСЛЕ удаления
+    // nodes: данные стёрты, команда вернула ошибку, VACUUM не выполнился, и
+    // пользователь решал, что очистка не сработала.
+    conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+    if let Err(e) = conn.execute_batch(
         "DELETE FROM nodes;
-         DELETE FROM entries WHERE 1;
-         DELETE FROM folders WHERE 1;
-         DELETE FROM sqlite_sequence WHERE name IN ('nodes','entries','folders');"
-    ).map_err(|e| e.to_string())?;
-    // VACUUM compacts the file. It may reset journal_mode, so restore WAL + synchronous after.
-    conn.execute_batch(
-        "VACUUM;
-         PRAGMA journal_mode = WAL;
-         PRAGMA synchronous  = FULL;"
-    ).map_err(|e| e.to_string())
+         DELETE FROM sqlite_sequence WHERE name = 'nodes';"
+    ) {
+        conn.execute_batch("ROLLBACK").ok();
+        logger::log(&format!("очистка базы отменена, данные на месте: {e}"));
+        return Err(e.to_string());
+    }
+    conn.execute_batch("COMMIT").map_err(|e| {
+        logger::log(&format!("очистка базы: COMMIT не прошёл: {e}"));
+        e.to_string()
+    })?;
+
+    // VACUUM сжимает файл, и только ПОСЛЕ COMMIT — внутри транзакции он не работает.
+    if let Err(e) = conn.execute_batch("VACUUM") {
+        // Данные уже очищены и зафиксированы: это не отказ операции, а лишь
+        // несжатый файл. Ошибку наверх не отдаём — иначе снова получим
+        // «очистка не сработала» при том, что она сработала.
+        logger::log(&format!("очистка базы: VACUUM не выполнен, данные очищены: {e}"));
+    }
+    // VACUUM может сбросить journal_mode — возвращаем WAL отдельным батчем,
+    // чтобы это произошло даже при неудачном VACUUM.
+    if let Err(e) = conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;") {
+        logger::log(&format!("очистка базы: режим WAL не восстановлен: {e}"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
