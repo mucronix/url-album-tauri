@@ -8,7 +8,7 @@ mod relay;
 use std::sync::Mutex;
 use rusqlite::Connection;
 use tauri::{Manager, Emitter};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::image::Image;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -1838,6 +1838,16 @@ fn log_from_ui(message: String) {
 static SETTINGS_WERE_RESET: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Момент, когда окно последний раз теряло фокус.
+static LAST_UNFOCUS: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
+/// Сколько времени после потери фокуса окно всё ещё считается активным.
+/// Подобрано под задержку между кликом по значку в трее и доставкой события:
+/// Windows успевает отобрать фокус раньше, чем обработчик получит `Click`, и
+/// `is_focused()` там уже возвращает false. Менять здесь, значение одно.
+const TRAY_RECENT_UNFOCUS: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// Отложить в сторону испорченный `settings.json`: копия рядом,
 /// `settings.json.bad`, прежняя перезаписывается. Копия, а не переименование —
 /// исходный файл не трогаем, вдруг он ещё пригодится.
@@ -3143,6 +3153,39 @@ fn main() {
                 .icon(tray_icon)
                 .tooltip("URL Album")
                 .menu(&tray_menu)
+                .show_menu_on_left_click(false)   // меню — только по правой кнопке
+                .on_tray_icon_event(|tray, event| {
+                    // Левый одиночный клик — переключение окна.
+                    // MouseButtonState::Up = клик завершён (нажатие + отпускание).
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        if let Some(w) = tray.app_handle().get_webview_window("main") {
+                            // Прячем ТОЛЬКО если окно и видно, и не свёрнуто, и в фокусе.
+                            // Если оно открыто, но перекрыто чужими окнами, человек жмёт
+                            // на значок с намерением «покажи» — прятать в этот момент
+                            // было бы ровно наоборот.
+                            let visible   = w.is_visible().unwrap_or(false);
+                            let minimized = w.is_minimized().unwrap_or(false);
+                            let focused   = w.is_focused().unwrap_or(false);
+                            // Фокус мог отобрать сам клик по значку — тогда is_focused()
+                            // уже false, хотя мгновение назад окно было активным.
+                            let just_unfocused = LAST_UNFOCUS.lock().ok()
+                                .and_then(|g| *g)
+                                .map_or(false, |t| t.elapsed() < TRAY_RECENT_UNFOCUS);
+                            if visible && !minimized && (focused || just_unfocused) {
+                                let _ = w.hide();
+                            } else {
+                                let _ = w.show();
+                                let _ = w.unminimize();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    }
+                })
                 .on_menu_event(|app, event| {
                     let show_win = |app: &tauri::AppHandle| {
                         if let Some(w) = app.get_webview_window("main") {
@@ -3263,6 +3306,16 @@ fn main() {
             analyze_import_db,
             execute_import_db,
         ])
+        .on_window_event(|_window, event| {
+            // Единственная задача: запомнить момент потери фокуса. Обработчик клика
+            // по трею смотрит на него, потому что к моменту доставки события окно
+            // уже не в фокусе — его отобрал сам клик по значку.
+            if let tauri::WindowEvent::Focused(false) = event {
+                if let Ok(mut g) = LAST_UNFOCUS.lock() {
+                    *g = Some(std::time::Instant::now());
+                }
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {

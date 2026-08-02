@@ -2485,12 +2485,13 @@ const TOOLBAR_DEFS = CMD_REGISTRY;
 
 const DEFAULT_TOOLBAR = [
   'nav-back', 'nav-forward', 'nav-up', '|',
-  'toggle-menubar', 'tray-hide', '|',
+  'toggle-menubar', '|',
   'new-link', 'new-folder', 'new-subfolder', '|',
   'delete-link', 'properties', '|',
   'find', '|',
   'check-all-links', '|',
-  'toggle-expand-all',
+  'toggle-expand-all', '|',
+  'tray-hide',
 ];
 
 let toolbarConfig = [...DEFAULT_TOOLBAR];
