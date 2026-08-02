@@ -1782,6 +1782,45 @@ fn set_log_enabled(enabled: bool) {
     logger::set_enabled(enabled);
 }
 
+/// Записать строку в журнал со стороны интерфейса. Нужна, чтобы ошибки JS
+/// не терялись: `console.error` в release-сборке недоступен, DevTools нет.
+#[tauri::command]
+fn log_from_ui(message: String) {
+    logger::log(&format!("UI: {message}"));
+}
+
+/// Настройки оказались испорчены и были сброшены при старте (см.
+/// `load_or_init_token`). UI спрашивает об этом командой `settings_were_reset`:
+/// сам он ничего не заметит — к моменту загрузки фронтенда файл уже валиден.
+static SETTINGS_WERE_RESET: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Отложить в сторону испорченный `settings.json`: копия рядом,
+/// `settings.json.bad`, прежняя перезаписывается. Копия, а не переименование —
+/// исходный файл не трогаем, вдруг он ещё пригодится.
+fn backup_bad_settings_file() -> Result<std::path::PathBuf, String> {
+    let src = std::env::current_exe().map_err(|e| e.to_string())?
+        .parent().ok_or("no parent")?.join("settings.json");
+    if !src.exists() {
+        return Err("settings.json не найден".to_string());
+    }
+    let dst = src.with_extension("json.bad");
+    std::fs::copy(&src, &dst).map_err(|e| e.to_string())?;
+    logger::log(&format!("испорченный settings.json сохранён как {}", dst.display()));
+    Ok(dst)
+}
+
+#[tauri::command]
+fn backup_bad_settings() -> Result<String, String> {
+    backup_bad_settings_file().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Были ли настройки сброшены при старте из-за нечитаемого файла.
+#[tauri::command]
+fn settings_were_reset() -> bool {
+    SETTINGS_WERE_RESET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Путь к журналу для кнопки «Открыть журнал». `None` — файла ещё нет.
 /// Отсутствие сообщаем именно здесь: `open_file` на несуществующем пути ошибки
 /// НЕ вернёт (spawn `cmd` успешен в любом случае), полагаться на него нельзя.
@@ -2560,10 +2599,21 @@ fn gen_token() -> String {
 
 fn load_or_init_token(exe_dir: &std::path::Path) -> String {
     let path = exe_dir.join("settings.json");
-    let mut v: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+    let raw = std::fs::read_to_string(&path).ok();
+    // BOM срезаем и здесь: эта функция читает файл сама, мимо read_settings_raw.
+    let parsed = raw.as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s.trim_start_matches('\u{feff}')).ok());
+
+    // Файл есть, но не разобрался: ниже он будет ПЕРЕЗАПИСАН одним токеном, и
+    // все настройки пользователя исчезнут — прокси, тулбар, панели, хоткей.
+    // Сначала откладываем копию и поднимаем флаг для уведомления в UI.
+    if raw.is_some() && parsed.is_none() {
+        logger::log("settings.json не разобран — файл пересоздаётся, прежний сохраняется как settings.json.bad");
+        let _ = backup_bad_settings_file();
+        SETTINGS_WERE_RESET.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    let mut v = parsed.unwrap_or_else(|| serde_json::Value::Object(Default::default()));
 
     if let Some(t) = v.get("extensionToken")
         .and_then(|t| t.as_str())
@@ -3106,6 +3156,9 @@ fn main() {
             hide_window,
             set_log_enabled,
             get_log_path,
+            log_from_ui,
+            backup_bad_settings,
+            settings_were_reset,
             checkpoint_db,
             open_file,
             get_data_dir,
