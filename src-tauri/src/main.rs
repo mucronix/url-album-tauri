@@ -1978,22 +1978,48 @@ fn parse_url_scheme(arg: &str) -> Option<(String, String)> {
     Some((url, title))
 }
 
+/// Раскодировать процентные последовательности.
+///
+/// Копим БАЙТЫ, а не символы. Одна буква кириллицы — это две процентные пары
+/// (`%D0%9F`), собрать из них символ можно только на уровне байтов. Прежняя
+/// версия писала `out.push(b as char)` в `String`: приведение `u8 as char` в
+/// Rust задано как Latin-1 — код символа равен значению байта, — после чего
+/// `String` кодировал этот символ обратно в UTF-8 уже двумя байтами. Двойная
+/// перекодировка, «Проверка» превращалась в «ÐŸÑ€Ð¾Ð²ÐµÑ€ÐºÐ°». ASCII при этом
+/// уцелевал, поэтому адрес выглядел исправным, а название — нет.
 fn urlencoding_decode(s: &str) -> String {
     let s = s.replace('+', " ");
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let h1 = chars.next().unwrap_or('0');
-            let h2 = chars.next().unwrap_or('0');
-            if let Ok(b) = u8::from_str_radix(&format!("{}{}", h1, h2), 16) {
-                out.push(b as char);
+    let bytes = s.as_bytes();
+
+    // Своя таблица вместо `from_str_radix`: та принимает «+f» как знаковое
+    // число, и разбор зависел бы от того, что `+` уже заменён выше.
+    let hex = |b: u8| -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    };
+
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
                 continue;
             }
         }
-        out.push(c);
+        // Неверная пара (`%zz`) или обрыв в конце строки: отдаём сам `%` и
+        // сдвигаемся на один байт — следующие два разберутся своим чередом.
+        // Прежняя версия снимала их с итератора до проверки и теряла молча.
+        out.push(bytes[i]);
+        i += 1;
     }
-    out
+
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[derive(serde::Serialize)]
@@ -3065,6 +3091,41 @@ fn main() {
     }));
 
     tauri::Builder::default()
+        // Единственный экземпляр. Плагин ОБЯЗАН идти первым: его setup-хук
+        // выполняется раньше остальных и завершает вторую копию до того, как
+        // кто-либо успеет открыть ту же базу, занять порт HTTP-сервера
+        // расширения или перерегистрировать urlalbum://. Ниже по списку он
+        // сработал бы уже после чужих хуков — то есть с половиной последствий.
+        // Вторая копия уходит молча: человек нажал ярлык, ему нужно окно,
+        // а не сообщение о том, что программа уже запущена.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // «У меня не открывается» нередко означает именно это — свёрнутую
+            // в трей первую копию. Аргументы пишем: по ним видно, ярлык это
+            // был или ссылка из расширения.
+            let args = argv.iter().skip(1).cloned().collect::<Vec<_>>().join(" ");
+            logger::log(&format!("вторая копия отклонена; аргументы: [{args}]"));
+
+            // Ссылка urlalbum:// не должна пропасть вместе со второй копией:
+            // отдаём её уже открытому окну тем же событием, каким пользуется
+            // расширение (JS слушает его с момента загрузки скрипта).
+            if let Some((url, title)) = argv.iter().skip(1)
+                .find(|a| a.starts_with("urlalbum://"))
+                .and_then(|a| parse_url_scheme(a))
+            {
+                logger::log(&format!("ссылка из второй копии передана в окно: {url}"));
+                app.emit("extension-add-request", serde_json::json!({
+                    "url":       url,
+                    "title":     title,
+                    "folder_id": serde_json::Value::Null,
+                })).ok();
+            }
+
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();          // окно могло быть спрятано в трей
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // Флаг журнала уже прочитан в main() — здесь только шапка.
