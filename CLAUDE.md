@@ -468,7 +468,9 @@ CREATE TABLE nodes (
 
 - **4 места для обновления версии:** `Cargo.toml`, `tauri.conf.json`, `extension/manifest.json` (без `-beta` — Chrome не поддерживает), `APP_VERSION` в `app.js`.
 
-- **Ссылка в README — прямая** (`/releases/download/vX.Y.Z/...`), не `/releases/latest/download/...` — `latest` не видит pre-release, даёт 404.
+- **Ссылка в README ведёт на `/releases/latest`** — страницу последнего релиза, без версии в адресе: при выпуске править README не нужно. Работает потому, что ни один релиз не помечен pre-release'ом (`prerelease: false` у всех) — `latest` их видит. Если когда-нибудь выложить настоящий pre-release, `latest` его пропустит и покажет предыдущий; тогда либо не ставить флаг, либо вернуться к прямой ссылке на тег.
+
+- **Ссылка на файл (`/releases/latest/download/...`) не годится** — имя архива содержит версию (`URL-Album-2.3.0-beta.zip`), а этот путь требует постоянного имени. Поэтому ссылка ведёт на страницу релиза, а не на загрузку.
 
 - **ZIP без `extension-keys/`** — в `.gitignore`, в архив не попадает. Состав: `URL-Album.exe` + `README.txt` + `extension\`.
 
