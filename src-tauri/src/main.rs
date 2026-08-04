@@ -1653,14 +1653,24 @@ async fn save_text_file(window: tauri::Window, content: String, default_name: Op
 /// нужен доступ к содержимому, а знание о том, где лежит файл, должно
 /// оставаться в одном месте.
 pub(crate) fn read_settings_raw() -> String {
+    read_config_raw("settings.json")
+}
+
+/// Прочитать файл настроек рядом с exe, срезав BOM.
+///
+/// BOM ломает serde_json МОЛЧА — теряются и настройки прокси, и флаг журнала.
+/// Пользователь получает BOM, просто сохранив файл блокнотом. То же лечит и
+/// JS-сторону: `load_settings` отдаёт эту же строку, а `JSON.parse` на BOM тоже
+/// падает — то есть слетали вообще все настройки. (Проверено, сессия 20.)
+///
+/// Через эту функцию обязаны читаться ВСЕ три файла настроек: `toolbar.json` и
+/// `browsers.json` разбираются в JS ровно тем же `JSON.parse` и ломались от BOM
+/// точно так же, просто теряли не прокси, а панель и список браузеров.
+fn read_config_raw(name: &str) -> String {
     let raw = std::env::current_exe().ok()
-        .and_then(|p| p.parent().map(|d| d.join("settings.json")))
+        .and_then(|p| p.parent().map(|d| d.join(name)))
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();
-    // BOM ломает serde_json МОЛЧА — теряются и настройки прокси, и флаг журнала.
-    // Пользователь получает BOM, просто сохранив файл блокнотом. То же лечит и
-    // JS-сторону: `load_settings` отдаёт эту же строку, а JSON.parse на BOM тоже
-    // падает — то есть слетали вообще все настройки. (Проверено, сессия 20.)
     raw.trim_start_matches('\u{feff}').to_string()
 }
 
@@ -1680,10 +1690,7 @@ fn save_settings(json: String) -> Result<(), String> {
 
 #[tauri::command]
 fn load_toolbar_config() -> String {
-    std::env::current_exe().ok()
-        .and_then(|p| p.parent().map(|d| d.join("toolbar.json")))
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .unwrap_or_default()
+    read_config_raw("toolbar.json")
 }
 
 #[tauri::command]
@@ -1848,24 +1855,93 @@ static LAST_UNFOCUS: std::sync::Mutex<Option<std::time::Instant>> =
 /// `is_focused()` там уже возвращает false. Менять здесь, значение одно.
 const TRAY_RECENT_UNFOCUS: std::time::Duration = std::time::Duration::from_millis(300);
 
-/// Отложить в сторону испорченный `settings.json`: копия рядом,
-/// `settings.json.bad`, прежняя перезаписывается. Копия, а не переименование —
-/// исходный файл не трогаем, вдруг он ещё пригодится.
-fn backup_bad_settings_file() -> Result<std::path::PathBuf, String> {
+/// Файлы настроек, которые UI имеет право отложить как `.bad`.
+///
+/// Список закрытый намеренно: имя приходит от фронтенда, и без проверки командой
+/// можно было бы попросить скопировать рядом с программой любой файл, до которого
+/// дотянется `..\`.
+const CONFIG_FILES: [&str; 3] = ["settings.json", "toolbar.json", "browsers.json"];
+
+/// Отложить в сторону испорченный файл настроек: копия рядом, `<имя>.json.bad`,
+/// прежняя перезаписывается. Копия, а не переименование — исходный файл не
+/// трогаем, вдруг он ещё пригодится.
+///
+/// Для `browsers.json` это единственный способ вернуть **вручную добавленные
+/// пути к портативным браузерам и их подписи**: автоматическое обнаружение
+/// находит только установленные в системе, а браузер с флешки человек вписывал
+/// руками — восстановить такое неоткуда, только глазами из `.bad`.
+fn backup_bad_config_file(name: &str) -> Result<std::path::PathBuf, String> {
+    if !CONFIG_FILES.contains(&name) {
+        return Err(format!("неизвестный файл настроек: {name}"));
+    }
     let src = std::env::current_exe().map_err(|e| e.to_string())?
-        .parent().ok_or("no parent")?.join("settings.json");
+        .parent().ok_or("no parent")?.join(name);
     if !src.exists() {
-        return Err("settings.json не найден".to_string());
+        return Err(format!("{name} не найден"));
     }
     let dst = src.with_extension("json.bad");
-    std::fs::copy(&src, &dst).map_err(|e| e.to_string())?;
-    logger::log(&format!("испорченный settings.json сохранён как {}", dst.display()));
+
+    // Читаем БАЙТАМИ, не строкой: файл на то и испорчен, что мог оказаться
+    // не-UTF-8, а копию человек должен получить в любом случае.
+    let data = std::fs::read(&src).map_err(|e| e.to_string())?;
+    let (data, masked) = if name == "settings.json" {
+        match mask_token_bytes(&data) {
+            Some(m) => (m, true),
+            None    => (data, false),
+        }
+    } else {
+        (data, false)
+    };
+    std::fs::write(&dst, &data).map_err(|e| e.to_string())?;
+
+    logger::log(&format!(
+        "испорченный {name} сохранён как {}{}",
+        dst.display(),
+        if name != "settings.json" { "" }
+        else if masked { " (токен расширения замаскирован)" }
+        else { " (токен расширения найти не удалось — копия как есть)" }
+    ));
     Ok(dst)
 }
 
+/// Заменить значение `extensionToken` на `***`.
+///
+/// Файл `.bad` человек прикладывает к сообщению на форуме, а токен даёт доступ
+/// к локальному HTTP-серверу добавления закладок — в переписке ему не место.
+///
+/// Работаем по байтам и без разбора JSON: файл сюда попадает именно потому, что
+/// разобрать его не удалось. Ключ ASCII, поэтому находится и в сломанной
+/// кодировке. `None` — ключа или значения на месте нет; тогда копия уходит как
+/// есть, и это честнее, чем потерять её целиком.
+fn mask_token_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    const KEY: &[u8] = b"\"extensionToken\"";
+    let pos = data.windows(KEY.len()).position(|w| w == KEY)?;
+
+    let mut i = pos + KEY.len();
+    while i < data.len() && (data[i] == b' ' || data[i] == b'\t' || data[i] == b':') {
+        i += 1;
+    }
+    if i >= data.len() || data[i] != b'"' {
+        return None;
+    }
+    let start = i + 1;
+    let end = start + data[start..].iter().position(|&b| b == b'"')?;
+
+    let mut out = Vec::with_capacity(data.len());
+    out.extend_from_slice(&data[..start]);
+    out.extend_from_slice(b"***");
+    out.extend_from_slice(&data[end..]);
+    Some(out)
+}
+
+/// Обёртка для `load_or_init_token`: там имя файла известно заранее.
+fn backup_bad_settings_file() -> Result<std::path::PathBuf, String> {
+    backup_bad_config_file("settings.json")
+}
+
 #[tauri::command]
-fn backup_bad_settings() -> Result<String, String> {
-    backup_bad_settings_file().map(|p| p.to_string_lossy().into_owned())
+fn backup_bad_config(file: String) -> Result<String, String> {
+    backup_bad_config_file(&file).map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Были ли настройки сброшены при старте из-за нечитаемого файла.
@@ -2490,9 +2566,7 @@ fn browsers_config_path() -> Option<std::path::PathBuf> {
 
 #[tauri::command]
 fn load_browsers_config() -> String {
-    browsers_config_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .unwrap_or_default()
+    read_config_raw("browsers.json")
 }
 
 #[tauri::command]
@@ -3351,7 +3425,7 @@ fn main() {
             set_log_enabled,
             get_log_path,
             log_from_ui,
-            backup_bad_settings,
+            backup_bad_config,
             settings_were_reset,
             checkpoint_db,
             open_file,

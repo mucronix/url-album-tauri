@@ -1671,21 +1671,65 @@ function getActiveLink() {
     || allNodes.find(n => String(n.id) === gridEl.querySelector(".card.selected")?.dataset.id);
 }
 
+// ── Испорченные файлы настроек ───────────────────────────────────────────
+// Пустой catch на разборе такого файла — это молчаливая потеря данных:
+// применяются умолчания, и первое же сохранение затирает файл. Человек теряет
+// настроенную панель или список браузеров и не понимает почему.
+//
+// Собираем ВСЕ испорченные файлы за время запуска и показываем ОДНО окно:
+// если испорчены и settings.json, и browsers.json, человек не должен закрывать
+// два окна подряд.
+const brokenConfigs = [];
+
+async function noteBrokenConfig(file, err) {
+  if (brokenConfigs.includes(file)) return;
+  brokenConfigs.push(file);
+  const reason = (err && err.message) ? err.message : String(err);
+  // console.error в release недоступен, DevTools нет — только журнал.
+  logUi(file + ' не разобран: ' + reason);
+  try {
+    await invoke('backup_bad_config', { file });
+  } catch (e) {
+    logUi('копию ' + file + '.bad сделать не удалось: ' + e);
+  }
+}
+
+function reportBrokenConfigs() {
+  if (!brokenConfigs.length) return;
+  const many  = brokenConfigs.length > 1;
+  const names = brokenConfigs.join(', ');
+  const bads  = brokenConfigs.map(f => f + '.bad').join(', ');
+  showNotice('Настройки',
+    (many ? 'Не удалось прочитать файлы: ' : 'Не удалось прочитать файл ') + names + '.\n\n' +
+    'Применены значения по умолчанию. ' +
+    (many ? 'Прежние сохранены' : 'Прежний сохранён') + ' рядом с программой как ' + bads +
+    ': оттуда можно достать свои значения или прислать для разбора.');
+}
+
 // ── Browser list ─────────────────────────────────────────────────────────
 let browsers        = [{ name: "Браузер по умолчанию", path: "default" }];
 let defaultBrowserPath = "default";
 
 // File-based portable storage for browser list
 async function loadBrowsersConfig() {
+  let json;
   try {
-    const json = await invoke('load_browsers_config');
-    if (json) {
+    json = await invoke('load_browsers_config');
+  } catch(e) { json = ''; }   // файла ещё нет — ниже отработает миграция
+  if (json) {
+    try {
       const data = JSON.parse(json);
       if (Array.isArray(data.browsers) && data.browsers.length) browsers = data.browsers;
       if (data.default) defaultBrowserPath = data.default;
       return;
+    } catch(e) {
+      // Файл есть, но не разобрался. Выходим ДО миграции из localStorage:
+      // та вызывает saveBrowsersConfig() и затёрла бы browsers.json прямо
+      // сейчас, ещё до первого сохранения из интерфейса.
+      await noteBrokenConfig('browsers.json', e);
+      return;
     }
-  } catch(e) { /* file not yet created */ }
+  }
   // Migrate from localStorage if exists
   try {
     const s = localStorage.getItem("ua_browsers");
@@ -2497,13 +2541,19 @@ const DEFAULT_TOOLBAR = [
 let toolbarConfig = [...DEFAULT_TOOLBAR];
 
 async function loadToolbarConfig() {
+  let json;
   try {
-    const json = await invoke('load_toolbar_config');
-    if (json) {
-      const arr = JSON.parse(json);
-      if (Array.isArray(arr) && arr.length) toolbarConfig = arr;
-    }
-  } catch(e) {}
+    json = await invoke('load_toolbar_config');
+  } catch(e) { return; }   // файла ещё нет — остаётся DEFAULT_TOOLBAR
+  if (!json) return;
+  try {
+    const arr = JSON.parse(json);
+    if (Array.isArray(arr) && arr.length) toolbarConfig = arr;
+  } catch(e) {
+    // Молчать нельзя: применится DEFAULT_TOOLBAR, и первая же настройка
+    // панели затрёт файл с расстановкой кнопок.
+    await noteBrokenConfig('toolbar.json', e);
+  }
 }
 
 async function saveToolbarConfig() {
@@ -3590,28 +3640,16 @@ async function loadAppSettings() {
     }
   } catch(e) {
     // Молчать нельзя: сейчас применятся умолчания, и первое же сохранение
-    // затрёт файл — человек потеряет прокси, тулбар, панели, хоткей.
-    const reason = (e && e.message) ? e.message : String(e);
-    invoke('log_from_ui', { message: 'settings.json не разобран: ' + reason }).catch(() => {});
-    try {
-      await invoke('backup_bad_settings');
-      showNotice('Настройки',
-        'Не удалось прочитать файл настроек — применены значения по умолчанию.\n\n' +
-        'Прежний файл сохранён рядом с программой как settings.json.bad: из него ' +
-        'можно достать свои значения или прислать его для разбора.');
-    } catch(e2) {
-      showNotice('Настройки',
-        'Не удалось прочитать файл настроек — применены значения по умолчанию.');
-    }
+    // затрёт файл — человек потеряет прокси, панели, хоткей.
+    // Окно покажет reportBrokenConfigs() — одно на все испорченные файлы.
+    await noteBrokenConfig('settings.json', e);
   }
-  // Файл мог быть испорчен и пересоздан ещё до старта окна — тогда JS получил
-  // уже валидный JSON и сам ничего не заметил. Спрашиваем у Rust.
+  // Файл мог быть испорчен и пересоздан ещё до старта окна (load_or_init_token) —
+  // тогда JS получил уже валидный JSON и сам ничего не заметил. Спрашиваем у Rust.
+  // Копия .bad там уже сделана, поэтому в общий список кладём без второй попытки.
   try {
-    if (await invoke('settings_were_reset')) {
-      showNotice('Настройки',
-        'Файл настроек не удалось прочитать — применены значения по умолчанию.\n\n' +
-        'Прежний файл сохранён рядом с программой как settings.json.bad: из него ' +
-        'можно достать свои значения или прислать его для разбора.');
+    if (await invoke('settings_were_reset') && !brokenConfigs.includes('settings.json')) {
+      brokenConfigs.push('settings.json');
     }
   } catch(e) {}
   applySettings(false);
@@ -3984,6 +4022,8 @@ async function init() {
     loadAppSettings(),
     invoke('get_data_dir').then(d => { dataDir = d; }).catch(() => {}),
   ]);
+  // Одно окно на все испорченные файлы — после того, как отчитались все трое.
+  reportBrokenConfigs();
   buildToolbar();
   _refreshNavButtons();
   await showApp();
