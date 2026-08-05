@@ -1930,7 +1930,9 @@ function showContextMenu(e, node) {
 
   ctxMenuEl.appendChild(
     ctxItem("link", "Открыть", null,
-      () => openWithBrowser(node.url, getDefaultBrowserPath()))
+      // Через резолвер, как и двойной клик по этой же ссылке: иначе два
+      // способа открыть одну ссылку дают разные браузеры.
+      () => openWithBrowser(node.url, resolveOpenerForNode(node)))
   );
 
   // "Открыть с помощью" — NO submenu child; float created on hover
@@ -4902,7 +4904,9 @@ function setActiveResult(idx, scroll = true) {
 
 function openSearchResult(idx) {
   const r = searchResults[idx];
-  if (r?.url) invoke("open_url", { url: r.url });
+  // `db::SearchResult` несёт `parent`, а подъём до корня идёт по `allNodes` —
+  // резолвер отрабатывает и на результате поиска, хотя это не узел дерева.
+  if (r?.url) openWithBrowser(r.url, resolveOpenerForNode(r));
 }
 
 function clearSearch() {
@@ -4966,7 +4970,10 @@ function showDetailView(node) {
     setNoImgPlaceholder(node);
   }
 
-  const open = () => { if (url) invoke("open_url", { url }); };
+  // Главный путь открытия: одиночный клик и в дереве, и по карточке ведёт
+  // сюда, а дальше человек жмёт кнопку или адрес. Именно это место и создавало
+  // впечатление, что «Открывать через…» не работает вовсе.
+  const open = () => { if (url) openWithBrowser(url, resolveOpenerForNode(node)); };
   detailOpenBtn.onclick      = open;
   detailUrlEl.onclick        = open;
   detailThumbEl.ondblclick   = open;
@@ -4994,7 +5001,7 @@ function showInfoBar(node) {
   infoBarNote.textContent = node.note || '';
   infoBarNote.style.display = node.note ? '' : 'none';
   infoBarEl.classList.remove('hidden');
-  infoBarUrl.onclick = () => { if (url) invoke('open_url', { url }); };
+  infoBarUrl.onclick = () => { if (url) openWithBrowser(url, resolveOpenerForNode(node)); };
 }
 
 function hideInfoBar() {
