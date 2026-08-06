@@ -1578,20 +1578,100 @@ fn normalize_url(url: &str) -> String {
     format!("https://{}", url)
 }
 
+// `ShellExecuteW` из shell32 — тот же вызов, которым оболочка открывает ссылки.
+//
+// Возвращает HINSTANCE: больше 32 — что-то запущено, иначе само число и есть
+// причина отказа. Ради этого он здесь и появился вместо `rundll32
+// url.dll,FileProtocolHandler`: тот запускается всегда и завершается нулём
+// независимо от того, нашёлся ли браузер, — «кликнул, и ничего не произошло»
+// не оставляло следов нигде.
+//
+// ГРАНИЦА, проверена вызовом: незнакомая СХЕМА отказом НЕ считается. Windows
+// 10/11 перехватывает её своим окном «Каким приложением открыть?» и возвращает
+// успех — `zzznotascheme://x` дал код 42. Отказы приходят на файловый класс
+// причин: несуществующий путь дал 2. То есть «в системе не назначен браузер»
+// этим способом не диагностируется — человек увидит окно выбора от Windows.
+// Обещать обратное в интерфейсе нельзя.
+//
+// Комментарий обычный, не `///`: doc-комментарий к `extern`-блоку не крепится,
+// rustc отвечает `unused doc comment`.
+#[cfg(windows)]
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        hwnd:          *mut std::ffi::c_void,
+        lp_operation:  *const u16,
+        lp_file:       *const u16,
+        lp_parameters: *const u16,
+        lp_directory:  *const u16,
+        n_show_cmd:    i32,
+    ) -> isize;
+}
+
+/// Строка для WinAPI: UTF-16 с завершающим нулём.
+#[cfg(windows)]
+fn wide(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+/// Открыть цель обработчиком по умолчанию. `Ok` = обработчик найден и запущен.
+///
+/// Разбора аргументов оболочкой здесь нет, поэтому `&`, `?` и `=` в адресе
+/// доходят целыми — ровно то, ради чего когда-то взяли rundll32 вместо
+/// `cmd /c start`. В этом отношении ничего не потеряно.
+#[cfg(windows)]
+fn shell_open(target: &str) -> Result<(), String> {
+    const SW_SHOWNORMAL: i32 = 1;
+    let op   = wide("open");
+    let file = wide(target);
+    let code = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if code > 32 {
+        return Ok(());
+    }
+    Err(match code {
+        2  => "не найдена программа-обработчик".to_string(),
+        3  => "не найден путь".to_string(),
+        5  => "доступ запрещён".to_string(),
+        8  => "не хватило памяти".to_string(),
+        26 => "файл занят другой программой".to_string(),
+        27 => "связь с программой прописана в системе не до конца".to_string(),
+        31 => "в системе не назначена программа для ссылок этого вида".to_string(),
+        _  => format!("код отказа {code}"),
+    })
+}
+
+/// Открыть ссылку браузером по умолчанию.
+///
+/// `async` + `spawn_blocking`: `ShellExecuteW` возвращает управление после того,
+/// как оболочка разобрала цель и запустила обработчик. Обычно это миллисекунды,
+/// но на недоступном сетевом пути может встать надолго, а держать IPC-поток
+/// нельзя — интерфейс замёрзнет.
 #[tauri::command]
-fn open_url(url: String) -> Result<(), String> {
+async fn open_url(url: String) -> Result<(), String> {
     let url = normalize_url(&url);
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        // rundll32 url.dll,FileProtocolHandler is the reliable Windows URL dispatcher —
-        // handles special chars (&, ?, =) correctly and respects the default browser setting.
-        std::process::Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", &url])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
+        let target = url.clone();
+        let res = tauri::async_runtime::spawn_blocking(move || shell_open(&target))
+            .await
             .map_err(|e| e.to_string())?;
+        if let Err(reason) = res {
+            // Отказы пишем всегда: без этого «кликнул, ничего не произошло»
+            // не оставляет следов вовсе. Успехи не пишем — иначе журнал
+            // раздувается на каждой ссылке (то же правило, что у check_url).
+            logger::log(&format!("не удалось открыть ссылку {url}: {reason}"));
+            return Err(format!("Не удалось открыть ссылку: {reason}."));
+        }
     }
     #[cfg(target_os = "macos")]
     std::process::Command::new("open").arg(&url).spawn().map_err(|e| e.to_string())?;
@@ -1620,15 +1700,32 @@ fn open_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_url_with(url: String, browser: String) -> Result<(), String> {
+async fn open_url_with(url: String, browser: String) -> Result<(), String> {
     let url = normalize_url(&url);
     if browser == "default" {
-        return open_url(url);
+        return open_url(url).await;
     }
+
+    // Путь проверяем ДО запуска. Портативный браузер живёт на флешке или
+    // в папке, которую могли унести, переименовать или удалить; `spawn` в этом
+    // случае вернёт системный текст вроде «не удаётся найти указанный файл»,
+    // где не сказано ни какой файл, ни при чём тут вообще браузер.
+    if !std::path::Path::new(&browser).exists() {
+        logger::log(&format!("браузер не найден: {browser}"));
+        return Err(format!(
+            "Браузер не найден:\n{browser}\n\n\
+             Возможно, программа удалена или съёмный диск не подключён. \
+             Проверьте список браузеров или откройте ссылку другим."
+        ));
+    }
+
     std::process::Command::new(&browser)
         .arg(&url)
         .spawn()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            logger::log(&format!("не удалось запустить {browser}: {e}"));
+            format!("Не удалось запустить браузер:\n{browser}\n\n{e}")
+        })?;
     Ok(())
 }
 

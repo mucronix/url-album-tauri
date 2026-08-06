@@ -1759,7 +1759,14 @@ function getDefaultBrowserPath() { return defaultBrowserPath; }
 function setDefaultBrowserPath(p) { defaultBrowserPath = p; saveBrowsersConfig(); }
 
 function openWithBrowser(url, path) {
-  invoke("open_url_with", { url, browser: path || "default" }).catch(console.error);
+  // Единственная точка выхода в Rust — сюда сходятся все способы открыть ссылку.
+  // Раньше здесь стоял console.error: в release-сборке консоли нет, DevTools
+  // отключены, и отказ («браузер не найден», «нет программы для ссылок этого
+  // вида») пропадал бесследно — программа молчала в ответ на клик.
+  // В журнал не пишем: отказ уже записан в Rust — и в `open_url`, и
+  // в `open_url_with`, с причиной. Здесь осталось только показать его человеку.
+  invoke("open_url_with", { url, browser: path || "default" })
+    .catch(e => showNotice('Открытие ссылки', (e && e.message) ? e.message : String(e)));
 }
 
 function findRootFolder(node) {
