@@ -67,6 +67,18 @@ Windows 10/11.
 
 Папку extension НЕ удаляйте — она нужна для браузерного расширения.
 
+Windows может показать окно «Система Windows защитила ваш компьютер».
+Это фильтр SmartScreen: программа не подписана платным сертификатом
+разработчика, поэтому система её пока не знает. Нажмите «Подробнее»,
+затем «Выполнить в любом случае». Исходный код открыт:
+https://github.com/skljar/url-album-tauri
+
+Обычно WebView2 уже есть в Windows 10/11. Если при запуске программа
+сообщает «Could not find the WebView2 Runtime» — установите Microsoft
+Edge WebView2 Runtime (Evergreen Bootstrapper) с сайта Microsoft:
+https://developer.microsoft.com/microsoft-edge/webview2/
+Это бесплатно и около 2 МБ.
+
 УСТАНОВКА РАСШИРЕНИЯ (Chrome / Edge)
 ------------------------------------
 1. Откройте страницу расширений:

@@ -26,7 +26,7 @@
 ## Скачать последнюю версию
 
 **[URL Album для Windows 10/11 (64-bit)](https://github.com/skljar/url-album-tauri/releases/latest)** — портативная, установка не требуется.
-Требования: WebView2 (уже встроен в Windows 10/11).
+Требования: WebView2 — обычно уже есть в Windows 10/11. Если при запуске программа сообщает «Could not find the WebView2 Runtime», установите [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (Evergreen Bootstrapper) — бесплатно, около 2 МБ.
 
 ## Почему не браузерные закладки?
 
@@ -108,7 +108,7 @@
 
 ## Технологии
 
-Tauri 2 + Rust + SQLite + Vanilla JS. Портативный exe ~8,7 МБ, без внешних зависимостей (WebView2 — системный компонент Windows 10/11).
+Tauri 2 + Rust + SQLite + Vanilla JS. Портативный exe ~8,9 МБ, без внешних зависимостей (WebView2 — компонент Windows, обычно уже установлен в 10/11).
 
 ## Статус
 
