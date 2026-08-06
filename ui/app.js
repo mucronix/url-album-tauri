@@ -322,10 +322,17 @@ async function runChecker() {
       if (_ck.cancelled) return;
       chkStatusText.textContent = "Проверяется: " + b.url;
 
-      const r = await invoke("check_url", { url: b.url }).catch(err => ({
-        url: b.url, status: 0, ok: false, timed_out: false,
-        redirect: null, ms: 0, err: String(err)
-      }));
+      const r = await invoke("check_url", { url: b.url }).catch(err => {
+        // Отказ САМОГО вызова, а не ответ сервера: команда до своих записей
+        // в журнал не дошла, поэтому пишем здесь — иначе ссылка молча уедет
+        // в счётчик ошибок без следа. Ответы 4xx/5xx и обрывы связи пишет
+        // Rust, дублировать их тут нельзя.
+        logUi('проверка ' + b.url + ': вызов не выполнен: ' + (err?.message ?? String(err)));
+        return {
+          url: b.url, status: 0, ok: false, timed_out: false,
+          redirect: null, ms: 0, err: String(err)
+        };
+      });
 
       _ck.done++;
       if (!r.ok && !r.skipped) _ck.errors++;
@@ -1211,7 +1218,12 @@ async function refreshThumb(node) {
     detailNoImgEl.style.display = "none";
     detailImgEl.onerror = () => {};
   } catch (err) {
-    console.error("refresh_thumb:", err);
+    // console.error в release недоступен — это и было молчащее место: человек
+    // жал «Обновить рисунок», overlay гас, и ничего не происходило.
+    // В журнал не пишем: do_screenshot уже записал и команду, и итог
+    // («файла нет» с длительностью). Наше дело — показать причину.
+    showNotice('Рисунок', typeof err === 'string' ? err
+      : 'Не удалось обновить рисунок: ' + (err?.message ?? String(err)));
   } finally {
     detailLoadingOverlay.classList.remove("visible");
     _isRefreshing = false;

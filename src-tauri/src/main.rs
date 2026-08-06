@@ -792,13 +792,9 @@ async fn do_screenshot(
     let proxy_arg  = proxy_server_arg();
     let proxy_used = proxy_arg.is_some();
 
-    // Адрес прокси в журнал не пишем: при авторизации это адрес релея, но
-    // правило проще держать без исключений — только факт наличия флага.
-    logger::log(&format!(
-        "скриншот id={id}: {browser}, {w}x{h}, ожидание {t}с, прокси: {}",
-        if proxy_used { "да" } else { "нет" }
-    ));
     let t_start = std::time::Instant::now();
+    // Копия для строки отказа: сам `browser` уезжает в замыкание по `move`.
+    let browser_name = browser.clone();
 
     // Run blocking browser process on a dedicated thread so the UI stays responsive.
     // kill по дедлайну/готовности НЕ считаем провалом — итоговое решение по факту наличия файла ниже.
@@ -874,11 +870,21 @@ async fn do_screenshot(
         }
     }
 
-    logger::log(&format!(
-        "скриншот id={id}: {} за {}мс",
-        if visible { "файл создан" } else { "файла нет" },
-        t_start.elapsed().as_millis()
-    ));
+    // Пишем ТОЛЬКО неудачи, по строке на ссылку. Раньше на каждый снимок шли
+    // две записи — параметры перед запуском и итог, — и пакет на пятьсот
+    // ссылок давал тысячу строк, где успехи хоронили под собой список тех,
+    // что не получились. Сводка «получилось N из M» есть отдельно, а здесь
+    // нужен именно перечень неудач; настройки запуска для них дописаны сюда же.
+    //
+    // Строка перед запуском не нужна: у ожидания есть жёсткий предел (t+8),
+    // поэтому зависший снимок всё равно доходит до этой записи.
+    if !visible {
+        logger::log(&format!(
+            "скриншот id={id}: файла нет за {}мс ({browser_name}, {w}x{h}, ожидание {t}с, прокси: {})",
+            t_start.elapsed().as_millis(),
+            if proxy_used { "да" } else { "нет" }
+        ));
+    }
 
     if visible {
         Ok(filename)
@@ -1005,6 +1011,14 @@ async fn check_url(url: String) -> UrlCheckResult {
         Ok(r) => {
             let status    = r.status().as_u16();
             let final_url = r.url().to_string();
+            // Ответ получен, но неудачный. Раньше такие ссылки в журнал не
+            // попадали вовсе: ниже, в Err-ветке, пишутся только обрывы связи
+            // и таймауты, а 404 и 500 проходили молча — в пакете человек видел
+            // счётчик ошибок, но не список, какие именно не открылись.
+            // Успехи по-прежнему не пишем.
+            if status >= 400 {
+                logger::log(&format!("проверка {url}: ответ {status}"));
+            }
             UrlCheckResult {
                 ok: status < 400, timed_out: false,
                 redirect: (final_url != url).then_some(final_url),
