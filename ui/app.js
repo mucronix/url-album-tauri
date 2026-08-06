@@ -1956,7 +1956,11 @@ function showContextMenu(e, node) {
 
   ctxMenuEl.appendChild(
     ctxItem("image",   "Открыть рисунок",  "F12",
-      () => invoke("open_file", { path: thumbFilePath(node.thumb) }), !hasThumb)
+      // Отказ теперь настоящий (ShellExecuteW), и его надо показать: без catch
+      // это молчаливый unhandled rejection — файл удалён, а в ответ ничего.
+      () => invoke("open_file", { path: thumbFilePath(node.thumb) })
+              .catch(e => showNotice('Рисунок', typeof e === 'string' ? e : String(e))),
+      !hasThumb)
   );
   ctxMenuEl.appendChild(
     ctxItem("refresh", "Обновить рисунок", null,
@@ -3834,7 +3838,8 @@ function applyColWidth(pct, persist = true) {
           'Чтобы её записать: включите «Вести журнал», сохраните настройки ' +
           'и повторите действие, которое даёт сбой.',
           () => invoke('open_file', { path: p })
-                  .catch(() => showNotice('Журнал', 'Не удалось открыть журнал')));
+                  .catch(e => showNotice('Журнал',
+                    typeof e === 'string' ? e : 'Не удалось открыть журнал')));
         return;
       }
       await invoke('open_file', { path: p });

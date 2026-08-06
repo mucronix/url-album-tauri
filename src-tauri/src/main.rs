@@ -1680,17 +1680,23 @@ async fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Открыть локальный файл программой по умолчанию.
+///
+/// Тот же `ShellExecuteW`, что и для ссылок, и по той же причине: `cmd /c start`
+/// удаётся ВСЕГДА — сам `spawn` успешен, а отказ происходит уже внутри `cmd`,
+/// куда нам не видно. Здесь отсутствующий файл виден сразу: проверено, код 2.
 #[tauri::command]
-fn open_file(path: String) -> Result<(), String> {
+async fn open_file(path: String) -> Result<(), String> {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", &path])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
+        let target = path.clone();
+        let res = tauri::async_runtime::spawn_blocking(move || shell_open(&target))
+            .await
             .map_err(|e| e.to_string())?;
+        if let Err(reason) = res {
+            logger::log(&format!("не удалось открыть файл {path}: {reason}"));
+            return Err(format!("Не удалось открыть файл:\n{path}\n\n{reason}."));
+        }
     }
     #[cfg(target_os = "macos")]
     std::process::Command::new("open").arg(&path).spawn().map_err(|e| e.to_string())?;
@@ -3309,6 +3315,20 @@ fn main() {
                     strip_proxy_scheme(&c.host), c.port,
                     if c.user.is_empty() { "" } else { " (с авторизацией)" })),
                 None => logger::log("прокси: выключен"),
+            }
+
+            // WebView2 рисует всё окно, и «программа не запускается» чаще всего
+            // про него: минимум Windows 10 у нас именно из-за него.
+            //
+            // Строку пишем ВСЕГДА, в том числе когда версию узнать не вышло.
+            // Пропуск строки при отказе выглядел бы ровно так же, как её
+            // отсутствие в старой сборке, — и вместо диагноза дал бы вопрос
+            // «а эта версия программы вообще умеет её писать?». Молчание тут
+            // неотличимо от неумения, а «не определён» — уже сам по себе ответ:
+            // среда не найдена или повреждена.
+            match tauri::webview_version() {
+                Ok(v)  => logger::log(&format!("WebView2: {v}")),
+                Err(e) => logger::log(&format!("WebView2: не определён ({e})")),
             }
 
             // Portable mode: all files live next to the executable.
