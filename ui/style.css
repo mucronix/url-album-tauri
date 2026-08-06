@@ -634,7 +634,7 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   cursor: default;
   position: relative;
 }
-#detail-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+#detail-img { width: 100%; height: 100%; object-fit: contain; display: block; }
 #detail-no-img {
   font-size: calc(var(--ui-font) - 1px);
   font-weight: normal;
