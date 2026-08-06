@@ -2429,7 +2429,6 @@ const MENU_DATA = [
       { label: 'Удалить ссылку',                 icon: 'trash',    shortcut: 'Del', action: 'delete-link' },
       '---',
       { label: 'Открыть',                        icon: 'open',     shortcut: 'Enter', action: 'open-link' },
-      { label: 'Открыть в переносном браузере',  icon: 'openwith', action: 'open-portable'           },
       { label: 'Открыть с помощью...',           icon: 'openwith', action: 'open-with'               },
       '---',
       { label: 'Проверить ссылки',               icon: 'verify',   action: 'check-all-links'         },
@@ -3453,21 +3452,6 @@ function handleMenuAction(action) {
       break;
     }
 
-    case 'open-portable': {
-      const t = getActiveLink();
-      if (!t?.url) break;
-      invoke('load_browsers_config')
-        .then(config => {
-          const browsers = (config?.browsers) || [];
-          if (browsers.length > 0) {
-            invoke('open_url_with', { url: t.url, browser: browsers[0].path }).catch(console.error);
-          } else {
-            handleMenuAction('open-with');
-          }
-        })
-        .catch(() => handleMenuAction('open-with'));
-      break;
-    }
   }
 }
 
