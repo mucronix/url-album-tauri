@@ -106,8 +106,8 @@ Portable-файлы рядом с exe (в `target\debug\`):
 - `sort_folder(folder_id, by, desc)` — сортировка папки
 - `sort_all_bookmarks(by, desc)` — глобальная сортировка
 - `search_bookmarks(query, by_title, by_url, by_note)` — поиск (папки + ссылки)
-- `open_url(url)` — открыть URL в браузере (`rundll32.exe url.dll,FileProtocolHandler`)
-- `open_file(path)` — открыть локальный файл в программе по умолчанию (`cmd /c start`)
+- `open_url(url)` — открыть URL в браузере через **`ShellExecuteW`** (`407fb21`, сессия 21; ранее был `rundll32.exe url.dll,FileProtocolHandler` — почему заменён, см. «Критические ловушки»)
+- `open_file(path)` — открыть локальный файл в программе по умолчанию, тем же **`ShellExecuteW`** (`81a55da`; ранее `cmd /c start`, отказ был невидим)
 - `open_url_with(url, browser)` — открыть в конкретном браузере
 - `check_url(url)` — HTTP-проверка ссылки
 - `create_new_db` — создать новую БД (Save File Dialog)
@@ -385,7 +385,7 @@ CREATE TABLE nodes (
 
 **Что нужно сделать:**
 - Найти ВСЕ UI-строки в JS: меню, кнопки, контекстные меню, диалоги, статусы, подсказки, tooltips
-- Найти строки в Rust: имя папки `"Входящие"` (`INBOX_FOLDER_NAME`), сообщения HTTP-сервера/расширения
+- Найти строки в Rust: имя папки `INBOX_FOLDER_NAME` (`main.rs:24`, значение — `"Новые ссылки"`; «Входящие» было в сессии 14 и переименовано), сообщения HTTP-сервера/расширения
 - Вынести в файлы локализации с ключами, заменить хардкод на `t('ключ')`
 - Добавить загрузку языка из `settings.json` + переключатель в настройках
 - Первый язык — английский в дополнение к русскому
@@ -570,7 +570,7 @@ CREATE TABLE nodes (
 - `move_node`, `create_bookmark` и т.д. — параметры в snake_case (Tauri конвертирует из camelCase)
 - `CREATE_NO_WINDOW (0x0800_0000)` на все `Command::new` для консольных exe
 - `normalize_url()` — вызывается в open_url, open_url_with, refresh_thumb, fetch_favicon, check_url
-- `open_url` использует `rundll32.exe url.dll,FileProtocolHandler` (не `cmd /c start` — ненадёжно)
+- `open_url` использует **`ShellExecuteW`** — не `rundll32 url.dll,FileProtocolHandler` (всегда возвращал ноль, отказы были невидимы) и не `cmd /c start` (ненадёжно). Заменено в `407fb21`, подробности в «Критических ловушках»
 - Async команды (fetch_favicon, check_url, refresh_thumb): НЕ держать MutexGuard через `.await`
 - Команды с блокирующими процессами (`std::process::Command::status()`) — обязательно `async fn` + `tauri::async_runtime::spawn_blocking`, иначе IPC-поток замерзает и UI не реагирует
 - `favicon` в DB: только filename (`github.com.png`), путь = `exe_dir/Data/favicons/{filename}`
