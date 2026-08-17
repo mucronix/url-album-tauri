@@ -123,10 +123,10 @@ Portable-файлы рядом с exe (в `target\debug\`):
 - `fetch_favicon(id, url)` — загрузить favicon: кэш → favicon.ico → HTML `<link>` → DuckDuckGo → Google; `is_valid_image()` отсеивает HTML-ошибки; cache validation (перезагружает битые файлы)
 - `update_node_favicon(id, filename)` — записать favicon filename в DB (для sameIds domain dedup)
 - `import_uadat / import_uadat_pick` — импорт из старого ua.dat
-- `import_html / import_txt / import_sync` — импорт из HTML/TXT/JSON
+- `import_html / import_txt` — импорт из HTML/TXT (формат синхронизации JSON удалён в 2.3.2: слияния в нём не было, только вставка, а на многострочной заметке он давал нечитаемый файл)
 - `import_from_browser(browser_id)` — импорт из Chrome/Firefox/Edge/Opera/Brave
 - `import_from_bookmarks_file` — импорт из конкретного файла
-- `export_folder_html / export_folder_txt / export_folder_sync` — экспорт
+- `export_folder_html / export_folder_txt` — экспорт (оба через `db::get_subtree`)
 - `detect_browsers / detect_browser_exes` — автодетектирование браузеров
 - `load_browsers_config / save_browsers_config` — portable browsers.json
 - `load_settings / save_settings` — portable settings.json
