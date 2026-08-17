@@ -747,6 +747,62 @@ async fn fetch_favicon(
     Ok(Some(filename))
 }
 
+// ── Снимок: размеры и ожидание из настроек ───────────────────────────────────
+
+/// Значения по умолчанию для снимка. Единственное место в Rust, где эти числа
+/// живут: их берут и `thumb_cfg_from_settings`, и фолбэк в `do_screenshot`.
+/// Сюда же придёт будущая общая валидация (рамки полей диалога — 320–3840 /
+/// 240–2160 / 5–120): рамки и дефолты обязаны лежать рядом, иначе разъедутся.
+const THUMB_W_DEFAULT: u32 = 1280;
+const THUMB_H_DEFAULT: u32 = 800;
+const THUMB_TIMEOUT_DEFAULT: u32 = 12;
+
+/// Размер снимка и ожидание из `settings.json` (файл пишет JS, ключи camelCase).
+/// Сделано по образцу `proxy_cfg_from_settings`: файл читается при КАЖДОМ
+/// вызове — иначе настройка подхватывалась бы только после перезапуска.
+///
+/// Зачем: `do_screenshot` зовут два пути. Из `refresh_thumb` размеры приходят
+/// от фронтенда, а HTTP-сервер расширения в режиме «быстрое добавление» идёт
+/// мимо интерфейса и передаёт `None` — и снимок выходил 1280×800 при любой
+/// настройке. Проверено вживую: с галочкой «Открывать окно правки» размер
+/// верный, без неё — всегда дефолтный.
+///
+/// Рамок (min/max) здесь намеренно НЕТ: JS сохраняет настройку через
+/// `parseInt(...) || 1280`, тоже без рамок, и ограничение только здесь дало бы
+/// расхождение того же класса, который эта правка чинит — один и тот же
+/// `settings.json` давал бы разный размер в разных путях. Валидация нужна
+/// общая для обоих путей, отдельной задачей.
+fn thumb_cfg_from_settings() -> (u32, u32, u32) {
+    // Нет файла, BOM, испорченный JSON — дефолты и не падаем: снимок важнее
+    // настройки размера. `read_settings_raw` отдаёт пустую строку, она тоже
+    // не разбирается и приходит сюда же.
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&read_settings_raw()) else {
+        return (THUMB_W_DEFAULT, THUMB_H_DEFAULT, THUMB_TIMEOUT_DEFAULT);
+    };
+    (
+        thumb_u32(v.get("thumbWidth"),   THUMB_W_DEFAULT),
+        thumb_u32(v.get("thumbHeight"),  THUMB_H_DEFAULT),
+        thumb_u32(v.get("thumbTimeout"), THUMB_TIMEOUT_DEFAULT),
+    )
+}
+
+/// Одно число из настроек. `<input type="number">` пишет и числом, и строкой —
+/// принимаем оба, как с портом прокси. Ноль, отрицательное, нечисловая строка,
+/// отсутствующий ключ — это отсутствие значения, а не «снимок 0×0»: дефолт.
+///
+/// Известная граница разбора, лечится вместе с общей валидацией: дробное
+/// значение (`1920.0`) `as_u64()` не отдаёт вовсе — уйдём на дефолт, то есть
+/// получим ровно тот симптом, который эта правка чинит. JS так не пишет
+/// (`parseInt`), случай возможен только при правке `settings.json` руками.
+fn thumb_u32(v: Option<&serde_json::Value>, default: u32) -> u32 {
+    let n = match v {
+        Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0),
+        Some(serde_json::Value::String(s)) => s.trim().parse::<u64>().unwrap_or(0),
+        _ => 0,
+    };
+    if n == 0 || n > u32::MAX as u64 { default } else { n as u32 }
+}
+
 async fn do_screenshot(
     data_dir: std::path::PathBuf,
     id: i64,
@@ -760,9 +816,16 @@ async fn do_screenshot(
     let filename = format!("{id}.png");
     let path = data_dir.join(&filename);
 
-    let w = width.unwrap_or(1280);
-    let h = height.unwrap_or(800);
-    let t = timeout.unwrap_or(12);
+    // `None` = «размер не задан явно, взять из настроек». Файл читаем ТОЛЬКО
+    // когда чего-то не хватает: из `refresh_thumb` приходят все три значения,
+    // и пакет на сотни ссылок не должен лишний раз трогать диск.
+    let (w, h, t) = match (width, height, timeout) {
+        (Some(w), Some(h), Some(t)) => (w, h, t),
+        _ => {
+            let (dw, dh, dt) = thumb_cfg_from_settings();
+            (width.unwrap_or(dw), height.unwrap_or(dh), timeout.unwrap_or(dt))
+        }
+    };
 
     // Try Edge, then Chrome (headless --screenshot mode)
     let candidates = [
