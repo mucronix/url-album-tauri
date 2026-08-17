@@ -983,6 +983,80 @@ async fn do_screenshot(
     }
 }
 
+/// Записать имя снятого файла в базу. `Ok(true)` — запись состоялась,
+/// `Ok(false)` — записывать было некуда либо база сменилась, `Err` — отказ базы.
+///
+/// Ноль затронутых строк означает, что закладку стёрли НАВСЕГДА, пока шла
+/// съёмка: снимок из расширения делается fire-and-forget до ~20 с, времени
+/// хватает. Такой файл убираем здесь же — чистка снимков идёт от строк к файлам
+/// (`purge_node` и `empty_trash` читают колонку `thumb`), поэтому сироту без
+/// строки не найдёт уже никакая ветка, она останется навсегда.
+///
+/// Мягкое удаление (в корзину) сюда не попадает: строка на месте, `UPDATE` её
+/// находит, файл сохраняется — восстановление вернёт закладку с картинкой.
+///
+/// `execute` отдаёт число строк, а не признак успеха: ни `.ok()`, ни `?` ноль
+/// не отличают — потому потеря и была незаметной.
+///
+/// ЗАЧЕМ СВЕРКА БАЗЫ. `db_path` и `data_dir` захвачены ДО съёмки, а за её время
+/// человек успевает открыть другую базу: `switch_db` подменяет и соединение, и
+/// путь в этом же `AppState`, а окно не модально. Тогда `UPDATE` ушёл бы в новую
+/// базу с id из старой — при попадании это запись чужой закладке, при промахе
+/// удаление файла из папки прежней базы, где закладка жива. Имя снимка
+/// детерминированное, так что удалили бы единственную картинку, на которую там
+/// стоит ссылка. Поэтому при смене базы не делаем НИЧЕГО.
+///
+/// Отвергнутый вариант, чтобы его не предложили снова как более простой:
+/// «перечитать `data_dir` перед удалением». Он исправляет папку, но не id — и
+/// удалит `{id}.png` уже в НОВОЙ базе, где этот id принадлежит другой закладке.
+/// Хуже, чем ничего.
+///
+/// Сверяется путь к файлу базы, а не папка данных: две базы в одном каталоге
+/// делят одну `Data`, и по папке подмена была бы незаметна (см. задачу про
+/// автономные контейнеры `ИмяБазы_Data`).
+fn store_thumb(
+    state: &AppState,
+    db_path: &std::path::Path,
+    data_dir: &std::path::Path,
+    id: i64,
+    filename: &str,
+) -> Result<bool, String> {
+    // ПОРЯДОК ЗАХВАТА НЕСУЩИЙ: сначала `db`, затем, НЕ отпуская его, `db_path`.
+    // `switch_db` берёт их в том же порядке, поэтому пока мы держим `db`, базу
+    // подменить нельзя и окна между проверкой и записью не остаётся. Обратный
+    // порядок даёт классический deadlock: он держит `db` и ждёт `db_path`, мы
+    // держим `db_path` и ждём `db`.
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let same_db = state.db_path.lock()
+        .map(|p| p.as_path() == db_path)
+        .unwrap_or(false);
+    if !same_db {
+        logger::log(&format!(
+            "снимок id={id}: база сменилась за время съёмки, файл {filename} оставлен как есть"));
+        return Ok(false);
+    }
+
+    match conn.execute(
+        "UPDATE nodes SET thumb = ?1 WHERE id = ?2",
+        rusqlite::params![filename, id],
+    ) {
+        Ok(0) => {
+            match std::fs::remove_file(data_dir.join(filename)) {
+                Ok(())   => logger::log(&format!(
+                    "снимок id={id}: закладка стёрта во время съёмки, файл {filename} удалён")),
+                Err(err) => logger::log(&format!(
+                    "снимок id={id}: закладка стёрта во время съёмки, файл {filename} удалить не удалось: {err}")),
+            }
+            Ok(false)
+        }
+        Ok(_)    => Ok(true),
+        Err(err) => {
+            logger::log(&format!("снимок id={id}: имя файла не записано в базу: {err}"));
+            Err(err.to_string())
+        }
+    }
+}
+
 #[tauri::command]
 async fn refresh_thumb(
     state: tauri::State<'_, AppState>,
@@ -993,9 +1067,11 @@ async fn refresh_thumb(
     timeout: Option<u32>,
 ) -> Result<String, String> {
     let url = normalize_url(&url);
-    let data_dir = {
+    // Путь к базе запоминаем вместе с папкой данных: по нему `store_thumb`
+    // сверит, что за время съёмки не открыли другую базу.
+    let (db_path, data_dir) = {
         let p = state.db_path.lock().map_err(|e| e.to_string())?;
-        p.parent().ok_or("no parent dir")?.to_path_buf().join("Data")
+        (p.clone(), p.parent().ok_or("no parent dir")?.to_path_buf().join("Data"))
     };
     let old_thumb: Option<String> = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -1007,10 +1083,11 @@ async fn refresh_thumb(
             let _ = std::fs::remove_file(data_dir.join(&old));
         }
     }
-    state.db.lock().map_err(|e| e.to_string())?.execute(
-        "UPDATE nodes SET thumb = ?1 WHERE id = ?2",
-        rusqlite::params![filename, id],
-    ).map_err(|e| e.to_string())?;
+    // Возврат намеренно остаётся Ok, даже если строки уже нет: съёмка удалась, а
+    // закладку стёр сам человек. Иначе такие случаи попали бы в сводку пакета как
+    // неудачи, а её смотрят, чтобы отличить сетевые отказы от нормальной работы.
+    // Отказ самой базы по-прежнему уходит наверх.
+    store_thumb(&state, &db_path, &data_dir, id, &filename)?;
     Ok(filename)
 }
 
@@ -3278,10 +3355,10 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
         let h2   = handle.clone();
         let url2 = normalize_url(&url);
         tauri::async_runtime::spawn(async move {
-            let data_dir = {
+            let (db_path, data_dir) = {
                 let st = h2.state::<AppState>();
                 let p  = st.db_path.lock().unwrap();
-                p.parent().unwrap().join("Data")
+                (p.clone(), p.parent().unwrap().join("Data"))
             };
             let old_thumb: Option<String> = {
                 if let Ok(conn) = h2.state::<AppState>().db.lock() {
@@ -3295,14 +3372,16 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                             let _ = std::fs::remove_file(data_dir.join(&old));
                         }
                     }
-                    if let Ok(conn) = h2.state::<AppState>().db.lock() {
-                        conn.execute(
-                            "UPDATE nodes SET thumb=?1 WHERE id=?2",
-                            rusqlite::params![&path, bookmark_id],
-                        ).ok();
+                    let st = h2.state::<AppState>();
+                    let stored = store_thumb(&st, &db_path, &data_dir, bookmark_id, &path)
+                                     .unwrap_or(false);   // причина уже в журнале
+                    // Событие только при состоявшейся записи: иначе интерфейс
+                    // получит путь к файлу, который мы только что удалили, либо
+                    // к снимку чужой базы.
+                    if stored {
+                        h2.emit("thumb-updated",
+                            serde_json::json!({ "id": bookmark_id, "path": path })).ok();
                     }
-                    h2.emit("thumb-updated",
-                        serde_json::json!({ "id": bookmark_id, "path": path })).ok();
                 }
                 Err(e) => logger::log(&format!("расширение: скриншот id={bookmark_id} не создан: {e}")),
             }
