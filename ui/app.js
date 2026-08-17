@@ -832,6 +832,9 @@ async function sortFolder(folderNode, by, desc) {
 
 // ── Folder context menu ───────────────────────────────────────────────────
 // Opens a nested float submenu from an item already inside a float submenu.
+// Вызовов сейчас нет: единственное вложенное подменю ушло вместе с форматом
+// синхронизации. Функция сохранена намеренно, это не забытый мусор — вложенное
+// подменю понадобится снова в очереди («Открыть с помощью», мультивыбор ссылок).
 function wireNestedFloat(trigger, buildFn) {
   let nestedEl = null;
   let nestedTimer = null;
@@ -882,11 +885,9 @@ function buildExportSubmenu(folderNode) {
   const sub = document.createElement("div");
   sub.className = "ctx-submenu";
 
-  const doExport = (cmd, withImages) => {
+  const doExport = (cmd) => {
     hideContextMenu();
-    const args = { folderId: folderNode.id };
-    if (withImages !== undefined) args.withImages = withImages;
-    invoke(cmd, args)
+    invoke(cmd, { folderId: folderNode.id })
       .then(() => setStatus('Экспорт завершён'))
       .catch(err => { if (err !== "Отменено") {
         // console.error в release недоступен — причина (нет прав, диск полон)
@@ -898,24 +899,6 @@ function buildExportSubmenu(folderNode) {
 
   sub.appendChild(ctxItem("import", "HTML файл",       null, () => doExport("export_folder_html")));
   sub.appendChild(ctxItem("props",  "Текстовый файл",  null, () => doExport("export_folder_txt")));
-  sub.appendChild(ctxSep());
-
-  // "Файл синхронизации" with nested submenu
-  const syncEl = ctxItem("backup", "Файл синхронизации", null, null, false);
-  syncEl.classList.add("ctx-has-sub");
-  const syncArrow = document.createElement("span");
-  syncArrow.className = "ctx-arrow";
-  syncArrow.textContent = "▶";
-  syncEl.appendChild(syncArrow);
-
-  wireNestedFloat(syncEl, () => {
-    const n = document.createElement("div");
-    n.className = "ctx-submenu";
-    n.appendChild(ctxItem("image",  "С рисунками",   null, () => doExport("export_folder_sync", true)));
-    n.appendChild(ctxItem("delimg", "Без рисунков",  null, () => doExport("export_folder_sync", false)));
-    return n;
-  });
-  sub.appendChild(syncEl);
 
   return sub;
 }
@@ -1033,7 +1016,6 @@ function buildFolderImportSubmenu(folderNode) {
   addItem("import",  "Из файла HTML",      "import-html");
   addItem("import",  "Из файла TXT",       "import-txt-lines");
   sub.appendChild(ctxSep());
-  addItem("backup",  "Файл синхронизации", "import-sync");
   addItem("folder",  "Из ua.dat...",       "import-folder");
 
   return sub;
@@ -1051,9 +1033,6 @@ async function invokeFolderImport(action, parentId) {
         break;
       case 'import-txt-lines':
         count = await invoke('import_txt_lines', { parentId });
-        break;
-      case 'import-sync':
-        count = await invoke('import_sync', { parentId });
         break;
       case 'import-folder':
         count = await invoke('import_uadat_pick', { parentId });
@@ -2467,15 +2446,11 @@ const MENU_DATA = [
         { label: 'Из файла HTML',           icon: 'import',  action: 'import-html'         },
         { label: 'Из файла TXT',            icon: 'import',  action: 'import-txt-lines'    },
         '---',
-        { label: 'Файл синхронизации',      icon: 'backup',  action: 'import-sync'         },
         { label: 'Из ua.dat...',            icon: 'folder',  action: 'import-folder'        },
       ]},
       { label: 'Экспорт', icon: 'backup', sub: [
         { label: 'HTML файл',                   icon: 'import',  action: 'export-html'          },
         { label: 'Текстовый файл',              icon: 'import',  action: 'export-txt'           },
-        '---',
-        { label: 'Синхронизация с рисунками',   icon: 'backup',  action: 'export-sync-with'    },
-        { label: 'Синхронизация без рисунков',  icon: 'backup',  action: 'export-sync-without' },
       ]},
       '---',
       { label: 'Браузеры', icon: 'browser', action: 'manage-browsers' },
@@ -2531,11 +2506,9 @@ const CMD_REGISTRY = [
   { id:'import-from-browser', label:'Импорт из браузера',        icon:'import',      group:'Импорт',                                action:'import-from-browser' },
   { id:'import-html',         label:'Импорт из HTML',            icon:'import',      group:'Импорт',                                action:'import-html' },
   { id:'import-txt-lines',    label:'Импорт URL из TXT',         icon:'import',      group:'Импорт',                                action:'import-txt-lines' },
-  { id:'import-sync',         label:'Импорт синхронизации',      icon:'backup',      group:'Импорт',                                action:'import-sync' },
   // Экспорт
   { id:'export-html',         label:'Экспорт в HTML',            icon:'backup',      group:'Экспорт',                               action:'export-html' },
   { id:'export-txt',          label:'Экспорт в TXT',             icon:'backup',      group:'Экспорт',                               action:'export-txt' },
-  { id:'export-sync-without', label:'Синхронизация',             icon:'backup',      group:'Экспорт',                               action:'export-sync-without' },
   // Backup
   { id:'backup-without',      label:'Backup (без рисунков)',      icon:'backup',      group:'Backup',                                action:'backup-without' },
   { id:'backup-with',         label:'Backup (с рисунками)',       icon:'backup',      group:'Backup',                                action:'backup-with' },
@@ -3280,20 +3253,6 @@ function handleMenuAction(action) {
         .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
       break;
     }
-    case 'export-sync-with': {
-      const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
-      if (fid != null) invoke("export_folder_sync", { folderId: fid, withImages: true })
-        .then(() => setStatus('Экспорт (с рисунками) завершён'))
-        .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
-      break;
-    }
-    case 'export-sync-without': {
-      const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
-      if (fid != null) invoke("export_folder_sync", { folderId: fid, withImages: false })
-        .then(() => setStatus('Экспорт завершён'))
-        .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
-      break;
-    }
     // ── Backup ──
     case 'backup-without':
       invoke("backup_db")
@@ -3341,11 +3300,6 @@ function handleMenuAction(action) {
       invoke("import_txt")
         .then(n => { if (n > 0) { refreshTree(); } })
         .catch(e => { if (e !== 'Отменено') console.error('import_txt:', e); });
-      break;
-    case 'import-sync':
-      invoke("import_sync")
-        .then(n => { if (n > 0) { refreshTree(); } })
-        .catch(e => { if (e !== 'Отменено') console.error('import_sync:', e); });
       break;
     case 'import-folder':
       invoke("import_uadat_pick")

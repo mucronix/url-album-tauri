@@ -1561,17 +1561,6 @@ async fn export_folder_txt(state: tauri::State<'_, AppState>, window: tauri::Win
 }
 
 #[tauri::command]
-async fn export_folder_sync(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64, with_images: bool) -> Result<(), String> {
-    let file = rfd::AsyncFileDialog::new()
-        .set_parent(&window)
-        .set_title("Экспорт файла синхронизации")
-        .add_filter("Файл синхронизации", &["json"])
-        .save_file().await.ok_or("Отменено")?;
-    let content = { let c = state.db.lock().map_err(|e| e.to_string())?; db::export_sync(&c, folder_id, with_images).map_err(|e| e.to_string())? };
-    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 async fn pick_browser_file(window: tauri::Window) -> Option<String> {
     rfd::AsyncFileDialog::new()
         .set_parent(&window)
@@ -2939,28 +2928,6 @@ async fn import_txt(state: tauri::State<'_, AppState>, window: tauri::Window, pa
 }
 
 #[tauri::command]
-async fn import_sync(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<usize, String> {
-    let file = rfd::AsyncFileDialog::new()
-        .set_parent(&window)
-        .set_title("Импорт файла синхронизации")
-        .add_filter("Файл синхронизации", &["json"])
-        .pick_file().await.ok_or("Отменено")?;
-    let content = std::fs::read_to_string(file.path()).map_err(|e| e.to_string())?;
-    let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-    let arr = v["nodes"].as_array().ok_or("Нет массива nodes в файле")?;
-    let nodes: Vec<db::RawSyncNode> = arr.iter().map(|n| db::RawSyncNode {
-        old_id:     n["id"].as_i64().unwrap_or(0),
-        old_parent: n["parent"].as_i64(),
-        kind:       n["kind"].as_str().unwrap_or("bookmark").to_string(),
-        title:      n["title"].as_str().unwrap_or("").to_string(),
-        url:        n["url"].as_str().map(String::from),
-        note:       n["note"].as_str().map(String::from),
-    }).collect();
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::import_sync_nodes(&conn, &nodes, parent_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 async fn import_uadat_pick(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<usize, String> {
     let file = rfd::AsyncFileDialog::new()
         .set_parent(&window)
@@ -3672,7 +3639,6 @@ fn main() {
             delete_folder,
             export_folder_html,
             export_folder_txt,
-            export_folder_sync,
             clear_thumb,
             refresh_thumb,
             delete_node,
@@ -3687,7 +3653,6 @@ fn main() {
             db_stats,
             import_html,
             import_txt,
-            import_sync,
             import_uadat_pick,
             detect_browsers,
             import_from_browser,

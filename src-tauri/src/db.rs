@@ -229,20 +229,23 @@ struct ExportNode {
     kind:   String,
     title:  String,
     url:    Option<String>,
-    thumb:  Option<String>,
     note:   Option<String>,
 }
 
+/// Поддерево папки для экспорта. Колонки `thumb` здесь больше нет — её читал
+/// только удалённый `export_sync`. При правке списка колонок помнить про сдвиг
+/// индексов в `r.get(N)`: на этом уже горел `sort_idx`, и заметка молча
+/// заполнялась бы именем файла картинки.
 fn get_subtree(conn: &Connection, folder_id: i64) -> Result<Vec<ExportNode>> {
     let mut stmt = conn.prepare(
-        "WITH RECURSIVE sub(id, parent, kind, title, url, thumb, note, sort_idx) AS (
-             SELECT id, parent, kind, title, url, thumb, note, sort_idx
+        "WITH RECURSIVE sub(id, parent, kind, title, url, note, sort_idx) AS (
+             SELECT id, parent, kind, title, url, note, sort_idx
              FROM nodes WHERE id = ?1
              UNION ALL
-             SELECT n.id, n.parent, n.kind, n.title, n.url, n.thumb, n.note, n.sort_idx
+             SELECT n.id, n.parent, n.kind, n.title, n.url, n.note, n.sort_idx
              FROM nodes n JOIN sub s ON n.parent = s.id
          )
-         SELECT id, parent, kind, title, url, thumb, note FROM sub ORDER BY sort_idx, id",
+         SELECT id, parent, kind, title, url, note FROM sub ORDER BY sort_idx, id",
     )?;
     let result: Result<Vec<ExportNode>> = stmt.query_map(params![folder_id], |r| Ok(ExportNode {
         id:     r.get(0)?,
@@ -250,8 +253,7 @@ fn get_subtree(conn: &Connection, folder_id: i64) -> Result<Vec<ExportNode>> {
         kind:   r.get(2)?,
         title:  r.get(3)?,
         url:    r.get(4)?,
-        thumb:  r.get(5)?,
-        note:   r.get(6)?,
+        note:   r.get(5)?,
     }))?.collect();
     result
 }
@@ -304,30 +306,6 @@ pub fn export_txt(conn: &Connection, folder_id: i64) -> Result<String> {
     let root = nodes.iter().find(|n| n.id == folder_id).map(|n| n.title.as_str()).unwrap_or("");
     let body = txt_folder(&nodes, Some(folder_id), 0);
     Ok(format!("[{root}]\n{body}"))
-}
-
-pub fn export_sync(conn: &Connection, folder_id: i64, with_images: bool) -> Result<String> {
-    let nodes = get_subtree(conn, folder_id)?;
-    let mut items = String::new();
-    for n in &nodes {
-        let thumb = if with_images {
-            n.thumb.as_deref().map(|t| format!(",\"thumb\":\"{t}\"")).unwrap_or_default()
-        } else {
-            String::new()
-        };
-        let url   = n.url .as_deref().map(|v| format!(",\"url\":\"{v}\""))  .unwrap_or_default();
-        let note  = n.note.as_deref().map(|v| format!(",\"note\":\"{v}\"")) .unwrap_or_default();
-        let par   = n.parent.map(|p| format!("{p}")).unwrap_or_else(|| "null".into());
-        items.push_str(&format!(
-            "{{\"id\":{},\"parent\":{par},\"kind\":\"{}\",\"title\":\"{}\"{}{}{}}}",
-            n.id, n.kind, n.title.replace('"', "\\\""), url, note, thumb
-        ));
-        items.push(',');
-    }
-    items.pop(); // trailing comma
-    Ok(format!(
-        "{{\"version\":\"1.0\",\"app\":\"url-album\",\"with_images\":{with_images},\"nodes\":[{items}]}}"
-    ))
 }
 
 // ── Import ───────────────────────────────────────────────────────────────────
@@ -710,39 +688,6 @@ pub fn import_txt_urls(conn: &Connection, text: &str, folder_name: &str, dest_pa
     Ok(count)
 }
 
-pub struct RawSyncNode {
-    pub old_id:     i64,
-    pub old_parent: Option<i64>,
-    pub kind:       String,
-    pub title:      String,
-    pub url:        Option<String>,
-    pub note:       Option<String>,
-}
-
-pub fn import_sync_nodes(
-    conn: &Connection,
-    nodes: &[RawSyncNode],
-    dest_parent: Option<i64>,
-) -> Result<usize> {
-    conn.execute_batch("BEGIN")?;
-    let mut id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
-    let mut count = 0usize;
-
-    for (sort_idx, node) in nodes.iter().enumerate() {
-        let new_parent = node.old_parent
-            .and_then(|old| id_map.get(&old).copied())
-            .or(dest_parent);
-        conn.execute(
-            "INSERT INTO nodes (parent, kind, title, url, note, sort_idx) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![new_parent, &node.kind, &node.title, &node.url, &node.note, sort_idx as i64],
-        )?;
-        id_map.insert(node.old_id, conn.last_insert_rowid());
-        count += 1;
-    }
-    conn.execute_batch("COMMIT")?;
-    Ok(count)
-}
-
 // ── Import from another DB ────────────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -1096,5 +1041,34 @@ mod tests {
                 Some(f) => assert_eq!(&order, f, "порядок папок разошёлся на прогоне {run}"),
             }
         }
+    }
+
+    /// Сторож сдвига индексов колонок в `get_subtree`. Вместе с форматом
+    /// синхронизации из запроса убрана колонка `thumb`, и если забыть
+    /// перенумеровать `r.get(N)`, в заметку молча попадёт имя файла картинки —
+    /// заметит это только человек, открывший выгруженный файл. Данные взяты по
+    /// образцу живой базы: заметка `111222` и снимок `235.png` неразличимы
+    /// глазами ровно до момента, когда одно встанет на место другого.
+    #[test]
+    fn export_keeps_note_and_never_leaks_thumb_name() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let root = folder(&c, None, "Папка", 0);
+        let bm = link(&c, Some(root), "Ventoy", "https://ventoy.net/", 0);
+        c.execute(
+            "UPDATE nodes SET note = ?1, thumb = ?2 WHERE id = ?3",
+            params!["здесь будет описание ссылки!", "235.png", bm],
+        ).unwrap();
+
+        let txt = export_txt(&c, root).unwrap();
+        println!("--- export_txt ---\n{txt}");
+        assert!(txt.contains("Заметка: здесь будет описание ссылки!"),
+                "заметка потерялась или подменена: {txt}");
+        assert!(!txt.contains("235.png"), "в выгрузку утекло имя файла снимка: {txt}");
+
+        let html = export_html(&c, root).unwrap();
+        println!("--- export_html ---\n{html}");
+        assert!(html.contains("https://ventoy.net/"), "ссылка потерялась: {html}");
+        assert!(!html.contains("235.png"), "в HTML утекло имя файла снимка: {html}");
     }
 }
