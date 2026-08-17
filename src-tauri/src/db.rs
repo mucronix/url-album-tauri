@@ -784,9 +784,12 @@ pub fn collect_urls(conn: &Connection) -> Result<std::collections::HashSet<Strin
     result
 }
 
+/// Узлы источника В ПОРЯДКЕ ПОЛЬЗОВАТЕЛЯ: `ORDER BY sort_idx, id`, как в
+/// `get_subtree`. Раньше стояло `ORDER BY id` — порядок создания, — и ручная
+/// сортировка источника при импорте терялась целиком.
 pub fn read_src_nodes(src: &Connection) -> Result<Vec<SrcNode>> {
     let mut stmt = src.prepare(
-        "SELECT id, parent, kind, title, url, note FROM nodes ORDER BY id"
+        "SELECT id, parent, kind, title, url, note FROM nodes ORDER BY sort_idx, id"
     )?;
     let result: Result<Vec<SrcNode>> = stmt.query_map([], |r| Ok(SrcNode {
         id:     r.get(0)?,
@@ -823,6 +826,18 @@ pub fn analyze_import_db(
     ImportAnalysis { source_path, total_bookmarks, new_count, duplicate_count, total_folders }
 }
 
+/// Следующий свободный `sort_idx` в папке назначения: `MAX + 1`, у пустой — 0.
+/// Нужен, чтобы импортированное вставало В КОНЕЦ, а не вклинивалось между
+/// существующими записями. `WHERE parent IS ?1`, а не `=`: у корневых узлов
+/// parent = NULL, а `= NULL` в SQLite всегда ложь.
+fn next_sort_idx(dest: &Connection, parent: Option<i64>) -> i64 {
+    dest.query_row(
+        "SELECT COALESCE(MAX(sort_idx), -1) + 1 FROM nodes WHERE parent IS ?1",
+        params![parent],
+        |r| r.get(0),
+    ).unwrap_or(0)
+}
+
 pub fn execute_import_from_nodes(
     dest: &Connection,
     nodes: &[SrcNode],
@@ -853,18 +868,31 @@ pub fn execute_import_from_nodes(
     }
 
     // Build parent→children map for BFS (None key = attach to dest_parent)
+    //
+    // Обходим `nodes`, а НЕ `needed_folders`: последнее — HashSet, порядок его
+    // итерации не определён и меняется от запуска к запуску, поэтому папки
+    // приезжали в случайном порядке — даже не в порядке создания. `nodes`
+    // упорядочен по sort_idx источника, значит и папки встанут как у человека.
     let mut children_of: std::collections::HashMap<Option<i64>, Vec<i64>> =
         std::collections::HashMap::new();
-    for &fid in &needed_folders {
-        if let Some(node) = node_map.get(&fid) {
-            let key = node.parent.filter(|p| needed_folders.contains(p));
-            children_of.entry(key).or_default().push(fid);
-        }
+    for node in nodes.iter().filter(|n| needed_folders.contains(&n.id)) {
+        let key = node.parent.filter(|p| needed_folders.contains(p));
+        children_of.entry(key).or_default().push(node.id);
     }
 
     dest.execute_batch("BEGIN")?;
     let mut id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
-    let mut sort_idx = 0i64;
+    // Нумерация своя для каждого родителя и продолжает существующую: общий
+    // счётчик с нуля означал, что импортированное вклинивается между старыми
+    // записями — JS сортирует по sort_idx, а при равенстве по id (app.js:1577).
+    let mut next_idx: std::collections::HashMap<Option<i64>, i64> =
+        std::collections::HashMap::new();
+    let mut take_idx = |parent: Option<i64>| -> i64 {
+        let slot = next_idx.entry(parent).or_insert_with(|| next_sort_idx(dest, parent));
+        let v = *slot;
+        *slot += 1;
+        v
+    };
 
     // BFS: insert folders top-down
     let mut queue: std::collections::VecDeque<i64> =
@@ -874,12 +902,12 @@ pub fn execute_import_from_nodes(
             let new_parent = node.parent
                 .and_then(|p| id_map.get(&p).copied())
                 .or(dest_parent);
+            let si = take_idx(new_parent);
             dest.execute(
                 "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1,?2,?3,?4)",
-                params![new_parent, &node.kind, &node.title, sort_idx],
+                params![new_parent, &node.kind, &node.title, si],
             )?;
             id_map.insert(fid, dest.last_insert_rowid());
-            sort_idx += 1;
             if let Some(children) = children_of.get(&Some(fid)) {
                 queue.extend(children);
             }
@@ -892,14 +920,181 @@ pub fn execute_import_from_nodes(
         let new_parent = node.parent
             .and_then(|p| id_map.get(&p).copied())
             .or(dest_parent);
+        let si = take_idx(new_parent);
         dest.execute(
             "INSERT INTO nodes (parent, kind, title, url, note, sort_idx) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![new_parent, &node.kind, &node.title, &node.url, &node.note, sort_idx],
+            params![new_parent, &node.kind, &node.title, &node.url, &node.note, si],
         )?;
-        sort_idx += 1;
         count += 1;
     }
 
     dest.execute_batch("COMMIT")?;
     Ok(count)
+}
+
+// ── Тесты слоя БД ────────────────────────────────────────────────────────────
+//
+// Проверяют порядок при импорте из другой базы. Тест писался ПОД ТРИ КОНКРЕТНЫХ
+// ДЕФЕКТА и на коде до правки падает по каждому из них:
+//   1. `read_src_nodes` читал `ORDER BY id` — терялся ручной порядок источника;
+//   2. `children_of` строился обходом HashSet — папки приезжали в случайном
+//      порядке, разном от запуска к запуску;
+//   3. счётчик `sort_idx` начинался с нуля — импортированное вклинивалось между
+//      существующими записями приёмника, а не вставало в конец.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn folder(c: &Connection, parent: Option<i64>, title: &str, si: i64) -> i64 {
+        c.execute(
+            "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1,'folder',?2,?3)",
+            params![parent, title, si],
+        ).unwrap();
+        c.last_insert_rowid()
+    }
+
+    fn link(c: &Connection, parent: Option<i64>, title: &str, url: &str, si: i64) -> i64 {
+        c.execute(
+            "INSERT INTO nodes (parent, kind, title, url, sort_idx) VALUES (?1,'bookmark',?2,?3,?4)",
+            params![parent, title, url, si],
+        ).unwrap();
+        c.last_insert_rowid()
+    }
+
+    /// Дети родителя в том порядке, в каком их покажет интерфейс: по sort_idx,
+    /// при равенстве — по id (ровно так сортирует app.js).
+    fn children(c: &Connection, parent: Option<i64>) -> Vec<(String, i64)> {
+        let mut s = c.prepare(
+            "SELECT title, sort_idx FROM nodes WHERE parent IS ?1 ORDER BY sort_idx, id"
+        ).unwrap();
+        let rows = s.query_map(params![parent], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap().filter_map(|x| x.ok()).collect();
+        rows
+    }
+
+    fn titles(rows: &[(String, i64)]) -> Vec<&str> {
+        rows.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
+    fn id_of(c: &Connection, title: &str) -> i64 {
+        c.query_row("SELECT id FROM nodes WHERE title=?1", params![title], |r| r.get(0)).unwrap()
+    }
+
+    fn dump(c: &Connection, parent: Option<i64>, label: &str) {
+        println!("--- {label} ---");
+        for (t, si) in children(c, parent) {
+            println!("    [{si:>2}] {t}");
+        }
+    }
+
+    /// Источник: всё расставлено ВРУЧНУЮ, и ручной порядок нарочно не совпадает
+    /// ни с порядком создания (id), ни с алфавитом.
+    fn make_src() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+
+        // Корень: создаём Гамма → Альфа → Бета, а показывать надо Альфа, Бета, Гамма.
+        let gamma = folder(&c, None, "Гамма", 2);
+        let alpha = folder(&c, None, "Альфа", 0);
+        let beta  = folder(&c, None, "Бета",  1);
+
+        // Шесть подпапок подряд — на них ловится недетерминированность HashSet.
+        // Создаются вперемешку, ручной порядок П1..П6.
+        for (n, si) in [(4, 3), (1, 0), (6, 5), (2, 1), (5, 4), (3, 2)] {
+            let fid = folder(&c, Some(alpha), &format!("П{n}"), si);
+            // Без своей ссылки папка не «нужна» импорту и не поедет вовсе.
+            link(&c, Some(fid), &format!("сс-П{n}"), &format!("https://example.com/p{n}"), 0);
+        }
+
+        // Ссылки прямо в «Альфа»: создаём сБ → сА, показывать надо сА, сБ.
+        link(&c, Some(alpha), "сБ", "https://example.com/b", 7);
+        link(&c, Some(alpha), "сА", "https://example.com/a", 6);
+
+        link(&c, Some(beta),  "сВ", "https://example.com/v", 0);
+        link(&c, Some(gamma), "сГ", "https://example.com/g", 0);
+        c
+    }
+
+    /// Приёмник: свои записи с sort_idx 0,1,2 и в корне, и в папке назначения —
+    /// без них дефект «вклинивания» не проявится.
+    fn make_dest() -> (Connection, i64) {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        link(&c, None, "Свой-1", "https://own.example/1", 0);
+        link(&c, None, "Свой-2", "https://own.example/2", 1);
+        link(&c, None, "Свой-3", "https://own.example/3", 2);
+        let dest = folder(&c, None, "Приёмник", 3);
+        link(&c, Some(dest), "стар-1", "https://old.example/1", 0);
+        link(&c, Some(dest), "стар-2", "https://old.example/2", 1);
+        link(&c, Some(dest), "стар-3", "https://old.example/3", 2);
+        (c, dest)
+    }
+
+    fn run_import(dest: &Connection, src: &Connection, dest_parent: Option<i64>) -> usize {
+        let nodes = read_src_nodes(src).unwrap();
+        let urls  = collect_urls(dest).unwrap();
+        execute_import_from_nodes(dest, &nodes, dest_parent, &urls).unwrap()
+    }
+
+    #[test]
+    fn import_keeps_source_order_and_appends_to_the_end() {
+        let src = make_src();
+        let (dest, dest_id) = make_dest();
+
+        dump(&dest, Some(dest_id), "приёмник ДО импорта");
+        let n = run_import(&dest, &src, Some(dest_id));
+        println!("    вставлено ссылок: {n}");
+        dump(&dest, Some(dest_id), "приёмник ПОСЛЕ импорта");
+
+        let after = children(&dest, Some(dest_id));
+        assert_eq!(
+            titles(&after),
+            vec!["стар-1", "стар-2", "стар-3", "Альфа", "Бета", "Гамма"],
+            "импортированное обязано стоять В КОНЦЕ и в порядке источника"
+        );
+        assert_eq!(after[3].1, 3, "нумерация обязана продолжать существующую, а не начинаться с нуля");
+
+        let alpha = id_of(&dest, "Альфа");
+        dump(&dest, Some(alpha), "внутри импортированной «Альфа»");
+        assert_eq!(
+            titles(&children(&dest, Some(alpha))),
+            vec!["П1", "П2", "П3", "П4", "П5", "П6", "сА", "сБ"],
+            "папки в ручном порядке источника и выше ссылок"
+        );
+    }
+
+    #[test]
+    fn import_into_root_continues_root_numbering() {
+        let src = make_src();
+        let (dest, _) = make_dest();
+        run_import(&dest, &src, None);
+        dump(&dest, None, "корень приёмника ПОСЛЕ импорта в корень");
+
+        let roots = children(&dest, None);
+        assert_eq!(
+            titles(&roots),
+            vec!["Свой-1", "Свой-2", "Свой-3", "Приёмник", "Альфа", "Бета", "Гамма"],
+            "в корне импортированное тоже обязано вставать в конец"
+        );
+        // Ловит `WHERE parent = ?1` вместо `IS`: у корневых parent = NULL,
+        // сравнение через `=` всегда ложно, счётчик начался бы с нуля.
+        assert_eq!(roots[4].1, 4, "счётчик корня обязан продолжаться");
+    }
+
+    #[test]
+    fn folder_order_is_deterministic_across_runs() {
+        let mut first: Option<Vec<String>> = None;
+        for run in 1..=10 {
+            let src = make_src();
+            let (dest, dest_id) = make_dest();
+            run_import(&dest, &src, Some(dest_id));
+            let alpha = id_of(&dest, "Альфа");
+            let order: Vec<String> = children(&dest, Some(alpha)).into_iter().map(|(t, _)| t).collect();
+            println!("    прогон {run:>2}: {order:?}");
+            match &first {
+                None => first = Some(order),
+                Some(f) => assert_eq!(&order, f, "порядок папок разошёлся на прогоне {run}"),
+            }
+        }
+    }
 }
