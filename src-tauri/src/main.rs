@@ -205,7 +205,14 @@ fn empty_trash(state: tauri::State<AppState>) -> Result<(), String> {
 
         let thumbs: Vec<String> = rows.iter().filter_map(|(t, _)| t.clone()).collect();
 
-        // Delete favicon file only if no active node uses it
+        // Файл favicon удаляем только если на него не ссылается активный узел.
+        //
+        // Здесь проверка по активным ВЕРНА, хотя точно такая же в purge_node
+        // оказалась багом: эта команда стирает все строки с deleted=1 разом,
+        // поэтому «все, кроме стираемых» и «активные» — одно и то же множество.
+        // В purge_node стирается лишь часть корзины, и там пришлось спрашивать
+        // «id NOT IN (стираемые)». Не унифицировать два места по внешнему
+        // сходству: один и тот же запрос отвечает здесь на другой вопрос.
         let favicons: Vec<String> = rows.iter()
             .filter_map(|(_, f)| f.clone())
             .filter(|fav| {
@@ -281,15 +288,28 @@ fn purge_node(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
 
         let thumbs: Vec<String> = rows.iter().filter_map(|(t, _)| t.clone()).collect();
 
-        // Favicon: delete only if no active (non-deleted) node outside our set uses it
+        // Favicon общий на домен, поэтому вопрос ровно один: останется ли после
+        // нашего удаления хоть одна ссылка на файл. Считаем ВСЕ узлы, кроме
+        // стираемых этим вызовом, а не только активные.
+        //
+        // Проверка по активным была багом: две закладки одного домена лежат в
+        // корзине, «Удалить навсегда» одну — общий файл уходил, и у второй после
+        // восстановления пропадал значок. Перечислять состояния («активные плюс
+        // оставшиеся в корзине») не нужно: одно из них рано или поздно забудется,
+        // а `id NOT IN (…)` формулирует исходный вопрос буквально.
+        //
+        // Запрос выполняется ДО DELETE ниже, поэтому исключение по id обязательно.
+        // Список ids — i64, прочитанные из базы: интерполяция безопасна, это тот
+        // же `placeholders`, которым удаляются строки. Для папки в него входит
+        // вся удалённая ветка, поэтому дочерние ссылки не сойдут за «оставшиеся».
         let favicons: Vec<String> = rows.iter()
             .filter_map(|(_, f)| f.clone())
             .filter(|fav| {
                 let count: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM nodes WHERE favicon=?1 AND (deleted IS NULL OR deleted=0)",
+                    &format!("SELECT COUNT(*) FROM nodes WHERE favicon=?1 AND id NOT IN ({})", placeholders),
                     rusqlite::params![fav],
                     |r| r.get(0),
-                ).unwrap_or(1);
+                ).unwrap_or(1);   // сбой запроса → считаем, что файл ещё нужен
                 count == 0
             })
             .collect();
