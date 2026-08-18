@@ -557,12 +557,27 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
         let depth = (leading / 2) as i64;
         let trimmed = line.trim();
 
-        while stack.len() > 1 && stack.last().map(|(d, _)| *d >= depth).unwrap_or(false) {
-            stack.pop();
+        // Вид строки определяется ДО того, как трогается стек: разделитель
+        // ищется только там, где строка не папка и не заметка.
+        let is_folder = trimmed.starts_with('[') && trimmed.ends_with(']');
+        let is_note   = trimmed.starts_with("Заметка: ");
+        let sep       = if is_folder || is_note { None } else { trimmed.rfind(" - ") };
+
+        // Стек выталкивают ТОЛЬКО структурные строки — папка и ссылка.
+        // Раньше это делала каждая непустая строка, до разбора: любая строка,
+        // которую парсер не признал своей, сбрасывала контекст папок, и всё
+        // последующее ложилось в корень. Хвост многострочной заметки — лишь
+        // один из способов такую строку получить; случайный мусор в середине
+        // файла ломал дерево точно так же, а по счётчику `skipped` отличить
+        // безобидный мусор от сбежавшей ветки нельзя — цифра одна и та же.
+        if is_folder || sep.is_some() {
+            while stack.len() > 1 && stack.last().map(|(d, _)| *d >= depth).unwrap_or(false) {
+                stack.pop();
+            }
         }
         let parent_id = stack.last().map(|(_, id)| *id).unwrap_or(root_id);
 
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        if is_folder {
             let title = &trimmed[1..trimmed.len()-1];
             let c = sort_counters.entry(Some(parent_id)).or_insert(0);
             let si = *c; *c += 1;
@@ -580,7 +595,7 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
                 // Заметка раньше первой ссылки — приписать её некому.
                 res.skipped += 1;
             }
-        } else if let Some(sep) = trimmed.rfind(" - ") {
+        } else if let Some(sep) = sep {
             let title = trimmed[..sep].trim();
             let url = trimmed[sep + 3..].trim();
             let c = sort_counters.entry(Some(parent_id)).or_insert(0);
@@ -1353,6 +1368,60 @@ mod tests {
         assert_eq!(
             c.query_row("SELECT note FROM nodes WHERE title='Ventoy'", [], |r| r.get::<_, String>(0)).unwrap(),
             "описание");
+    }
+
+    /// Строка, которую парсер не признал своей, НЕ должна сбрасывать контекст
+    /// папок. Раньше выталкивание стека шло для каждой непустой строки, до
+    /// разбора: мусор с нулевым отступом выталкивал все папки, и всё, что шло
+    /// ниже, ложилось в корень. Мусор в конце файла добавлен намеренно —
+    /// чтобы зелёный не получался просто потому, что ломать после него нечего.
+    #[test]
+    fn stray_line_keeps_folder_context() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let text = concat!(
+            "[Корень]\n",
+            "[Папка]\n",
+            "  Ссылка1 - https://a.example/\n",
+            "случайная строка, которую парсер не знает\n",
+            "  Ссылка2 - https://b.example/\n",
+            "мусор в самом конце файла\n",
+        );
+        let res = import_txt(&c, text, None).unwrap();
+
+        let folder_id = id_of(&c, "Папка");
+        assert_eq!(titles(&children(&c, Some(folder_id))), vec!["Ссылка1", "Ссылка2"],
+                   "обе ссылки обязаны остаться в своей папке");
+        assert_eq!(titles(&children(&c, Some(id_of(&c, "Корень")))), vec!["Папка"],
+                   "в корне выгрузки только папка, ссылок туда попадать не должно");
+        assert_eq!(res.skipped, 2, "обе мусорные строки посчитаны");
+    }
+
+    /// Через этот тест проходят обе правки формата. Сейчас (починка стека)
+    /// хвост многострочной заметки ещё теряется — он уходит в `skipped`, — но
+    /// структура ниже уже не рушится. Когда появится продолжение с отступом,
+    /// ожидание `skipped` сменится с 1 на 0: менять надо именно это число,
+    /// а не заводить рядом второй тест, иначе в истории не видно перехода.
+    #[test]
+    fn multiline_note_does_not_break_structure_below() {
+        let src = Connection::open_in_memory().unwrap();
+        init(&src).unwrap();
+        let root = folder(&src, None, "Закладки", 0);
+        let work = folder(&src, Some(root), "Работа", 0);
+        let a = link(&src, Some(work), "Ventoy", "https://ventoy.net/", 0);
+        link(&src, Some(work), "Rust", "https://rust-lang.org/", 1);
+        src.execute("UPDATE nodes SET note = ?1 WHERE id = ?2",
+                    params!["первая строка\nвторая строка", a]).unwrap();
+
+        let txt = export_txt(&src, root).unwrap();
+        let dest = Connection::open_in_memory().unwrap();
+        init(&dest).unwrap();
+        let res = import_txt(&dest, &txt, None).unwrap();
+
+        assert_eq!(titles(&children(&dest, Some(id_of(&dest, "Работа")))),
+                   vec!["Ventoy", "Rust"],
+                   "ссылка после многострочной заметки обязана остаться в своей папке");
+        assert_eq!(res.skipped, 1, "хвост заметки пока теряется — это чинит второй коммит");
     }
 
     #[test]
