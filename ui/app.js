@@ -481,7 +481,7 @@ function hideThumbPanel() {
 
 function _finishThumbBatch() {
   document.getElementById('tp-label').textContent = 'Готово';
-  setStatus(`Обновлено ${_thumbDone} рисунков`);
+  setStatus(`Обновлено ${_thumbDone} ${plural(_thumbDone, 'рисунок', 'рисунка', 'рисунков')}`);
   logUi(`скриншоты, итог пакета: всего ${_thumbTotal}, удалось ${_thumbDone - _thumbFailed}, `
       + `не удалось ${_thumbFailed}, ${Math.round((Date.now() - _thumbStarted) / 1000)}с`);
   setTimeout(hideThumbPanel, 2000);
@@ -694,7 +694,7 @@ document.getElementById('dupes-keep-one').addEventListener('click', () => {
   const g = _dGroups[_dGroupIdx];
   if (!g || g.nodes.length < 2) return;
   const toDelete = g.nodes.slice(1);
-  deleteConfirm(`Удалить ${toDelete.length} дубликат(ов)?`, async () => {
+  deleteConfirm(`Удалить ${toDelete.length} ${plural(toDelete.length, 'дубликат', 'дубликата', 'дубликатов')}?`, async () => {
     for (const node of toDelete) {
       await invoke('delete_node', { id: node.id });
       const ai = allNodes.findIndex(n => n.id === node.id);
@@ -2189,7 +2189,7 @@ async function doBrowserImport() {
       const r = await invoke('import_from_bookmarks_file', {
         path: biManual.path, name: biManual.name
       });
-      biStatus.textContent = `Импортировано: ${r.links} ссылок, ${r.folders} папок.`;
+      biStatus.textContent = `Импортировано: ${r.links} ${plural(r.links, 'ссылка', 'ссылки', 'ссылок')}, ${r.folders} ${plural(r.folders, 'папка', 'папки', 'папок')}.`;
       refreshTree();
       setTimeout(() => biOverlay.classList.add('hidden'), 2500);
     } catch(e) {
@@ -2204,7 +2204,7 @@ async function doBrowserImport() {
   biStatus.textContent = `Импортирую из ${b.name}…`;
   try {
     const r = await invoke('import_from_browser', { browserId: b.id });
-    biStatus.textContent = `Импортировано: ${r.links} ссылок, ${r.folders} папок.`;
+    biStatus.textContent = `Импортировано: ${r.links} ${plural(r.links, 'ссылка', 'ссылки', 'ссылок')}, ${r.folders} ${plural(r.folders, 'папка', 'папки', 'папок')}.`;
     refreshTree();
     setTimeout(() => biOverlay.classList.add('hidden'), 2500);
   } catch(e) {
@@ -2721,7 +2721,7 @@ function tbMoveItem(dir) {
       close();
       if (count > 0) {
         await refreshTree();
-        setStatus(`Импортировано ${count} ссылок`);
+        setStatus(`Импортировано ${count} ${plural(count, 'ссылка', 'ссылки', 'ссылок')}`);
       } else {
         setStatus('Нет новых ссылок для импорта');
       }
@@ -3315,7 +3315,7 @@ function handleMenuAction(action) {
     case 'import-folder':
       invoke("import_uadat_pick")
         .then(n => {
-          if (n > 0) { refreshTree(); setStatus(`Импортировано ${n} ссылок`); }
+          if (n > 0) { refreshTree(); setStatus(`Импортировано ${n} ${plural(n, 'ссылка', 'ссылки', 'ссылок')}`); }
           else setStatus('Нет новых ссылок для импорта');
         })
         .catch(e => { if (e !== 'Отменено') console.error('import_folder:', e); });
@@ -4065,7 +4065,7 @@ document.getElementById("wb-import").addEventListener("click", async () => {
   try {
     const n = await invoke("import_uadat_pick");
     await showApp();
-    setStatus(`Импортировано ${n} ссылок`);
+    setStatus(`Импортировано ${n} ${plural(n, 'ссылка', 'ссылки', 'ссылок')}`);
   } catch(e) {
     if (e !== "Отменено") console.error("import_uadat_pick:", e);
   }
@@ -5260,7 +5260,8 @@ function createTrashRow(node, depth, ancestors, hasChildren) {
   const addr = document.createElement('span');
   addr.className = isFolder ? 'row-addr row-addr-folder' : 'row-addr';
   if (isFolder) {
-    addr.textContent = node.count > 0 ? node.count + ' ссылок' : '';
+    addr.textContent = node.count > 0
+      ? `${node.count} ${plural(node.count, 'ссылка', 'ссылки', 'ссылок')}` : '';
   } else {
     addr.textContent = node.url || '';
     if (node.url) addr.title = node.url;
@@ -5387,7 +5388,8 @@ function createFolderRow(node) {
 
   const addr = document.createElement("span");
   addr.className = "row-addr row-addr-folder";
-  addr.textContent = node.count > 0 ? node.count + " ссылок" : "";
+  addr.textContent = node.count > 0
+    ? `${node.count} ${plural(node.count, 'ссылка', 'ссылки', 'ссылок')}` : '';
 
   row.append(dot, name, sep, addr);
   return row;
