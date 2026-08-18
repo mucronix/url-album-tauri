@@ -294,7 +294,18 @@ fn txt_folder(nodes: &[ExportNode], parent: Option<i64>, depth: usize) -> String
         } else if let Some(ref url) = n.url {
             out.push_str(&format!("{prefix}{} - {url}\n", n.title));
             if let Some(ref note) = n.note {
-                out.push_str(&format!("{prefix}  Заметка: {note}\n"));
+                // Первая строка заметки — как раньше, продолжение пишется
+                // с отступом ГЛУБЖЕ самой заметки. Прежде `note` подставлялся
+                // одной подстановкой, и перенос внутри выносил хвост в нулевую
+                // колонку: при обратном разборе он становился мусором, а заодно
+                // сбрасывал контекст папок (последнее починено в `c8570f6`).
+                let mut parts = note.split('\n').map(|l| l.trim_end_matches('\r'));
+                if let Some(first) = parts.next() {
+                    out.push_str(&format!("{prefix}  Заметка: {first}\n"));
+                    for cont in parts {
+                        out.push_str(&format!("{prefix}    {cont}\n"));
+                    }
+                }
             }
         }
     }
@@ -507,16 +518,28 @@ pub fn folder_is_empty(conn: &Connection, id: i64) -> bool {
     ).unwrap_or(1) == 0
 }
 
-/// ⚠️ Известное ограничение (не чинится в 2.3.2): многострочная заметка.
-/// `export_txt` пишет её одной строкой `Заметка: …`, поэтому перенос внутри
-/// заметки уходит в файл отдельной строкой БЕЗ отступа. При обратном разборе
-/// такая строка либо попадёт в `skipped` (если в ней нет « - »), либо станет
-/// мусорной ссылкой и посчитается в `links` — счётчик покажет успех. Хуже
-/// того, у неё глубина 0, а разбор на каждой строке выталкивает из стека папки
-/// с глубиной ≥ текущей: стек схлопывается до корня, и всё последующее ложится
-/// не в свою папку. То есть портится не только сама заметка, но и структура
-/// ниже по файлу. Лечится сменой формата выгрузки (экранирование переноса либо
-/// продолжение с отступом) — это правка обеих сторон, отдельной задачей.
+/// Записать накопленную заметку в её ссылку и сбросить состояние.
+///
+/// Вынесено отдельно, потому что вызывается из ДВУХ мест: когда встретилась
+/// строка, которая продолжением не является, и **после цикла** — заметка
+/// в самом конце файла иначе потерялась бы целиком.
+fn flush_note(conn: &Connection, ctx: &mut Option<(i64, usize, String)>) -> Result<()> {
+    if let Some((bid, _, text)) = ctx.take() {
+        conn.execute("UPDATE nodes SET note = ?1 WHERE id = ?2", params![text, bid])?;
+    }
+    Ok(())
+}
+
+/// Многострочные заметки поддержаны: продолжение пишется с отступом глубже
+/// строки `Заметка: …` и при разборе приклеивается к ней (см. правило в теле
+/// цикла). До этого `export_txt` подставлял заметку одной строкой, перенос
+/// уходил в файл в нулевую колонку, хвост становился мусором или мусорной
+/// ссылкой, а заодно сбрасывал контекст папок — портилась структура ниже
+/// по файлу.
+///
+/// Старые выгрузки, где продолжение лежит в нулевой колонке, читаются
+/// по-прежнему: структура цела (`c8570f6`), хвост уходит в `skipped` —
+/// восстановить его нельзя, в таком файле он неотличим от постороннего текста.
 pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Result<TxtImportResult> {
     conn.execute_batch("BEGIN")?;
     let mut lines = text.lines();
@@ -550,12 +573,39 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
     // Stack: (depth, folder_id). Sentinel depth=-1.
     let mut stack: Vec<(i64, i64)> = vec![(-1, root_id)];
     let mut last_bm_id: Option<i64> = None;
+    // (id ссылки, отступ строки «Заметка: …», накопленный текст).
+    let mut note_ctx: Option<(i64, usize, String)> = None;
 
     for line in lines {
         if line.trim().is_empty() { continue; }
         let leading = line.len() - line.trim_start().len();
-        let depth = (leading / 2) as i64;
         let trimmed = line.trim();
+
+        // ── Продолжение заметки ───────────────────────────────────────────
+        // Правило СТРОГО ПО ОТСТУПУ: строка глубже строки «Заметка: …» — это
+        // её продолжение, что бы в ней ни было написано. Содержимое намеренно
+        // не смотрим: иначе «цена - 100 рублей» внутри заметки снова станет
+        // ссылкой, а «[в скобках]» — папкой. Формат на этом уже обжигался.
+        // Сравнение идёт с отступом самой заметки, а не предыдущей строки,
+        // поэтому продолжение с нарастающим отступом остаётся одной заметкой.
+        //
+        // Пустая строка внутри заметки не сохраняется: цикл отбрасывает пустые
+        // строки до разбора. Решено сознательно (18.08.2026) — заметки
+        // с пустыми строками редки, а поддержка требует отдельного состояния
+        // «копим пустые до следующего содержательного» и разбора того, чем
+        // пустая строка была: разделителем абзаца или концом заметки.
+        // Это не упущение; менять — только с живым случаем на руках.
+        if let Some((_, note_indent, buf)) = note_ctx.as_mut() {
+            if leading > *note_indent {
+                buf.push('\n');
+                buf.push_str(trimmed);
+                continue;
+            }
+        }
+        // Строка не продолжение — заметка закончилась, записываем накопленное.
+        flush_note(conn, &mut note_ctx)?;
+
+        let depth = (leading / 2) as i64;
 
         // Вид строки определяется ДО того, как трогается стек: разделитель
         // ищется только там, где строка не папка и не заметка.
@@ -589,11 +639,12 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
             stack.push((depth, conn.last_insert_rowid()));
             last_bm_id = None;
         } else if let Some(note) = trimmed.strip_prefix("Заметка: ") {
-            if let Some(bid) = last_bm_id {
-                conn.execute("UPDATE nodes SET note = ?1 WHERE id = ?2", params![note, bid])?;
-            } else {
+            match last_bm_id {
+                // Не пишем сразу: заметка может продолжаться следующими
+                // строками, и запись идёт одним UPDATE при её закрытии.
+                Some(bid) => note_ctx = Some((bid, leading, note.to_string())),
                 // Заметка раньше первой ссылки — приписать её некому.
-                res.skipped += 1;
+                None => res.skipped += 1,
             }
         } else if let Some(sep) = sep {
             let title = trimmed[..sep].trim();
@@ -614,6 +665,9 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
             res.skipped += 1;
         }
     }
+    // Заметка могла оказаться последней строкой файла — тогда закрывать её
+    // нечему, и без этой строки она пропала бы целиком.
+    flush_note(conn, &mut note_ctx)?;
     conn.execute_batch("COMMIT")?;
     Ok(res)
 }
@@ -1058,6 +1112,12 @@ mod tests {
         rows.iter().map(|(t, _)| t.as_str()).collect()
     }
 
+    /// Текст заметки ссылки по её названию — читается в тестах часто.
+    fn note_of(c: &Connection, title: &str) -> String {
+        c.query_row("SELECT note FROM nodes WHERE title=?1", params![title],
+                    |r| r.get::<_, Option<String>>(0)).unwrap().unwrap_or_default()
+    }
+
     fn id_of(c: &Connection, title: &str) -> i64 {
         c.query_row("SELECT id FROM nodes WHERE title=?1", params![title], |r| r.get(0)).unwrap()
     }
@@ -1421,7 +1481,122 @@ mod tests {
         assert_eq!(titles(&children(&dest, Some(id_of(&dest, "Работа")))),
                    vec!["Ventoy", "Rust"],
                    "ссылка после многострочной заметки обязана остаться в своей папке");
-        assert_eq!(res.skipped, 1, "хвост заметки пока теряется — это чинит второй коммит");
+        // Ожидание сменилось с 1 на 0 вместе с продолжением заметки: хвост
+        // больше не теряется. Тест намеренно тот же, а не новый рядом —
+        // так в истории видно, что именно изменилось.
+        assert_eq!(res.skipped, 0, "хвост заметки теперь доезжает");
+        assert_eq!(note_of(&dest, "Ventoy"), "первая строка\nвторая строка");
+    }
+
+    /// Продолжение остаётся текстом, что бы в нём ни было. Правило работает
+    /// по отступу, содержимое не разглядывается: иначе «цена - 100 рублей»
+    /// стала бы ссылкой, а «[в скобках]» — папкой.
+    #[test]
+    fn note_continuation_is_text_whatever_it_looks_like() {
+        let src = Connection::open_in_memory().unwrap();
+        init(&src).unwrap();
+        let root = folder(&src, None, "Закладки", 0);
+        let a = link(&src, Some(root), "Ventoy", "https://ventoy.net/", 0);
+        src.execute("UPDATE nodes SET note = ?1 WHERE id = ?2",
+            params!["первая строка\nцена - 100 рублей\n[в скобках]", a]).unwrap();
+
+        let txt = export_txt(&src, root).unwrap();
+        let dest = Connection::open_in_memory().unwrap();
+        init(&dest).unwrap();
+        let res = import_txt(&dest, &txt, None).unwrap();
+
+        assert_eq!((res.folders, res.links, res.skipped), (1, 1, 0),
+                   "продолжение не должно превращаться ни в ссылку, ни в папку");
+        assert_eq!(note_of(&dest, "Ventoy"), "первая строка\nцена - 100 рублей\n[в скобках]");
+    }
+
+    /// Нарастающий отступ продолжения: заметка на одном уровне, продолжения
+    /// глубже и ещё глубже. Сравнение идёт с отступом ЗАМЕТКИ, поэтому вторая
+    /// строка не начинает новое состояние, а текст собирается по порядку.
+    #[test]
+    fn note_continuation_survives_growing_indent() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let text = concat!(
+            "[Закладки]\n",
+            "  [Работа]\n",
+            "    Ventoy - https://ventoy.net/\n",
+            "      Заметка: первая\n",
+            "        вторая\n",
+            "          третья\n",
+            "    Rust - https://rust-lang.org/\n",
+        );
+        let res = import_txt(&c, text, None).unwrap();
+
+        assert_eq!(res.skipped, 0);
+        assert_eq!(note_of(&c, "Ventoy"), "первая\nвторая\nтретья");
+        assert_eq!(titles(&children(&c, Some(id_of(&c, "Работа")))), vec!["Ventoy", "Rust"],
+                   "ссылка после продолжений осталась в своей папке");
+    }
+
+    /// Продолжение не крадёт следующую ссылку: строка с отступом не глубже
+    /// заметки снова разбирается как структурная.
+    #[test]
+    fn note_continuation_stops_at_shallower_line() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let text = concat!(
+            "[Закладки]\n",
+            "Ventoy - https://ventoy.net/\n",
+            "  Заметка: описание\n",
+            "Rust - https://rust-lang.org/\n",
+        );
+        let res = import_txt(&c, text, None).unwrap();
+
+        assert_eq!((res.links, res.skipped), (2, 0));
+        assert_eq!(note_of(&c, "Ventoy"), "описание");
+        assert_eq!(
+            c.query_row("SELECT note FROM nodes WHERE title='Rust'", [],
+                        |r| r.get::<_, Option<String>>(0)).unwrap(),
+            None, "заметка не должна перетечь на следующую ссылку");
+    }
+
+    /// Заметка — последняя строка файла: буфер записывается ПОСЛЕ цикла.
+    /// Классическое место, где теряется последний элемент.
+    #[test]
+    fn note_at_the_very_end_of_file_is_saved() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let text = concat!(
+            "[Закладки]\n",
+            "Ventoy - https://ventoy.net/\n",
+            "  Заметка: первая\n",
+            "    вторая, и файл на этом кончается\n",
+        );
+        let res = import_txt(&c, text, None).unwrap();
+
+        assert_eq!(res.skipped, 0);
+        assert_eq!(note_of(&c, "Ventoy"), "первая\nвторая, и файл на этом кончается");
+    }
+
+    /// Старый файл: продолжение лежит в нулевой колонке. Структура цела
+    /// (`c8570f6`), хвост уходит в `skipped` — восстановить его нельзя,
+    /// он неотличим от постороннего текста.
+    ///
+    /// ⚠️ Этот тест зелёный и ДО правки: он про совместимость, а не про
+    /// сегодняшнее изменение.
+    #[test]
+    fn old_export_with_flat_continuation_still_imports() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let text = concat!(
+            "[Закладки]\n",
+            "[Работа]\n",
+            "  Ventoy - https://ventoy.net/\n",
+            "  Заметка: первая строка\n",
+            "вторая строка старого формата\n",
+            "  Rust - https://rust-lang.org/\n",
+        );
+        let res = import_txt(&c, text, None).unwrap();
+
+        assert_eq!(titles(&children(&c, Some(id_of(&c, "Работа")))), vec!["Ventoy", "Rust"]);
+        assert_eq!(note_of(&c, "Ventoy"), "первая строка");
+        assert_eq!(res.skipped, 1, "хвост старого формата не восстановить");
     }
 
     #[test]
