@@ -442,16 +442,91 @@ pub fn import_html(conn: &Connection, html: &str, dest_parent: Option<i64>) -> R
     Ok(count)
 }
 
-pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Result<usize> {
+/// Итог разбора текстового файла. Возвращается наверх целиком: одно число
+/// «вставлено N» не отличало «файл разобран полностью» от «половина строк
+/// молча пропала» — а это ровно то, чем оборачивается неверно определённый
+/// формат.
+#[derive(Serialize, Default, Debug)]
+pub struct TxtImportResult {
+    pub folders: usize,
+    pub links:   usize,
+    /// Строки, не подошедшие ни под одно правило. Для списка ссылок всегда 0:
+    /// там любая непустая строка по определению формата считается адресом.
+    pub skipped: usize,
+    /// Имя созданной папки-контейнера — только для ветки списка ссылок.
+    /// `None`, когда контейнер не создавался (целевая папка была пуста) или
+    /// когда разбирался наш экспорт: там имена берутся из самого файла.
+    pub folder: Option<String>,
+}
+
+/// Наш ли это экспорт (`export_txt`) или простой список ссылок.
+///
+/// Основной признак — первая непустая строка в квадратных скобках: `export_txt`
+/// всегда начинает файл с `[имя корневой папки]`, каким бы имя ни было.
+/// Подстраховка на случай файла, у которого первую строку срезали руками:
+/// где-то ниже встречается `[…]` или строка заметки.
+///
+/// ⚠️ Известное ограничение, чинить не будем: голый IPv6 без схемы первой
+/// строкой (`[2001:db8::1]`) будет принят за наш формат. В списках ссылок так
+/// не пишут — адрес идёт со схемой, а `http://[2001:db8::1]/` начинается
+/// с `http`. Усложнять разбор ради этого случая дороже, чем он стоит.
+pub fn looks_like_our_txt(text: &str) -> bool {
+    if let Some(first) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
+        if first.starts_with('[') && first.ends_with(']') { return true; }
+    }
+    text.lines().map(str::trim)
+        .any(|l| l.starts_with("Заметка: ") || (l.starts_with('[') && l.ends_with(']')))
+}
+
+/// Свободное имя папки в этом родителе: `ссылки`, `ссылки (2)`, `ссылки (3)`…
+/// Нумерация, а не время: два импорта в одну минуту дали бы одинаковое имя,
+/// то есть время уникальности не гарантирует, а номер гарантирует.
+/// `None` — потолок исчерпан; сказать об этом человеку честнее, чем подбирать
+/// до бесконечности.
+pub fn unique_folder_title(conn: &Connection, parent: Option<i64>, base: &str) -> Option<String> {
+    let taken = |title: &str| -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE parent IS ?1 AND kind='folder' AND title = ?2
+             AND (deleted IS NULL OR deleted = 0)",
+            params![parent, title], |r| r.get::<_, i64>(0),
+        ).unwrap_or(0) > 0
+    };
+    if !taken(base) { return Some(base.to_string()); }
+    (2..=99).map(|n| format!("{base} ({n})")).find(|t| !taken(t))
+}
+
+/// Пуста ли папка: ни ссылок, ни подпапок. Корзина не в счёт.
+/// Папка, где лежат только подпапки, пустой НЕ считается — это раздел, и
+/// высыпать в него ссылки значит менять его назначение без просьбы.
+/// При ошибке запроса отвечаем «не пуста»: лишняя подпапка безобиднее, чем
+/// ссылки, подсыпанные к чужому содержимому.
+pub fn folder_is_empty(conn: &Connection, id: i64) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM nodes WHERE parent IS ?1 AND (deleted IS NULL OR deleted = 0)",
+        params![id], |r| r.get::<_, i64>(0),
+    ).unwrap_or(1) == 0
+}
+
+/// ⚠️ Известное ограничение (не чинится в 2.3.2): многострочная заметка.
+/// `export_txt` пишет её одной строкой `Заметка: …`, поэтому перенос внутри
+/// заметки уходит в файл отдельной строкой БЕЗ отступа. При обратном разборе
+/// такая строка либо попадёт в `skipped` (если в ней нет « - »), либо станет
+/// мусорной ссылкой и посчитается в `links` — счётчик покажет успех. Хуже
+/// того, у неё глубина 0, а разбор на каждой строке выталкивает из стека папки
+/// с глубиной ≥ текущей: стек схлопывается до корня, и всё последующее ложится
+/// не в свою папку. То есть портится не только сама заметка, но и структура
+/// ниже по файлу. Лечится сменой формата выгрузки (экранирование переноса либо
+/// продолжение с отступом) — это правка обеих сторон, отдельной задачей.
+pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Result<TxtImportResult> {
     conn.execute_batch("BEGIN")?;
     let mut lines = text.lines();
-    let mut count = 0usize;
+    let mut res = TxtImportResult::default();
     let mut sort_counters: std::collections::HashMap<Option<i64>, i64> = std::collections::HashMap::new();
 
     // First non-empty line = root folder name
     let first = loop {
         match lines.next() {
-            None => { conn.execute_batch("COMMIT")?; return Ok(0); }
+            None => { conn.execute_batch("COMMIT")?; return Ok(res); }
             Some(l) if !l.trim().is_empty() => break l,
             _ => {}
         }
@@ -460,13 +535,16 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
         let t = first.trim();
         if t.starts_with('[') && t.ends_with(']') { &t[1..t.len()-1] } else { t }
     };
-    let c = sort_counters.entry(dest_parent).or_insert(0);
+    // Корневая папка выгрузки встаёт В КОНЕЦ целевой, а не с нуля: иначе она
+    // вклинивается между уже лежащими там записями (JS сортирует по sort_idx,
+    // при равенстве по id). Тот же дефект чинили в импорте из другой базы.
+    let c = sort_counters.entry(dest_parent).or_insert_with(|| next_sort_idx(conn, dest_parent));
     let rsi = *c; *c += 1;
     conn.execute(
         "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1, 'folder', ?2, ?3)",
         params![dest_parent, root_title, rsi],
     )?;
-    count += 1;
+    res.folders += 1;
     let root_id = conn.last_insert_rowid();
 
     // Stack: (depth, folder_id). Sentinel depth=-1.
@@ -492,12 +570,15 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
                 "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1, 'folder', ?2, ?3)",
                 params![parent_id, title, si],
             )?;
-            count += 1;
+            res.folders += 1;
             stack.push((depth, conn.last_insert_rowid()));
             last_bm_id = None;
         } else if let Some(note) = trimmed.strip_prefix("Заметка: ") {
             if let Some(bid) = last_bm_id {
                 conn.execute("UPDATE nodes SET note = ?1 WHERE id = ?2", params![note, bid])?;
+            } else {
+                // Заметка раньше первой ссылки — приписать её некому.
+                res.skipped += 1;
             }
         } else if let Some(sep) = trimmed.rfind(" - ") {
             let title = trimmed[..sep].trim();
@@ -508,12 +589,18 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
                 "INSERT INTO nodes (parent, kind, title, url, sort_idx) VALUES (?1, 'bookmark', ?2, ?3, ?4)",
                 params![parent_id, title, url, si],
             )?;
-            count += 1;
+            res.links += 1;
             last_bm_id = Some(conn.last_insert_rowid());
+        } else {
+            // Финального `else` тут не было, и строка, не похожая ни на папку,
+            // ни на заметку, ни на «Название - URL», исчезала бесследно: возврат
+            // был одним числом, и «файл разобран» не отличалось от «половина
+            // пропала». Теперь пропуски считаются и показываются человеку.
+            res.skipped += 1;
         }
     }
     conn.execute_batch("COMMIT")?;
-    Ok(count)
+    Ok(res)
 }
 
 // ── Browser / URL-list importers ─────────────────────────────────────────────
@@ -672,20 +759,48 @@ pub fn import_firefox(conn: &Connection, places_path: &str, browser_name: &str) 
     Ok((links, folders))
 }
 
-pub fn import_txt_urls(conn: &Connection, text: &str, folder_name: &str, dest_parent: Option<i64>) -> Result<usize> {
+/// Простой список ссылок: одна строка — один адрес.
+///
+/// `folder_name = None` — класть прямо в `dest_parent` (так делаем, когда
+/// целевая папка пуста: заворачивать содержимое в подпапку там незачем).
+/// `Some(имя)` — создать папку и класть в неё; имя подбирает вызывающий через
+/// `unique_folder_title`.
+///
+/// Пустые строки и `#`-комментарии в `skipped` не попадают: это не «не
+/// разобрано», а сознательный пропуск, и раздувать ими цифру значило бы пугать
+/// человека на ровном месте.
+pub fn import_txt_urls(
+    conn: &Connection,
+    text: &str,
+    folder_name: Option<&str>,
+    dest_parent: Option<i64>,
+) -> Result<TxtImportResult> {
     conn.execute_batch("BEGIN")?;
-    conn.execute("INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1,'folder',?2,0)", params![dest_parent, folder_name])?;
-    let folder_id = conn.last_insert_rowid();
-    let mut count = 0usize;
-    for (i, line) in text.lines().enumerate() {
+    let mut res = TxtImportResult::default();
+    // Куда класть ссылки и с какого номера. Жёсткий `sort_idx = 0` у папки был
+    // вклиниванием: она вставала перед содержимым непустой целевой папки.
+    let (parent, mut si) = match folder_name {
+        Some(name) => {
+            conn.execute(
+                "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1,'folder',?2,?3)",
+                params![dest_parent, name, next_sort_idx(conn, dest_parent)],
+            )?;
+            res.folders += 1;
+            res.folder = Some(name.to_string());
+            (Some(conn.last_insert_rowid()), 0)
+        }
+        None => (dest_parent, next_sort_idx(conn, dest_parent)),
+    };
+    for line in text.lines() {
         let url = line.trim();
         if url.is_empty() || url.starts_with('#') { continue; }
         conn.execute("INSERT INTO nodes (parent, kind, title, url, sort_idx) VALUES (?1,'bookmark',?2,?3,?4)",
-            params![folder_id, url, url, i as i64])?;
-        count += 1;
+            params![parent, url, url, si])?;
+        si += 1;
+        res.links += 1;
     }
     conn.execute_batch("COMMIT")?;
-    Ok(count)
+    Ok(res)
 }
 
 // ── Import from another DB ────────────────────────────────────────────────────
@@ -1120,5 +1235,197 @@ mod tests {
                              None, Some("example.com.png".to_string()), 1));
         assert_eq!(rows[2], ("Безнач".to_string(), Some("https://noicon.test/".to_string()),
                              None, None, 2));
+    }
+
+    /// «Пусто» = ни одного дочернего узла. Папка, где лежат только подпапки,
+    /// пустой НЕ считается: это раздел, и высыпать в него ссылки значит менять
+    /// его назначение без просьбы.
+    #[test]
+    fn folder_is_empty_counts_subfolders_too() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let empty    = folder(&c, None, "Пустая", 0);
+        let with_bm  = folder(&c, None, "Со ссылкой", 1);
+        link(&c, Some(with_bm), "ссылка", "https://a.example/", 0);
+        let with_sub = folder(&c, None, "Только подпапки", 2);
+        folder(&c, Some(with_sub), "Внутренняя", 0);
+
+        assert!(folder_is_empty(&c, empty));
+        assert!(!folder_is_empty(&c, with_bm));
+        assert!(!folder_is_empty(&c, with_sub), "папка-раздел пустой не считается");
+    }
+
+    /// Нумерация, а не время: имя уникально по построению. Время дало бы
+    /// одинаковые имена двум импортам в одну минуту.
+    #[test]
+    fn unique_folder_title_numbers_collisions() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        assert_eq!(unique_folder_title(&c, None, "ссылки").as_deref(), Some("ссылки"));
+        folder(&c, None, "ссылки", 0);
+        assert_eq!(unique_folder_title(&c, None, "ссылки").as_deref(), Some("ссылки (2)"));
+        folder(&c, None, "ссылки (2)", 1);
+        assert_eq!(unique_folder_title(&c, None, "ссылки").as_deref(), Some("ссылки (3)"));
+
+        // Коллизия считается в пределах одного родителя.
+        let other = folder(&c, None, "Другая", 2);
+        assert_eq!(unique_folder_title(&c, Some(other), "ссылки").as_deref(), Some("ссылки"));
+    }
+
+    /// Потолок 99: дальше честный отказ, а не бесконечный подбор.
+    #[test]
+    fn unique_folder_title_gives_up_after_99() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        folder(&c, None, "имя", 0);
+        for n in 2..=99 { folder(&c, None, &format!("имя ({n})"), n); }
+        assert_eq!(unique_folder_title(&c, None, "имя"), None);
+    }
+
+    /// Целевая папка пуста — контейнер не создаётся, ссылки ложатся прямо в неё.
+    #[test]
+    fn url_list_without_container_goes_into_the_folder_itself() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let target = folder(&c, None, "Пустая", 0);
+        let res = import_txt_urls(&c, "https://a.example/\nhttps://b.example/\n", None, Some(target)).unwrap();
+
+        assert_eq!((res.folders, res.links, res.skipped), (0, 2, 0));
+        assert!(res.folder.is_none(), "контейнера быть не должно");
+        assert_eq!(titles(&children(&c, Some(target))),
+                   vec!["https://a.example/", "https://b.example/"]);
+    }
+
+    /// КРАСНЫЙ на коде до правки: контейнер вставлялся с `sort_idx = 0`
+    /// и вклинивался перед содержимым непустой папки — выходило
+    /// ["стар-1", "ссылки", "стар-2", "стар-3"]. Тот же класс, что `531d8aa`.
+    #[test]
+    fn url_list_container_goes_to_the_end() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let target = folder(&c, None, "Непустая", 0);
+        link(&c, Some(target), "стар-1", "https://old.example/1", 0);
+        link(&c, Some(target), "стар-2", "https://old.example/2", 1);
+        link(&c, Some(target), "стар-3", "https://old.example/3", 2);
+
+        let res = import_txt_urls(&c, "https://a.example/\n", Some("ссылки"), Some(target)).unwrap();
+        assert_eq!(res.folder.as_deref(), Some("ссылки"));
+        assert_eq!(titles(&children(&c, Some(target))),
+                   vec!["стар-1", "стар-2", "стар-3", "ссылки"]);
+    }
+
+    /// Импорт «из меню», когда папка не выбрана: контейнер в корне и тоже
+    /// в конец, а не поверх существующих корневых записей.
+    #[test]
+    fn url_list_into_root_appends_container() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        link(&c, None, "своя-1", "https://own.example/1", 0);
+        link(&c, None, "своя-2", "https://own.example/2", 1);
+
+        import_txt_urls(&c, "https://a.example/\n", Some("ссылки"), None).unwrap();
+        assert_eq!(titles(&children(&c, None)), vec!["своя-1", "своя-2", "ссылки"]);
+    }
+
+    /// Раньше возврат был одним числом, и строка, не подошедшая ни под одно
+    /// правило, исчезала бесследно: «файл разобран» не отличалось от «половина
+    /// пропала». Здесь мусорных строк две, плюс заметка-сирота — она идёт
+    /// раньше первой ссылки, приписать её некому, и это отдельная ветка кода.
+    #[test]
+    fn our_txt_counts_folders_links_and_skipped() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let text = concat!(
+            "[Закладки]\n",
+            "  Заметка: сирота, до первой ссылки\n",
+            "Ventoy - https://ventoy.net/\n",
+            "  Заметка: описание\n",
+            "просто строка без ничего\n",
+            "ещё мусор\n",
+        );
+        let res = import_txt(&c, text, None).unwrap();
+
+        assert_eq!((res.folders, res.links, res.skipped), (1, 1, 3),
+                   "две мусорные строки плюс заметка-сирота");
+        assert!(res.folder.is_none(), "у нашего формата контейнера нет — имена из файла");
+        // Нормальная заметка при этом доехала: она не считается ни ссылкой,
+        // ни пропуском.
+        assert_eq!(
+            c.query_row("SELECT note FROM nodes WHERE title='Ventoy'", [], |r| r.get::<_, String>(0)).unwrap(),
+            "описание");
+    }
+
+    #[test]
+    fn format_detection_both_ways_and_its_known_limit() {
+        // Наш экспорт — по первой строке в скобках.
+        assert!(looks_like_our_txt("[Закладки]\nVentoy - https://ventoy.net/\n"));
+        // Файл, у которого первую строку срезали руками, ловит подстраховка.
+        assert!(looks_like_our_txt("Ventoy - https://ventoy.net/\n  Заметка: описание\n"));
+
+        // Список ссылок — не наш формат ни при каких условиях.
+        assert!(!looks_like_our_txt("https://a.example/\nhttps://b.example/\n"));
+        assert!(!looks_like_our_txt("# комментарий\nhttps://a.example/\n"));
+        assert!(!looks_like_our_txt(""));
+
+        // ⚠️ ЗАФИКСИРОВАННОЕ ОГРАНИЧЕНИЕ, а не забытый случай: голый IPv6 без
+        // схемы первой строкой принимается за наш формат. В списках так не
+        // пишут — адрес идёт со схемой, а `http://[2001:db8::1]/` начинается
+        // с `http`. Тест закрепляет поведение, чтобы смена была осознанной.
+        assert!(looks_like_our_txt("[2001:db8::1]\nhttps://a.example/\n"));
+    }
+
+    /// Круг «`export_txt` → `db::import_txt`»: структура, названия, адреса
+    /// и заметки обязаны доехать.
+    ///
+    /// ⚠️ ЭТОТ ТЕСТ НЕ ДОКАЗЫВАЕТ ПРАВКУ, РАДИ КОТОРОЙ НАПИСАН, и был зелёным
+    /// до неё. Дефект 2.3.2 был не в разборе, а в ПОДКЛЮЧЕНИИ: команда
+    /// `import_txt` существовала и работала, но ни один пункт меню её не звал —
+    /// в интерфейсе висел только разбор списка URL (`import_txt_urls`), который
+    /// наш же экспорт превращал в мусор: 7 строк → 7 «закладок», ни одного
+    /// настоящего адреса, ноль папок, ноль заметок. Rust-тест до слоя JS
+    /// не достаёт, и никакой тест здесь этого поймать не мог.
+    ///
+    /// Сторожит он другое, и это тоже нужно: **пару форматов**. Поменяет кто-то
+    /// `export_txt`, не тронув парсер, — покраснеет здесь, а не у человека,
+    /// который через полгода откроет выгруженный файл.
+    #[test]
+    fn txt_roundtrip_keeps_folders_and_notes() {
+        let src = Connection::open_in_memory().unwrap();
+        init(&src).unwrap();
+        let root = folder(&src, None, "Закладки", 0);
+        let work = folder(&src, Some(root), "Работа", 0);
+        let a = link(&src, Some(work), "Ventoy", "https://ventoy.net/", 0);
+        link(&src, Some(work), "Rust", "https://rust-lang.org/", 1);
+        let b = link(&src, Some(root), "Пример", "https://example.com/", 1);
+        src.execute("UPDATE nodes SET note='здесь будет описание' WHERE id=?1", params![a]).unwrap();
+        src.execute("UPDATE nodes SET note='проверка заметки 12345' WHERE id=?1", params![b]).unwrap();
+
+        let txt = export_txt(&src, root).unwrap();
+        println!("--- export_txt ---\n{txt}");
+
+        let dest = Connection::open_in_memory().unwrap();
+        init(&dest).unwrap();
+        let n = import_txt(&dest, &txt, None).unwrap();
+        println!("итог разбора: {n:?}");
+
+        // Корень выгрузки воссоздан как папка.
+        let new_root = id_of(&dest, "Закладки");
+        assert_eq!(titles(&children(&dest, Some(new_root))), vec!["Работа", "Пример"],
+                   "подпапка и ссылка корня должны лежать в воссозданной папке");
+
+        // Подпапка со своими ссылками — вложенность не потерялась.
+        let new_work = id_of(&dest, "Работа");
+        assert_eq!(titles(&children(&dest, Some(new_work))), vec!["Ventoy", "Rust"]);
+
+        // Адреса и заметки.
+        let got = |title: &str| -> (Option<String>, Option<String>) {
+            dest.query_row("SELECT url, note FROM nodes WHERE title=?1", params![title],
+                           |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        assert_eq!(got("Ventoy"), (Some("https://ventoy.net/".into()),
+                                   Some("здесь будет описание".into())));
+        assert_eq!(got("Rust"),   (Some("https://rust-lang.org/".into()), None));
+        assert_eq!(got("Пример"), (Some("https://example.com/".into()),
+                                   Some("проверка заметки 12345".into())));
     }
 }

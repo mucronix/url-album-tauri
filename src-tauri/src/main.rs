@@ -2886,19 +2886,50 @@ fn import_from_browser(state: tauri::State<AppState>, browser_id: String) -> Res
     Ok(ImportSummary { links, folders })
 }
 
+/// Импорт текстового файла — один пункт меню на два формата.
+///
+/// Формат определяется по содержимому (`db::looks_like_our_txt`), а не
+/// спрашивается у человека: спрашивать значило бы требовать от него знать
+/// разницу, которую он знать не обязан. Цена ошибки определения снижена
+/// счётчиком неразобранных строк — он уходит наверх и показывается.
 #[tauri::command]
-async fn import_txt_lines(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<usize, String> {
+async fn import_txt_file(
+    state: tauri::State<'_, AppState>,
+    window: tauri::Window,
+    parent_id: Option<i64>,
+) -> Result<db::TxtImportResult, String> {
     let file = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Импорт URL из TXT (одна строка = одна ссылка)")
+        .set_title("Импорт из текстового файла")
         .add_filter("Текстовый файл", &["txt"])
         .pick_file().await.ok_or("Отменено")?;
-    let folder_name = file.path().file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Импорт".to_string());
-    let content = std::fs::read_to_string(file.path()).map_err(|e| e.to_string())?;
+    let path = file.path().to_path_buf();
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+
+    // Замок берём ПОСЛЕ диалога: MutexGuard через `.await` держать нельзя.
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::import_txt_urls(&conn, &content, &folder_name, parent_id).map_err(|e| e.to_string())
+
+    if db::looks_like_our_txt(&content) {
+        // Наш экспорт: имя корневой папки записано в самом файле, и дерево
+        // воссоздаётся вместе с ним — размещать иначе было бы неверно.
+        return db::import_txt(&conn, &content, parent_id).map_err(|e| e.to_string());
+    }
+
+    // Простой список: имя первой строки папкой быть не должно, поэтому имя
+    // берётся из имени файла.
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Импорт".to_string());
+    // Пустая целевая папка — кладём прямо в неё, заворачивать содержимое
+    // в подпапку там незачем. Непустая папка или импорт из меню, где папка
+    // не выбрана, — создаём свою папку.
+    let folder = match parent_id {
+        Some(id) if db::folder_is_empty(&conn, id) => None,
+        _ => Some(
+            db::unique_folder_title(&conn, parent_id, &stem)
+                .ok_or("Слишком много папок с таким именем — переименуйте файл")?,
+        ),
+    };
+    db::import_txt_urls(&conn, &content, folder.as_deref(), parent_id).map_err(|e| e.to_string())
 }
 
 // ── Import commands ──────────────────────────────────────────────────────────
@@ -2913,18 +2944,6 @@ async fn import_html(state: tauri::State<'_, AppState>, window: tauri::Window, p
     let content = std::fs::read_to_string(file.path()).map_err(|e| e.to_string())?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     db::import_html(&conn, &content, parent_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn import_txt(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<usize, String> {
-    let file = rfd::AsyncFileDialog::new()
-        .set_parent(&window)
-        .set_title("Импорт закладок из TXT")
-        .add_filter("Текстовый файл", &["txt"])
-        .pick_file().await.ok_or("Отменено")?;
-    let content = std::fs::read_to_string(file.path()).map_err(|e| e.to_string())?;
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::import_txt(&conn, &content, parent_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3652,11 +3671,10 @@ fn main() {
             search_bookmarks,
             db_stats,
             import_html,
-            import_txt,
+            import_txt_file,
             import_uadat_pick,
             detect_browsers,
             import_from_browser,
-            import_txt_lines,
             detect_browser_exes,
             load_browsers_config,
             save_browsers_config,

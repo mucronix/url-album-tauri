@@ -1031,9 +1031,22 @@ async function invokeFolderImport(action, parentId) {
       case 'import-html':
         count = await invoke('import_html', { parentId });
         break;
-      case 'import-txt-lines':
-        count = await invoke('import_txt_lines', { parentId });
+      // Один пункт на два формата: что за файл — решает Rust по содержимому.
+      // Ошибку ловим здесь, а не общим `catch` ниже: у этой команды есть
+      // осмысленный отказ («слишком много папок с таким именем»), и он должен
+      // дойти до человека, а не в консоль, которой в release нет.
+      case 'import-txt-lines': {
+        let res;
+        try {
+          res = await invoke('import_txt_file', { parentId });
+        } catch (e) {
+          if (e !== 'Отменено') showNotice('Импорт из TXT', String(e));
+          return;
+        }
+        reportTxtImport(res);
+        count = res.links + res.folders;
         break;
+      }
       case 'import-folder':
         count = await invoke('import_uadat_pick', { parentId });
         break;
@@ -2505,7 +2518,10 @@ const CMD_REGISTRY = [
   // Импорт
   { id:'import-from-browser', label:'Импорт из браузера',        icon:'import',      group:'Импорт',                                action:'import-from-browser' },
   { id:'import-html',         label:'Импорт из HTML',            icon:'import',      group:'Импорт',                                action:'import-html' },
-  { id:'import-txt-lines',    label:'Импорт URL из TXT',         icon:'import',      group:'Импорт',                                action:'import-txt-lines' },
+  // Id намеренно остаётся `import-txt-lines`, хотя формат теперь определяется
+  // сам: он может стоять в пользовательском `toolbar.json`, а переименование
+  // молча убрало бы кнопку с панели.
+  { id:'import-txt-lines',    label:'Импорт из TXT',             icon:'import',      group:'Импорт',                                action:'import-txt-lines' },
   // Экспорт
   { id:'export-html',         label:'Экспорт в HTML',            icon:'backup',      group:'Экспорт',                               action:'export-html' },
   { id:'export-txt',          label:'Экспорт в TXT',             icon:'backup',      group:'Экспорт',                               action:'export-txt' },
@@ -3287,19 +3303,14 @@ function handleMenuAction(action) {
       openBrowserImportDialog();
       break;
     case 'import-txt-lines':
-      invoke("import_txt_lines")
-        .then(n => { if (n > 0) { refreshTree(); } })
-        .catch(e => { if (e !== 'Отменено') console.error('import_txt_lines:', e); });
+      invoke("import_txt_file")
+        .then(res => { reportTxtImport(res); if (res.links + res.folders > 0) refreshTree(); })
+        .catch(e => { if (e !== 'Отменено') showNotice('Импорт из TXT', String(e)); });
       break;
     case 'import-html':
       invoke("import_html")
         .then(n => { if (n > 0) { refreshTree(); } })
         .catch(e => { if (e !== 'Отменено') console.error('import_html:', e); });
-      break;
-    case 'import-txt':
-      invoke("import_txt")
-        .then(n => { if (n > 0) { refreshTree(); } })
-        .catch(e => { if (e !== 'Отменено') console.error('import_txt:', e); });
       break;
     case 'import-folder':
       invoke("import_uadat_pick")
@@ -4082,6 +4093,49 @@ async function updateWindowTitle() {
 // ── Statusbar API ─────────────────────────────────────────────────────────
 
 // sticky=false → auto-clears after 3s; sticky=true → stays until replaced/cleared
+// Склонение: 1 ссылка, 2 ссылки, 5 ссылок. Раньше писалось «Импортировано
+// 1 ссылок» — мелочь, но она первое, что человек видит после импорта.
+function plural(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
+// Итог импорта TXT. При K = 0 — одна строка в статусбаре и ничего больше:
+// сообщение не должно превращаться в шум на обычном импорте. При K > 0
+// показываем ещё и окно: неразобранные строки означают, что часть файла молча
+// пропала, и человеку нужно объяснить, что делать.
+function reportTxtImport(res) {
+  const parts = [];
+  if (res.links)   parts.push(`${res.links} ${plural(res.links, 'ссылка', 'ссылки', 'ссылок')}`);
+  // Папку-контейнер в счёт не берём — вместо числа говорим, КУДА легло:
+  // размещение теперь зависит от того, пуста ли целевая папка.
+  if (res.folders && !res.folder)
+    parts.push(`${res.folders} ${plural(res.folders, 'папка', 'папки', 'папок')}`);
+
+  const imported = parts.length ? `Импортировано: ${parts.join(', ')}` : 'Импортировано: ничего';
+  const where    = res.folder ? ` в папку «${res.folder}»` : '';
+
+  let line = imported + where;
+  if (res.skipped) line += `; не разобрано строк: ${res.skipped}`;
+  setStatus(line);
+
+  if (res.skipped) {
+    // Текст окна собирается отдельно, а не переделкой строки статуса: окно
+    // начинается с того, чего в статусе нет, — с потери, — и не зависит от
+    // формулировки статуса, которую мы уже однажды меняли. Прежний вариант
+    // правил статус через `replace` и ломался бы от любой правки его текста.
+    const lost = `${res.skipped} ${plural(res.skipped, 'строка', 'строки', 'строк')}`;
+    showNotice('Импорт из TXT',
+      `Часть файла не разобрана: ${lost}.\n` +
+      `${imported}${where}.\n\n` +
+      'Если ожидали больше — возможно, файл в другом формате. Программа читает ' +
+      'либо свой экспорт (строки «[Папка]», «Название - URL», «Заметка: …»), ' +
+      'либо простой список ссылок — по одной в строке.');
+  }
+}
+
 function setStatus(text, { sticky = false } = {}) {
   const el = document.getElementById('sb-right');
   clearTimeout(_sbTimer); _sbTimer = null;
