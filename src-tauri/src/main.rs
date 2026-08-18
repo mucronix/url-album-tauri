@@ -68,15 +68,9 @@ fn import_uadat(state: tauri::State<AppState>, path: String) -> Result<usize, St
     // The original file is Windows-1251 encoded
     let (text, _, _) = encoding_rs::WINDOWS_1251.decode(&raw);
 
-    // Thumbnails live in a "Data" subfolder next to the dat file
-    let data_dir = std::path::Path::new(&path)
-        .parent()
-        .map(|p| p.join("Data").to_string_lossy().into_owned())
-        .unwrap_or_default();
-
     let nodes = importer::parse(&text);
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::import(&conn, &nodes, &data_dir, None).map_err(|e| e.to_string())
+    db::import(&conn, &nodes, None).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2956,12 +2950,9 @@ async fn import_uadat_pick(state: tauri::State<'_, AppState>, window: tauri::Win
     let path = file.path().to_path_buf();
     let raw = std::fs::read(&path).map_err(|e| e.to_string())?;
     let (text, _, _) = encoding_rs::WINDOWS_1251.decode(&raw);
-    let data_dir = path.parent()
-        .map(|p| p.join("Data").to_string_lossy().into_owned())
-        .unwrap_or_default();
     let nodes = importer::parse(&text);
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::import(&conn, &nodes, &data_dir, parent_id).map_err(|e| e.to_string())
+    db::import(&conn, &nodes, parent_id).map_err(|e| e.to_string())
 }
 
 // ── Import from another DB ───────────────────────────────────────────────────

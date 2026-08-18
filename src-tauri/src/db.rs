@@ -322,8 +322,16 @@ pub fn export_txt(conn: &Connection, folder_id: i64) -> Result<String> {
 // ── Import ───────────────────────────────────────────────────────────────────
 
 /// Insert all parsed nodes into the database.
-/// `data_dir` is the absolute path to the folder containing PNG thumbnails.
-pub fn import(conn: &Connection, nodes: &[ParsedNode], _data_dir: &str, dest_parent: Option<i64>) -> Result<usize> {
+///
+/// Папку с картинками сюда не передаём: импорт `ua.dat` работает с содержимым
+/// (пишет строки в `nodes`), а файлы не копирует — в колонку `thumb` уходит имя
+/// из самого `ua.dat`, и картинки появятся, только если человек сам скопировал
+/// старую папку `Data` рядом с базой. Параметр был, но не использовался
+/// (`_data_dir`), а его расчёт в двух командах импорта создавал две лишние
+/// точки, где собирается путь к `Data` — при переходе на контейнеры
+/// `ИмяБазы_Data` их пришлось бы отличать от настоящих: эти считали папку
+/// рядом с ИСХОДНЫМ файлом, а не рядом с базой.
+pub fn import(conn: &Connection, nodes: &[ParsedNode], dest_parent: Option<i64>) -> Result<usize> {
     conn.execute_batch("BEGIN")?;
 
     // Stack of (depth, parent_id). Sentinel: depth=-1, dest_parent (None = root).
