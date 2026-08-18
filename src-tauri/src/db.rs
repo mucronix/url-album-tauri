@@ -706,6 +706,10 @@ pub struct SrcNode {
     pub title:  String,
     pub url:    Option<String>,
     pub note:   Option<String>,
+    /// Имя файла значка (`домен.расширение`). В отличие от снимка `{id}.png`,
+    /// имя favicon осмысленно в любой базе — оно построено из домена, — поэтому
+    /// колонку можно переносить как есть, без файловых операций.
+    pub favicon: Option<String>,
 }
 
 fn normalize_url_for_dedup(url: &str) -> String {
@@ -734,7 +738,7 @@ pub fn collect_urls(conn: &Connection) -> Result<std::collections::HashSet<Strin
 /// сортировка источника при импорте терялась целиком.
 pub fn read_src_nodes(src: &Connection) -> Result<Vec<SrcNode>> {
     let mut stmt = src.prepare(
-        "SELECT id, parent, kind, title, url, note FROM nodes ORDER BY sort_idx, id"
+        "SELECT id, parent, kind, title, url, note, favicon FROM nodes ORDER BY sort_idx, id"
     )?;
     let result: Result<Vec<SrcNode>> = stmt.query_map([], |r| Ok(SrcNode {
         id:     r.get(0)?,
@@ -743,6 +747,9 @@ pub fn read_src_nodes(src: &Connection) -> Result<Vec<SrcNode>> {
         title:  r.get(3)?,
         url:    r.get(4)?,
         note:   r.get(5)?,
+        // Колонка дописана В КОНЕЦ списка намеренно: индексы 0–5 остаются за
+        // прежними полями и не сдвигаются.
+        favicon: r.get(6)?,
     }))?.collect();
     result
 }
@@ -867,8 +874,8 @@ pub fn execute_import_from_nodes(
             .or(dest_parent);
         let si = take_idx(new_parent);
         dest.execute(
-            "INSERT INTO nodes (parent, kind, title, url, note, sort_idx) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![new_parent, &node.kind, &node.title, &node.url, &node.note, si],
+            "INSERT INTO nodes (parent, kind, title, url, note, sort_idx, favicon) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![new_parent, &node.kind, &node.title, &node.url, &node.note, si, &node.favicon],
         )?;
         count += 1;
     }
@@ -1070,5 +1077,48 @@ mod tests {
         println!("--- export_html ---\n{html}");
         assert!(html.contains("https://ventoy.net/"), "ссылка потерялась: {html}");
         assert!(!html.contains("235.png"), "в HTML утекло имя файла снимка: {html}");
+    }
+
+    /// Значок переносится вместе со ссылкой, а соседние поля не съезжают.
+    ///
+    /// Два разных расширения намеренно: имя favicon — это домен ПЛЮС расширение
+    /// из Content-Type ответа, поэтому у разных доменов они разные, и тест на
+    /// одном `.png` не поймал бы путаницу «взяли не ту колонку». Третья ссылка
+    /// с пустым favicon — тот же класс проверки с другой стороны: пустое
+    /// значение обязано доехать пустым, а не подхватить соседнее.
+    #[test]
+    fn import_carries_favicon_and_keeps_neighbour_fields() {
+        let src = Connection::open_in_memory().unwrap();
+        init(&src).unwrap();
+        let f = folder(&src, None, "Папка", 0);
+        let a = link(&src, Some(f), "Гитхаб",  "https://github.com/",  0);
+        let b = link(&src, Some(f), "Пример",  "https://example.com/", 1);
+        let _ = link(&src, Some(f), "Безнач",  "https://noicon.test/", 2);
+        src.execute("UPDATE nodes SET favicon='github.com.ico', note='заметка гитхаба' WHERE id=?1",
+                    params![a]).unwrap();
+        src.execute("UPDATE nodes SET favicon='example.com.png' WHERE id=?1", params![b]).unwrap();
+
+        let (dest, dest_id) = make_dest();
+        run_import(&dest, &src, Some(dest_id));
+
+        let imported_folder = id_of(&dest, "Папка");
+        let mut stmt = dest.prepare(
+            "SELECT title, url, note, favicon, sort_idx FROM nodes
+             WHERE parent IS ?1 ORDER BY sort_idx, id"
+        ).unwrap();
+        let rows: Vec<(String, Option<String>, Option<String>, Option<String>, i64)> = stmt
+            .query_map(params![imported_folder], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            }).unwrap().filter_map(|x| x.ok()).collect();
+        for row in &rows { println!("    {row:?}"); }
+
+        // Кортежем целиком: если поля перепутаются местами, отчёт покажет,
+        // ЧТО с чем, а не просто «favicon не тот».
+        assert_eq!(rows[0], ("Гитхаб".to_string(), Some("https://github.com/".to_string()),
+                             Some("заметка гитхаба".to_string()), Some("github.com.ico".to_string()), 0));
+        assert_eq!(rows[1], ("Пример".to_string(), Some("https://example.com/".to_string()),
+                             None, Some("example.com.png".to_string()), 1));
+        assert_eq!(rows[2], ("Безнач".to_string(), Some("https://noicon.test/".to_string()),
+                             None, None, 2));
     }
 }
