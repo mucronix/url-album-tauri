@@ -3098,7 +3098,7 @@ function _populateRecentDbs(drop) {
         closeAllMenus();
         invoke('switch_db', { newPath: p })
           .then(() => showApp())
-          .catch(console.error);
+          .catch(e => showNotice('Не удалось открыть базу', String(e)));
       });
       subEl.appendChild(el);
     }

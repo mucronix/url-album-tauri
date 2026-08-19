@@ -1375,7 +1375,9 @@ fn save_recent_db(path: &std::path::Path) {
     }
 }
 
-/// Internal: checkpoint current connection, open a new one at `new_path`, update AppState.
+/// Checkpoint current connection, open a new one at `new_path`, update AppState.
+/// Также зарегистрирована как IPC-команда — вызывается из «Последние базы».
+#[tauri::command]
 fn switch_db(state: tauri::State<'_, AppState>, new_path: std::path::PathBuf) -> Result<(), String> {
     let mut db_guard = state.db.lock().map_err(|e| e.to_string())?;
     // Checkpoint WAL of current DB before switching
@@ -3677,6 +3679,7 @@ fn main() {
             clear_screenshots,
             clear_db,
             open_db,
+            switch_db,
             move_node,
             set_sort_idx,
             load_settings,
