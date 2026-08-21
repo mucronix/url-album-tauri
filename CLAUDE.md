@@ -339,7 +339,6 @@ CREATE TABLE nodes (
 - `showNotice(title, message, onClose?)` — третий аргумент необязательный, срабатывает при **любом** закрытии (OK, крестик, Esc — все три пути идут через `closeNotice`). Нужен, когда после окна надо что-то запустить: `showNotice` не блокирует, и без колбэка окно мелькает и перекрывается тем, что запустили (например, блокнотом с журналом)
 
 **Сохраняемые настройки (settings.json):**
-- `theme` — light/dark
 - `showToolbar` — видимость toolbar
 - `listColWidth` — ширина колонки "Название" в grid (%)
 - `sidebarWidth` — ширина левой панели (px)
@@ -376,6 +375,12 @@ CREATE TABLE nodes (
 - [ ] Своя проверка WebView2 до создания окна: вместо английского окна от `wry` («Could not find the WebView2 Runtime») показать своё, по-русски, со ссылкой на установщик Evergreen. Заодно это единственный способ довести случай до журнала — сейчас управление до шапки не доходит (см. ловушки)
 - [ ] Перехват `WindowEvent::CloseRequested` + `api.prevent_close()` — сворачивание в трей по крестику вместо выхода. Обсуждалось, отложено до отзывов с форума (заодно решить, чем выходить, кроме пункта «Выход» в трее)
 - [ ] ~~Убрать `.set_parent(&window)` из `backup_db` для единообразия с `open_db`~~ — **пункт снят**: единообразие уже есть, вызов стоит везде, а «`open_db` без `set_parent`» оказалось ошибочной записью. Точечное снятие в одном месте как раз и создало бы разнобой, которого пункт хотел избежать
+- [ ] Тёмная тема — НЕ РЕАЛИЗОВАНА. Ранее ошибочно значилась
+      в CLAUDE.md как готовая (проверено 21.08.2026: ноль
+      совпадений по theme/data-theme в ui/, одна палитра в :root,
+      ключа theme в settings.json нет). Нужно: вторая палитра
+      переменных, переключение через data-theme на <html>,
+      пункт в меню «Вид», сохранение в settings.json.
 
 ### DnD — состояние (проверено 2026-06-04)
 - Защита от циклов: **двойная** — JS `_isDragValid` (walk up через `allNodes`) + Rust `move_node` (walk up через БД). Потеря данных невозможна.
@@ -614,7 +619,6 @@ CREATE TABLE nodes (
 
 ### CSS
 - CSS переменные: `--sidebar-w`, `--col-name-w`, `--accent`, `--bg`, `--bg2`, `--bg3`, `--border`, `--text`, `--text2`, `--text-dim`
-- Light/Dark theme через `data-theme` на `<html>`
 - `.dlg-overlay` z-index: 9000, `#confirm-overlay` z-index: 10000
 - Grid layout для list rows: `grid-template-columns: 18px var(--col-name-w) 5px 1fr`
 - `.favicon-icon` — 16×16, `image-rendering: pixelated`, `object-fit: contain`
