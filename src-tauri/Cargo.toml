@@ -2,6 +2,9 @@
 name = "url-album"
 version = "2.3.2-beta"
 edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["skljar"]
+repository = "https://github.com/skljar/url-album-tauri"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
