@@ -1319,6 +1319,30 @@ document.getElementById("notice-x").onclick  = closeNotice;   // крестик
 document.getElementById("notice-ok").onclick = closeNotice;   // OK
 // Esc — через глобальный keydown-хэндлер (app.js ~3370): закрывает верхний .dlg-overlay кликом по .dlg-close (#notice-x)
 
+// ── About dialog ───────────────────────────────────────────────────────
+function openAboutDialog() {
+  document.getElementById('about-version').textContent = APP_VERSION;
+  raiseOverlay(document.getElementById('about-overlay'));
+}
+function closeAboutDialog() {
+  document.getElementById('about-overlay').classList.add('hidden');
+}
+document.getElementById('about-x').onclick  = closeAboutDialog;   // крестик
+document.getElementById('about-ok').onclick = closeAboutDialog;   // OK
+// Esc — тот же глобальный хэндлер, что у notice (клик по .dlg-close верхнего .dlg-overlay)
+document.getElementById('about-link-license').addEventListener('click', e => {
+  e.preventDefault();
+  openWithBrowser('https://www.gnu.org/licenses/gpl-3.0.html', 'default');
+});
+document.getElementById('about-link-repo').addEventListener('click', e => {
+  e.preventDefault();
+  openWithBrowser('https://github.com/skljar/url-album-tauri', 'default');
+});
+document.getElementById('about-link-site').addEventListener('click', e => {
+  e.preventDefault();
+  openWithBrowser('https://joomfan.com/katalog/ad/programmy-dlya-windows/url-album', 'default');
+});
+
 // ── Delete bookmark ───────────────────────────────────────────────────────
 // Returns all currently visible (not inside closed branch) tree items.
 function getVisibleTreeItems() {
@@ -2407,6 +2431,7 @@ const ICONS = {
   'move-down':   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 3h5M1.5 7h5M1.5 11h5"/><path d="M10.5 2V10M8 7.5L10.5 10l2.5-2.5"/></svg>`,
   'menu-toggle': `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 3.5h10M2 7h10M2 10.5h10"/></svg>`,
   'trash-bin':   `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h10M5 4V2.5h4V4M3.5 4l1 7.5h5l1-7.5M6 6v3M8 6v3"/></svg>`,
+  info:          `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><circle cx="7" cy="7" r="5.5"/><circle cx="7" cy="4.4" r="0.75" fill="currentColor" stroke="none"/><path d="M7 6.6v3.1"/></svg>`,
 };
 
 // todo:true = disabled (not yet implemented)
@@ -2481,6 +2506,20 @@ const MENU_DATA = [
       { label: 'Развернуть все папки', icon: 'expand-all', action: 'toggle-expand-all' },
       '---',
       { label: 'Настроить toolbar…',   icon: 'gear',       action: 'customize-toolbar' },
+    ]
+  },
+  {
+    id: 'help', label: 'Справка',
+    items: [
+      { label: 'Справка',               icon: 'props',    action: 'help-topics'  },
+      '---',
+      { label: 'Сайт программы',        icon: 'favicon',  action: 'open-website' },
+      { label: 'Репозиторий на GitHub', icon: 'open',     action: 'open-repo'    },
+      { label: 'Сообщить об ошибке',    icon: 'edit',     action: 'report-issue' },
+      '---',
+      { label: 'Проверить обновления',  icon: 'refresh',  action: 'check-updates' },
+      '---',
+      { label: 'О программе',           icon: 'info',     action: 'about'        },
     ]
   },
 ];
@@ -3402,6 +3441,27 @@ function handleMenuAction(action) {
     case 'customize-toolbar':
       openToolbarCustomizeDialog();
       break;
+
+    // ── Справка ──
+    case 'help-topics':
+      showNotice('Справка', 'Появится в следующих версиях');
+      break;
+    case 'open-website':
+      openWithBrowser('https://joomfan.com/katalog/ad/programmy-dlya-windows/url-album', 'default');
+      break;
+    case 'open-repo':
+      openWithBrowser('https://github.com/skljar/url-album-tauri', 'default');
+      break;
+    case 'report-issue':
+      openWithBrowser('https://github.com/skljar/url-album-tauri/issues/new', 'default');
+      break;
+    case 'check-updates':
+      showNotice('Проверить обновления', 'Появится в следующих версиях');
+      break;
+    case 'about':
+      openAboutDialog();
+      break;
+
     case 'close-db':
       invoke('close_db').catch(console.error);
       showImportScreen();

@@ -141,6 +141,38 @@
     </div>
   </div>
 
+  <!-- About dialog -->
+  <div id="about-overlay" class="dlg-overlay hidden">
+    <div class="win-dlg" style="width:360px">
+      <div class="dlg-title">
+        <span>О программе</span>
+        <button class="dlg-close" id="about-x">×</button>
+      </div>
+      <div class="dlg-body" style="padding:16px 14px 10px">
+        <div style="font-weight:600">URL Album <span id="about-version"></span></div>
+        <div>Портативный менеджер закладок для Windows</div>
+        <div style="margin-top:10px">Copyright (C) 2026 skljar</div>
+        <div style="margin-top:10px">
+          Свободное программное обеспечение. Распространяется
+          на условиях GNU General Public License версии 3
+          или любой более поздней версии.
+        </div>
+        <div style="margin-top:6px">
+          Программа распространяется в надежде, что будет полезной,
+          но БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ.
+        </div>
+        <div style="margin-top:10px">
+          <a href="#" id="about-link-license">Текст лицензии</a><br>
+          <a href="#" id="about-link-repo">Исходный код</a><br>
+          <a href="#" id="about-link-site">Сайт программы</a>
+        </div>
+      </div>
+      <div class="dlg-footer">
+        <button class="win-btn win-btn-default" id="about-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Link properties dialog -->
   <div id="props-overlay" class="dlg-overlay hidden">
     <div class="win-dlg props-dlg" id="props-dlg">
