@@ -1336,7 +1336,7 @@ document.getElementById('about-link-license').addEventListener('click', e => {
 });
 document.getElementById('about-link-repo').addEventListener('click', e => {
   e.preventDefault();
-  openWithBrowser('https://github.com/skljar/url-album-tauri', 'default');
+  openWithBrowser('https://github.com/mucronix/url-album-tauri', 'default');
 });
 document.getElementById('about-link-site').addEventListener('click', e => {
   e.preventDefault();
@@ -3450,10 +3450,10 @@ function handleMenuAction(action) {
       openWithBrowser('https://joomfan.com/katalog/ad/programmy-dlya-windows/url-album', 'default');
       break;
     case 'open-repo':
-      openWithBrowser('https://github.com/skljar/url-album-tauri', 'default');
+      openWithBrowser('https://github.com/mucronix/url-album-tauri', 'default');
       break;
     case 'report-issue':
-      openWithBrowser('https://github.com/skljar/url-album-tauri/issues/new', 'default');
+      openWithBrowser('https://github.com/mucronix/url-album-tauri/issues/new', 'default');
       break;
     case 'check-updates':
       showNotice('Проверить обновления', 'Появится в следующих версиях');

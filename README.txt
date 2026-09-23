@@ -103,7 +103,7 @@ Windows может показать окно «Система Windows защит
 Это фильтр SmartScreen: программа не подписана платным сертификатом
 разработчика, поэтому система её пока не знает. Нажмите «Подробнее»,
 затем «Выполнить в любом случае». Исходный код открыт:
-https://github.com/skljar/url-album-tauri
+https://github.com/mucronix/url-album-tauri
 
 Обычно WebView2 уже есть в Windows 10/11. Если при запуске программа
 сообщает «Could not find the WebView2 Runtime» — установите Microsoft
@@ -264,7 +264,7 @@ README и папку extension. База закладок, скриншоты в
     (Chrome, Firefox, Edge, Opera, Brave), несколько баз данных.
 
 -----------------------------------------------------------
-GitHub:  https://github.com/skljar/url-album-tauri
+GitHub:  https://github.com/mucronix/url-album-tauri
 
 ЛИЦЕНЗИЯ
 --------
@@ -276,6 +276,6 @@ URL Album — свободное программное обеспечение.
 Программа распространяется в надежде, что будет полезной,
 но БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ. Подробности в файле LICENSE.
 
-Copyright (C) 2026 skljar
+Copyright (C) 2026 mucronix
 
-Исходный код: https://github.com/skljar/url-album-tauri
+Исходный код: https://github.com/mucronix/url-album-tauri
