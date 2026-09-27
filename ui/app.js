@@ -13,6 +13,12 @@ function logUi(message) {
   invoke('log_from_ui', { message: String(message) }).catch(() => {});
 }
 
+// Ждёт отрисовки кадра — для замеров скорости. Сразу после renderTree стили
+// и раскладка ещё не посчитаны, а замирание на больших базах в основном там.
+function nextPaint() {
+  return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+}
+
 // ── Link checker ─────────────────────────────────────────────────────────
 // Column config: id → CSS-var suffix, label, default width
 const CHK_COLS = [
@@ -243,12 +249,17 @@ function startInlineRename(folderId) {
 
 async function createFolderAndRename(parentId) {
   try {
+    const t0 = performance.now();
     const openIds = saveOpenState();
     const newId = await invoke('create_folder', { parentId, title: 'Новая папка' });
+    const t1 = performance.now();
     allNodes = await invoke('get_tree');
     allFolders = allNodes.filter(n => n.kind === 'folder');
+    const t2 = performance.now();
     renderTree();
+    const t3 = performance.now();
     restoreOpenState(openIds);
+    const t4 = performance.now();
 
     // If subfolder — expand parent
     if (parentId != null) {
@@ -258,8 +269,16 @@ async function createFolderAndRename(parentId) {
     }
 
     await selectFolder(newId);
+    const t5 = performance.now();
     treeEl.querySelector(`.tree-item[data-id="${newId}"]`)?.scrollIntoView({ block: 'nearest' });
     startInlineRename(newId);
+
+    await nextPaint();
+    const t6 = performance.now();
+    const ms = (a, b) => Math.round(b - a);
+    logUi(`Замер: создание папки — create_folder ${ms(t0, t1)}, get_tree ${ms(t1, t2)}, ` +
+          `renderTree ${ms(t2, t3)}, restoreOpenState ${ms(t3, t4)}, selectFolder ${ms(t4, t5)}, ` +
+          `раскладка и кадр ${ms(t5, t6)}, всего ${ms(t0, t6)} мс`);
   } catch(e) { console.error(e); }
 }
 
@@ -4237,8 +4256,10 @@ async function showApp() {
   emptyHint.classList.remove('hidden');
   breadcrumb.textContent = '';
 
+  const t0 = performance.now();
   allNodes   = await invoke("get_tree");
   allFolders = allNodes.filter(n => n.kind === "folder");
+  const t1 = performance.now();
 
   _sbInFolderCount = null;
   _sbSearchCount   = null;
@@ -4246,8 +4267,17 @@ async function showApp() {
 
   dataDir = await invoke('get_data_dir').catch(() => dataDir);
 
+  const t2 = performance.now();
   renderTree();
   updateStatusLeft();
+  const t3 = performance.now();
+  nextPaint().then(() => {
+    const t4 = performance.now();
+    logUi(`Замер: открытие базы — ${allNodes.length} узлов, get_tree ${Math.round(t1 - t0)}, ` +
+          `renderTree ${Math.round(t3 - t2)}, раскладка и кадр ${Math.round(t4 - t3)} мс; ` +
+          `в дереве ${treeEl.getElementsByTagName('*').length} элементов, ` +
+          `${treeEl.getElementsByTagName('img').length} картинок`);
+  });
 
   // Highlight first top-level folder without expanding it
   const roots    = allFolders.filter(f => f.parent === null);

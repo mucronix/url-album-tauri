@@ -28,7 +28,12 @@ const INBOX_FOLDER_NAME: &str = "Новые ссылки";
 #[tauri::command]
 fn get_tree(state: tauri::State<AppState>) -> Result<Vec<db::TreeNode>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::get_tree(&conn).map_err(|e| e.to_string())
+    // Замер для работы над большими базами: здесь только SQL, сериализацию
+    // и IPC покажет разница с замером того же вызова в JS
+    let t = std::time::Instant::now();
+    let tree = db::get_tree(&conn).map_err(|e| e.to_string())?;
+    logger::log(&format!("Замер: get_tree — {} узлов, SQL {} мс", tree.len(), t.elapsed().as_millis()));
+    Ok(tree)
 }
 
 #[tauri::command]
