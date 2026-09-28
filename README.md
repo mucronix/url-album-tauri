@@ -1,6 +1,7 @@
 # URL Album
 
 **Современное продолжение классического URL-Album для Windows 10/11.**
+
 Спасибо за URL Album. Мы помним.
 
 📖 **[Подробный обзор на joomfan.com](https://joomfan.com/portal/moi-proekty/url-album-obzor)** — история программы, чем она отличается от закладок браузера, как ей пользоваться.
