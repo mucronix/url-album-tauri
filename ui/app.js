@@ -838,6 +838,83 @@ function _detachTreeChild(parentId, id) {
   if (parent?.children) parent.children = parent.children.filter(c => c.id !== id);
 }
 
+// Отладочная сверка точечного состояния с базой: Ctrl+Alt+Shift+V, только при
+// включённом журнале. Перечитывает get_tree и сравнивает с allNodes: набор
+// узлов, поля, node.children, порядок построенных веток дерева, бейджи, «+»
+// у папок и порядок строк правой панели. Итог — одна строка журнала.
+async function _verifyState() {
+  const t0 = performance.now();
+  const fresh = await invoke('get_tree');
+  const errs = [];
+  const err = (m) => errs.push(m);
+
+  const mine = new Map(allNodes.map(n => [n.id, n]));
+  const db   = new Map(fresh.map(n => [n.id, n]));
+  for (const id of db.keys())   if (!mine.has(id)) err(`нет в allNodes: ${id}`);
+  for (const id of mine.keys()) if (!db.has(id))   err(`лишний в allNodes: ${id}`);
+
+  // thumb в JS после снимка — полный путь, в базе — имя файла: сравниваем имя
+  const base = (v) => v == null || v === '' ? null : String(v).split(/[\\/]/).pop().split('?')[0];
+  const FIELDS = ['parent', 'kind', 'title', 'url', 'favicon', 'note', 'created',
+                  'visited', 'sort_idx', 'count', 'opener'];
+  for (const [id, d] of db) {
+    const m = mine.get(id);
+    if (!m) continue;
+    for (const f of FIELDS) {
+      if ((m[f] ?? null) !== (d[f] ?? null)) err(`${id}.${f}: ${JSON.stringify(m[f])} ≠ ${JSON.stringify(d[f])}`);
+    }
+    if (base(m.thumb) !== base(d.thumb)) err(`${id}.thumb: ${m.thumb} ≠ ${d.thumb}`);
+  }
+
+  // node.children против детей, выведенных из parent
+  const kids = childrenByParent();
+  const ids  = (list) => list.map(n => n.id).join(',');
+  const sortedIds = (list) => ids([...list].sort(foldersFirst));
+  for (const n of allNodes) {
+    if (n.kind !== 'folder') continue;
+    const want = sortedIds(kids.get(n.id) || []);
+    const have = sortedIds(n.children || []);
+    if (want !== have) err(`${n.id}.children: [${have}] ≠ [${want}]`);
+  }
+
+  // Построенные ветки дерева: порядок строк, бейдж, «+»
+  const rowIds = (container) => [...container.children]
+    .map(w => w.querySelector(':scope > .tree-item'))
+    .filter(Boolean).map(it => Number(it.dataset.id)).filter(id => id !== -1).join(',');
+  const rootWant = sortedIds(kids.get(null) || []);
+  if (rowIds(treeEl) !== rootWant) err(`корень дерева: [${rowIds(treeEl)}] ≠ [${rootWant}]`);
+  for (const item of treeEl.querySelectorAll('.tree-item[data-kind="folder"]')) {
+    const id = Number(item.dataset.id);
+    if (id === -1) continue;
+    const n = mine.get(id);
+    if (!n) { err(`строка дерева без узла: ${id}`); continue; }
+    const ch = item.parentElement.querySelector(':scope > .tree-children');
+    const want = sortedIds(kids.get(id) || []);
+    if (ch && rowIds(ch) !== want) err(`ветка ${id}: [${rowIds(ch)}] ≠ [${want}]`);
+    const badge = item.querySelector(':scope > .tree-count')?.textContent ?? '';
+    const wantBadge = db.get(id)?.count > 0 ? String(db.get(id).count) : '';
+    if (badge !== wantBadge) err(`бейдж ${id}: «${badge}» ≠ «${wantBadge}»`);
+    const plus = !!item.querySelector(':scope > .arrow')?.dataset.hasChildren;
+    if (plus !== want.length > 0) err(`«+» у ${id}: ${plus}`);
+  }
+
+  // Правая панель: папки, затем ссылки, каждые по sort_idx
+  if (activeFolderId != null && activeFolderId !== -1 && !gridEl.classList.contains('hidden')) {
+    const list = kids.get(activeFolderId) || [];
+    const bySort = (a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id;
+    const want = ids([...list.filter(n => n.kind === 'folder').sort(bySort),
+                      ...list.filter(n => n.kind === 'bookmark').sort(bySort)]);
+    const have = [...gridEl.querySelectorAll(':scope > .card')].map(c => c.dataset.id).join(',');
+    if (have !== want) err(`правая панель ${activeFolderId}: [${have}] ≠ [${want}]`);
+  }
+
+  const ms = Math.round(performance.now() - t0);
+  logUi(errs.length === 0
+    ? `Сверка: совпадает, ${fresh.length} узлов, ${ms} мс`
+    : `Сверка: ${errs.length} расхождений, ${ms} мс; первые: ${errs.slice(0, 20).join('; ')}`);
+  setStatus(errs.length === 0 ? 'Сверка: совпадает' : `Сверка: ${errs.length} расхождений — см. журнал`);
+}
+
 function removeSubtreeFromState(ids) {
   for (let i = allNodes.length - 1; i >= 0; i--) {
     if (ids.has(allNodes[i].id)) allNodes.splice(i, 1);
@@ -3588,6 +3665,9 @@ function handleMenuAction(action) {
 
 document.addEventListener('keydown', e => {
   const _editing = e.target.matches('input,textarea,select') || e.target.isContentEditable;
+  if (e.ctrlKey && e.altKey && e.shiftKey && e.code === 'KeyV' && appSettings.logEnabled) {
+    e.preventDefault(); _verifyState().catch(err => logUi(`Сверка: отказ — ${err}`)); return;
+  }
   if (e.altKey && e.key === 'ArrowLeft'  && !_editing) { e.preventDefault(); goBack();    return; }
   if (e.altKey && e.key === 'ArrowRight' && !_editing) { e.preventDefault(); goForward(); return; }
   if (e.altKey && e.key === 'ArrowUp'    && !_editing) { e.preventDefault(); goUp();      return; }
