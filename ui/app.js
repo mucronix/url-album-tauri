@@ -773,11 +773,28 @@ function openDupesDialog() {
 dupesOverlay.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDupesDialog(); });
 
 // ── Delete folder ─────────────────────────────────────────────────────────
+// Дети по родителю за один проход по allNodes, порядок — как в allNodes.
+// Рекурсия с allNodes.filter на каждом шаге стоила «папки × вся база»: на
+// 3 800 папках и 94 800 узлах окно «Переместить в…» открывалось ~17 с.
+// Строится при каждом вызове, без кэша: кэш пришлось бы сбрасывать при
+// каждой точечной правке, а один проход — миллисекунды.
+function childrenByParent() {
+  const map = new Map();
+  for (const n of allNodes) {
+    const key = n.parent ?? null;
+    let list = map.get(key);
+    if (!list) map.set(key, list = []);
+    list.push(n);
+  }
+  return map;
+}
+
 function collectSubtreeIds(folderId) {
+  const kids = childrenByParent();
   const ids = new Set();
   const visit = (id) => {
     ids.add(id);
-    allNodes.filter(n => n.parent === id).forEach(n => visit(n.id));
+    for (const n of kids.get(id) || []) visit(n.id);
   };
   visit(folderId);
   return ids;
@@ -1632,9 +1649,10 @@ function openMoveToDialog(node) {
     sel.appendChild(rootOpt);
   }
 
+  const kids = childrenByParent();
   const addOpts = (parentId, depth) => {
-    const children = allNodes
-      .filter(n => n.kind === 'folder' && n.parent === parentId)
+    const children = (kids.get(parentId) || [])
+      .filter(n => n.kind === 'folder')
       .sort((a, b) => (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id);
     for (const f of children) {
       if (excluded.has(f.id)) continue;   // сама папка и её потомки — пропустить и рекурсию
@@ -2850,18 +2868,19 @@ function tbMoveItem(dir) {
 
   function _populateFolderSelect(selectedId) {
     folderSelect.innerHTML = '';
-    const addFolderOpts = (nodes, parentId, depth) => {
-      const children = nodes.filter(n => n.kind === 'folder' && n.parent === parentId);
+    const kids = childrenByParent();
+    const addFolderOpts = (parentId, depth) => {
+      const children = (kids.get(parentId) || []).filter(n => n.kind === 'folder');
       for (const f of children) {
         const opt = document.createElement('option');
         opt.value = f.id;
         opt.textContent = ' '.repeat(depth * 2) + f.title;
         if (f.id === selectedId) opt.selected = true;
         folderSelect.appendChild(opt);
-        addFolderOpts(nodes, f.id, depth + 1);
+        addFolderOpts(f.id, depth + 1);
       }
     };
-    addFolderOpts(allNodes, null, 0);
+    addFolderOpts(null, 0);
   }
 
   function openNewItemDlg(mode, prefill = {}) {
