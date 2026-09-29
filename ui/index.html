@@ -74,7 +74,10 @@
       <!-- Compact info bar — shown on single-click selection, grid stays visible -->
       <div id="info-bar" class="hidden">
         <div class="note-splitter" id="info-note-splitter" title="Потяните, чтобы изменить высоту заметки"></div>
-        <div id="info-bar-url"></div>
+        <div id="info-bar-url-row">
+          <div id="info-bar-url"></div>
+          <span id="info-bar-date" class="created-date"></span>
+        </div>
         <div id="info-bar-note" class="note-box"></div>
       </div>
 
@@ -92,6 +95,7 @@
           <div id="detail-url-row">
             <img id="detail-favicon" class="favicon-icon hidden" src="" alt="">
             <span id="detail-url"></span>
+            <span id="detail-date" class="created-date"></span>
             <button id="detail-open-btn" title="Открыть в браузере">↗</button>
           </div>
           <div id="detail-note-section">
@@ -194,6 +198,8 @@
         <div class="props-sep"></div>
         <div class="form-row"><label class="form-label">Рисунок</label>
           <span class="props-ro form-field" id="props-thumb" title=""></span></div>
+        <div class="form-row" id="props-created-row"><label class="form-label">Добавлена</label>
+          <span class="props-ro form-field" id="props-created"></span></div>
       </div>
       <div class="dlg-footer">
         <button class="win-btn win-btn-default" id="props-ok">OK</button>

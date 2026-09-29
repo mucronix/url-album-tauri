@@ -67,7 +67,71 @@ pub fn init(conn: &Connection) -> Result<()> {
     )?;
     // Открывать через: обработчик открытия для папки (NULL/ключ браузера/custom:путь)
     conn.execute("ALTER TABLE nodes ADD COLUMN opener TEXT", []).ok();
+
+    // Дата создания: единый формат «ГГГГ-ММ-ДД чч:мм:сс»,
+    // местное время) — строковый порядок совпадает с порядком дат, на этом
+    // держится сортировка по дате. Старые значения из ua.dat переводятся.
+    migrate_ua_created(conn)?;
+    // Триггера даты НЕТ и быть не должно: само его наличие на таблице
+    // удваивало время каждой вставки (импорт 91 тыс.: 1,9 → 4 с), даже когда
+    // условие не срабатывало. Дату пишет каждый INSERT сам (now_sql!), а
+    // тест every_insert_path_sets_created это сторожит. Сборка с триггером
+    // успела открыть часть баз — убираем его оттуда.
+    conn.execute_batch("DROP TRIGGER IF EXISTS nodes_created_default;")?;
     Ok(())
+}
+
+/// Дата старого URL-Album (ua.dat): `ДДММГГччммсс`, 12 цифр, век 20xx —
+/// так её читал прежний parseUADate. Перевод в «ГГГГ-ММ-ДД чч:мм:сс»;
+/// не такая строка или невозможные числа — None (значение не трогаем).
+pub fn ua_date_to_iso(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.len() != 12 || !s.bytes().all(|b| b.is_ascii_digit()) { return None; }
+    let n = |i: usize| s[i..i + 2].parse::<u32>().unwrap();
+    let (dd, mm, yy, h, mi, sec) = (n(0), n(2), n(4), n(6), n(8), n(10));
+    if !(1..=31).contains(&dd) || !(1..=12).contains(&mm) || h > 23 || mi > 59 || sec > 59 {
+        return None;
+    }
+    Some(format!("20{yy:02}-{mm:02}-{dd:02} {h:02}:{mi:02}:{sec:02}"))
+}
+
+/// Перевод уже лежащих в базе дат ua.dat. Повторный запуск ничего не меняет:
+/// переведённое значение под шаблон 12 цифр больше не подходит.
+fn migrate_ua_created(conn: &Connection) -> Result<()> {
+    let old: Vec<(i64, String)> = {
+        let mut st = conn.prepare(
+            "SELECT id, created FROM nodes
+             WHERE length(created) = 12 AND created NOT GLOB '*[^0-9]*'")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>>>()?;
+        rows
+    };
+    if old.is_empty() { return Ok(()); }
+    conn.execute_batch("BEGIN")?;
+    let res = (|| -> Result<()> {
+        for (id, s) in &old {
+            if let Some(iso) = ua_date_to_iso(s) {
+                conn.execute("UPDATE nodes SET created = ?1 WHERE id = ?2", params![iso, id])?;
+            }
+        }
+        Ok(())
+    })();
+    match res {
+        Ok(())  => conn.execute_batch("COMMIT"),
+        Err(e)  => { conn.execute_batch("ROLLBACK").ok(); Err(e) }
+    }
+}
+
+/// ORDER BY для сортировки по полю: ссылки без даты — в конце при обоих
+/// направлениях (NULL в SQLite меньше любого значения и при DESC ушёл бы
+/// наверх; прежний COALESCE(created,'zzzz') — наоборот).
+pub fn sort_order_sql(by: &str, desc: bool) -> String {
+    let dir = if desc { "DESC" } else { "ASC" };
+    match by {
+        "url"     => format!("COALESCE(url, '') {dir}"),
+        "created" => format!("(created IS NULL), created {dir}"),
+        _         => format!("title {dir}"),
+    }
 }
 
 #[derive(Serialize)]
@@ -168,6 +232,35 @@ pub fn get_trash(conn: &Connection) -> Result<Vec<TreeNode>> {
 pub fn update_note(conn: &Connection, id: i64, note: &str) -> Result<usize> {
     let val: Option<&str> = if note.trim().is_empty() { None } else { Some(note) };
     conn.execute("UPDATE nodes SET note = ?1 WHERE id = ?2", params![val, id])
+}
+
+/// Одиночные вставки — окно «Новая ссылка», новая папка, быстрый путь
+/// расширения, папка «Новые ссылки». Здесь, а не в main.rs, чтобы дату
+/// создания сторожил тот же тест, что и импорты. Узел встаёт в конец:
+/// `MAX(sort_idx) + 1` по всем детям родителя (у корня — и по корзине, как
+/// было в командах).
+pub fn insert_folder(conn: &Connection, parent: Option<i64>, title: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO nodes (parent, kind, title, sort_idx, created)
+         VALUES (?1, 'folder', ?2,
+                 (SELECT COALESCE(MAX(sort_idx), -1) + 1 FROM nodes WHERE parent IS ?1),
+                 datetime('now', 'localtime'))",
+        params![parent, title],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn insert_bookmark(
+    conn: &Connection, parent: Option<i64>, title: &str, url: &str, note: Option<&str>,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO nodes (parent, kind, title, url, note, sort_idx, created)
+         VALUES (?1, 'bookmark', ?2, ?3, ?4,
+                 (SELECT COALESCE(MAX(sort_idx), -1) + 1 FROM nodes WHERE parent IS ?1),
+                 datetime('now', 'localtime'))",
+        params![parent, title, url, note],
+    )?;
+    Ok(conn.last_insert_rowid())
 }
 
 /// Живая ссылка с тем же адресом — для проверки дубля при добавлении из
@@ -397,7 +490,7 @@ pub fn import(conn: &Connection, nodes: &[ParsedNode], dest_parent: Option<i64>)
         conn.execute(
             "INSERT INTO nodes
                  (parent, kind, title, url, thumb, note, created, visited, sort_idx)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+             VALUES (?1,?2,?3,?4,?5,?6,COALESCE(?7, datetime('now', 'localtime')),?8,?9)",
             params![
                 parent_id,
                 if node.is_folder { "folder" } else { "bookmark" },
@@ -405,7 +498,8 @@ pub fn import(conn: &Connection, nodes: &[ParsedNode], dest_parent: Option<i64>)
                 node.url,
                 thumb,
                 node.note,
-                node.created,
+                // Дата ua.dat — сразу в общем формате; неразобранная остаётся как есть
+                node.created.as_deref().map(|c| ua_date_to_iso(c).unwrap_or_else(|| c.to_string())),
                 node.visited,
                 sort_idx as i64,
             ],
@@ -478,7 +572,7 @@ pub fn import_html(conn: &Connection, html: &str, dest_parent: Option<i64>) -> R
                 let c = sort_counters.entry(parent).or_insert(0);
                 let si = *c; *c += 1;
                 conn.execute(
-                    "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1, 'folder', ?2, ?3)",
+                    "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1, 'folder', ?2, ?3, datetime('now', 'localtime'))",
                     params![parent, &title, si],
                 )?;
                 count += 1;
@@ -490,7 +584,7 @@ pub fn import_html(conn: &Connection, html: &str, dest_parent: Option<i64>) -> R
                 let c = sort_counters.entry(parent).or_insert(0);
                 let si = *c; *c += 1;
                 conn.execute(
-                    "INSERT INTO nodes (parent, kind, title, url, sort_idx) VALUES (?1, 'bookmark', ?2, ?3, ?4)",
+                    "INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1, 'bookmark', ?2, ?3, ?4, datetime('now', 'localtime'))",
                     params![parent, &title, &url, si],
                 )?;
                 count += 1;
@@ -612,7 +706,7 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
     let c = sort_counters.entry(dest_parent).or_insert_with(|| next_sort_idx(conn, dest_parent));
     let rsi = *c; *c += 1;
     conn.execute(
-        "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1, 'folder', ?2, ?3)",
+        "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1, 'folder', ?2, ?3, datetime('now', 'localtime'))",
         params![dest_parent, root_title, rsi],
     )?;
     res.folders += 1;
@@ -680,7 +774,7 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
             let c = sort_counters.entry(Some(parent_id)).or_insert(0);
             let si = *c; *c += 1;
             conn.execute(
-                "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1, 'folder', ?2, ?3)",
+                "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1, 'folder', ?2, ?3, datetime('now', 'localtime'))",
                 params![parent_id, title, si],
             )?;
             res.folders += 1;
@@ -700,7 +794,7 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
             let c = sort_counters.entry(Some(parent_id)).or_insert(0);
             let si = *c; *c += 1;
             conn.execute(
-                "INSERT INTO nodes (parent, kind, title, url, sort_idx) VALUES (?1, 'bookmark', ?2, ?3, ?4)",
+                "INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1, 'bookmark', ?2, ?3, ?4, datetime('now', 'localtime'))",
                 params![parent_id, title, url, si],
             )?;
             res.links += 1;
@@ -738,7 +832,7 @@ fn chromium_node(
         Some("folder") => {
             let name = node["name"].as_str().unwrap_or("Папка");
             conn.execute(
-                "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1,'folder',?2,?3)",
+                "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3, datetime('now', 'localtime'))",
                 params![parent, name, *sort],
             )?;
             *sort += 1; *folders += 1;
@@ -755,7 +849,7 @@ fn chromium_node(
             let url  = node["url"].as_str().unwrap_or("");
             if !url.is_empty() {
                 conn.execute(
-                    "INSERT INTO nodes (parent, kind, title, url, sort_idx) VALUES (?1,'bookmark',?2,?3,?4)",
+                    "INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1,'bookmark',?2,?3,?4, datetime('now', 'localtime'))",
                     params![parent, name, url, *sort],
                 )?;
                 *sort += 1; *links += 1;
@@ -770,7 +864,7 @@ pub fn import_chromium(conn: &Connection, json: &str, browser_name: &str) -> Res
     let v: serde_json::Value = serde_json::from_str(json).map_err(to_rq)?;
     conn.execute_batch("BEGIN")?;
     conn.execute(
-        "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (NULL,'folder',?1,0)",
+        "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (NULL,'folder',?1,0, datetime('now', 'localtime'))",
         params![browser_name],
     )?;
     let root_id = conn.last_insert_rowid();
@@ -783,7 +877,7 @@ pub fn import_chromium(conn: &Connection, json: &str, browser_name: &str) -> Res
                     if ch.is_empty() { continue; }
                     let name = sect["name"].as_str().unwrap_or(key);
                     conn.execute(
-                        "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1,'folder',?2,?3)",
+                        "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3, datetime('now', 'localtime'))",
                         params![root_id, name, sort],
                     )?;
                     sort += 1; folders += 1;
@@ -840,7 +934,7 @@ pub fn import_firefox(conn: &Connection, places_path: &str, browser_name: &str) 
     let _ = (std::fs::remove_file(&tmp), std::fs::remove_file(&tmp_wal), std::fs::remove_file(&tmp_shm));
 
     conn.execute_batch("BEGIN")?;
-    conn.execute("INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (NULL,'folder',?1,0)", params![browser_name])?;
+    conn.execute("INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (NULL,'folder',?1,0, datetime('now', 'localtime'))", params![browser_name])?;
     let db_root = conn.last_insert_rowid();
     let (mut links, mut folders) = (0usize, 0usize);
     let mut id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
@@ -852,7 +946,7 @@ pub fn import_firefox(conn: &Connection, places_path: &str, browser_name: &str) 
         match node.bk_type {
             2 => {
                 let title = node.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("Закладки");
-                conn.execute("INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1,'folder',?2,?3)",
+                conn.execute("INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3, datetime('now', 'localtime'))",
                     params![parent_db, title, node.pos])?;
                 id_map.insert(node.id, conn.last_insert_rowid());
                 folders += 1;
@@ -862,7 +956,7 @@ pub fn import_firefox(conn: &Connection, places_path: &str, browser_name: &str) 
                     if let Some(url) = places.get(&fk) {
                         if !url.starts_with("place:") {
                             let title = node.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(url.as_str());
-                            conn.execute("INSERT INTO nodes (parent, kind, title, url, sort_idx) VALUES (?1,'bookmark',?2,?3,?4)",
+                            conn.execute("INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1,'bookmark',?2,?3,?4, datetime('now', 'localtime'))",
                                 params![parent_db, title, url, node.pos])?;
                             links += 1;
                         }
@@ -899,7 +993,7 @@ pub fn import_txt_urls(
     let (parent, mut si) = match folder_name {
         Some(name) => {
             conn.execute(
-                "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1,'folder',?2,?3)",
+                "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3, datetime('now', 'localtime'))",
                 params![dest_parent, name, next_sort_idx(conn, dest_parent)],
             )?;
             res.folders += 1;
@@ -911,7 +1005,7 @@ pub fn import_txt_urls(
     for line in text.lines() {
         let url = line.trim();
         if url.is_empty() || url.starts_with('#') { continue; }
-        conn.execute("INSERT INTO nodes (parent, kind, title, url, sort_idx) VALUES (?1,'bookmark',?2,?3,?4)",
+        conn.execute("INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1,'bookmark',?2,?3,?4, datetime('now', 'localtime'))",
             params![parent, url, url, si])?;
         si += 1;
         res.links += 1;
@@ -942,6 +1036,9 @@ pub struct SrcNode {
     /// имя favicon осмысленно в любой базе — оно построено из домена, — поэтому
     /// колонку можно переносить как есть, без файловых операций.
     pub favicon: Option<String>,
+    /// Дата создания в источнике. Источник открыт только на чтение и мог не
+    /// пройти миграцию — дата ua.dat переводится при переносе.
+    pub created: Option<String>,
 }
 
 fn normalize_url_for_dedup(url: &str) -> String {
@@ -970,7 +1067,7 @@ pub fn collect_urls(conn: &Connection) -> Result<std::collections::HashSet<Strin
 /// сортировка источника при импорте терялась целиком.
 pub fn read_src_nodes(src: &Connection) -> Result<Vec<SrcNode>> {
     let mut stmt = src.prepare(
-        "SELECT id, parent, kind, title, url, note, favicon FROM nodes ORDER BY sort_idx, id"
+        "SELECT id, parent, kind, title, url, note, favicon, created FROM nodes ORDER BY sort_idx, id"
     )?;
     let result: Result<Vec<SrcNode>> = stmt.query_map([], |r| Ok(SrcNode {
         id:     r.get(0)?,
@@ -982,6 +1079,8 @@ pub fn read_src_nodes(src: &Connection) -> Result<Vec<SrcNode>> {
         // Колонка дописана В КОНЕЦ списка намеренно: индексы 0–5 остаются за
         // прежними полями и не сдвигаются.
         favicon: r.get(6)?,
+        created: r.get::<_, Option<String>>(7)?
+            .map(|c| ua_date_to_iso(&c).unwrap_or(c)),
     }))?.collect();
     result
 }
@@ -1064,6 +1163,12 @@ pub fn execute_import_from_nodes(
         children_of.entry(key).or_default().push(node.id);
     }
 
+    // Нет своей даты у источника — время импорта, одно на всех. Явно, а не
+    // триггером: его UPDATE на каждую вставку удваивал время импорта
+    // (91 тыс. ссылок: 1,9 → 4,1 с).
+    let now: String = dest.query_row("SELECT datetime('now', 'localtime')", [], |r| r.get(0))?;
+    let created_of = |n: &SrcNode| n.created.clone().unwrap_or_else(|| now.clone());
+
     dest.execute_batch("BEGIN")?;
     let mut id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     // Нумерация своя для каждого родителя и продолжает существующую: общий
@@ -1088,8 +1193,8 @@ pub fn execute_import_from_nodes(
                 .or(dest_parent);
             let si = take_idx(new_parent);
             dest.execute(
-                "INSERT INTO nodes (parent, kind, title, sort_idx) VALUES (?1,?2,?3,?4)",
-                params![new_parent, &node.kind, &node.title, si],
+                "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,?2,?3,?4,?5)",
+                params![new_parent, &node.kind, &node.title, si, created_of(node)],
             )?;
             id_map.insert(fid, dest.last_insert_rowid());
             if let Some(children) = children_of.get(&Some(fid)) {
@@ -1106,8 +1211,8 @@ pub fn execute_import_from_nodes(
             .or(dest_parent);
         let si = take_idx(new_parent);
         dest.execute(
-            "INSERT INTO nodes (parent, kind, title, url, note, sort_idx, favicon) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![new_parent, &node.kind, &node.title, &node.url, &node.note, si, &node.favicon],
+            "INSERT INTO nodes (parent, kind, title, url, note, sort_idx, favicon, created) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![new_parent, &node.kind, &node.title, &node.url, &node.note, si, &node.favicon, created_of(node)],
         )?;
         count += 1;
     }
@@ -1244,6 +1349,152 @@ mod tests {
         assert_eq!(note_of_l(&c), None, "строка из пробелов — это отсутствие заметки");
 
         assert_eq!(update_note(&c, 9999, "текст").unwrap(), 0, "несуществующая ссылка — 0 строк");
+    }
+
+    /// Дата ua.dat (`ДДММГГччммсс`, как её читал прежний parseUADate) —
+    /// в «ГГГГ-ММ-ДД чч:мм:сс»; миграция в init переводит только такие строки,
+    /// остальное не трогает и повторно ничего не меняет.
+    #[test]
+    fn ua_created_migrates_to_iso() {
+        assert_eq!(ua_date_to_iso("150308142530").as_deref(), Some("2008-03-15 14:25:30"));
+        assert_eq!(ua_date_to_iso("010100000000").as_deref(), Some("2000-01-01 00:00:00"));
+        assert_eq!(ua_date_to_iso("311299235959").as_deref(), Some("2099-12-31 23:59:59"));
+        for bad in ["321308000000", "001308000000", "151308000000", "150308246000", "15030814253", "15030814253x", ""] {
+            assert_eq!(ua_date_to_iso(bad), None, "«{bad}» не дата ua.dat");
+        }
+
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let rows = [("старая", Some("150308142530")), ("невозможная", Some("321308000000")),
+                    ("уже новая", Some("2026-09-29 12:00:00")), ("посторонняя", Some("вчера")),
+                    ("без даты", None)];
+        for (t, d) in rows {
+            c.execute("INSERT INTO nodes (kind, title, created) VALUES ('bookmark', ?1, ?2)", params![t, d]).unwrap();
+        }
+        let created = |c: &Connection, t: &str| c.query_row(
+            "SELECT created FROM nodes WHERE title = ?1", [t], |r| r.get::<_, Option<String>>(0)).unwrap();
+        for _ in 0..2 {  // второй init — повторная миграция ничего не меняет
+            init(&c).unwrap();
+            assert_eq!(created(&c, "старая").as_deref(), Some("2008-03-15 14:25:30"));
+            assert_eq!(created(&c, "невозможная").as_deref(), Some("321308000000"));
+            assert_eq!(created(&c, "уже новая").as_deref(), Some("2026-09-29 12:00:00"));
+            assert_eq!(created(&c, "посторонняя").as_deref(), Some("вчера"));
+            assert_eq!(created(&c, "без даты"), None, "старым ссылкам дату не придумываем");
+        }
+    }
+
+    /// Каждый путь добавления пишет дату создания: триггера нет (он удваивал
+    /// время импорта), поэтому пропущенный INSERT ловится только здесь.
+    /// Импорт со своей датой источника обязан её сохранить.
+    #[test]
+    fn every_insert_path_sets_created() {
+        const ISO: &str = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]";
+        let check = |name: &str, run: &dyn Fn(&Connection)| {
+            let c = Connection::open_in_memory().unwrap();
+            init(&c).unwrap();
+            run(&c);
+            let (total, bad): (i64, i64) = c.query_row(
+                &format!("SELECT COUNT(*), COALESCE(SUM(created IS NULL OR created NOT GLOB '{ISO}'), 0) FROM nodes"),
+                [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert!(total > 0, "{name}: ничего не вставлено — проверка пустая");
+            assert_eq!(bad, 0, "{name}: {bad} из {total} узлов без даты создания");
+        };
+
+        check("insert_folder / insert_bookmark", &|c| {
+            let f = insert_folder(c, None, "Папка").unwrap();
+            insert_folder(c, Some(f), "Подпапка").unwrap();
+            insert_bookmark(c, Some(f), "Ссылка", "https://a.example/", Some("заметка")).unwrap();
+        });
+        check("ua.dat", &|c| {
+            let nodes = crate::importer::parse(
+                "Корень!!!\t#\n\tПапка\t#\t\t\t150308142530\n\t\tСсылка\thttps://a.example/\t\t\t\t\n");
+            import(c, &nodes, None).unwrap();
+            let d: String = c.query_row("SELECT created FROM nodes WHERE title='Папка'", [], |r| r.get(0)).unwrap();
+            assert_eq!(d, "2008-03-15 14:25:30", "ua.dat: своя дата источника");
+        });
+        check("HTML", &|c| {
+            import_html(c, "<DL><p>\n<DT><H3>Папка</H3>\n<DL><p>\n<DT><A HREF=\"https://a.example/\">A</A>\n</DL><p>\n</DL><p>\n", None).unwrap();
+        });
+        check("TXT", &|c| {
+            import_txt(c, "[Корень]\n  [Папка]\n    A - https://a.example/\n      Заметка: текст\n", None).unwrap();
+        });
+        check("TXT-список в папку", &|c| {
+            import_txt_urls(c, "https://a.example/\nhttps://b.example/\n", Some("Список"), None).unwrap();
+        });
+        check("TXT-список без папки", &|c| {
+            let f = insert_folder(c, None, "Куда").unwrap();
+            import_txt_urls(c, "https://a.example/\n", None, Some(f)).unwrap();
+        });
+        check("Chromium", &|c| {
+            import_chromium(c, r#"{"roots":{"bookmark_bar":{"name":"Панель","children":[
+                {"type":"folder","name":"Папка","children":[{"type":"url","name":"A","url":"https://a.example/"}]},
+                {"type":"url","name":"B","url":"https://b.example/"}]}}}"#, "Chrome").unwrap();
+        });
+        check("Firefox", &|c| {
+            let p = std::env::temp_dir().join(format!("ua_test_places_{}.sqlite", std::process::id()));
+            let _ = std::fs::remove_file(&p);
+            {
+                let ff = Connection::open(&p).unwrap();
+                ff.execute_batch(
+                    "CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT);
+                     CREATE TABLE moz_bookmarks (id INTEGER PRIMARY KEY, parent INTEGER, type INTEGER,
+                                                 title TEXT, fk INTEGER, position INTEGER);
+                     INSERT INTO moz_places VALUES (10, 'https://a.example/');
+                     INSERT INTO moz_bookmarks VALUES (1, NULL, 2, 'root', NULL, 0);
+                     INSERT INTO moz_bookmarks VALUES (2, 1, 2, 'Меню', NULL, 0);
+                     INSERT INTO moz_bookmarks VALUES (3, 2, 1, 'A', 10, 0);").unwrap();
+            }
+            let (links, _) = import_firefox(c, p.to_str().unwrap(), "Firefox").unwrap();
+            let _ = std::fs::remove_file(&p);
+            assert_eq!(links, 1, "Firefox: тестовый places.sqlite разобран");
+        });
+        check("другая база", &|c| {
+            let src = Connection::open_in_memory().unwrap();
+            init(&src).unwrap();
+            let f = folder(&src, None, "Папка", 0);
+            let old = link(&src, Some(f), "Старая", "https://old.example/", 0);
+            link(&src, Some(f), "Без даты", "https://nodate.example/", 1);
+            // Источник открыт только на чтение и мог не пройти миграцию
+            src.execute("UPDATE nodes SET created = '150308142530' WHERE id = ?1", params![old]).unwrap();
+            let nodes = read_src_nodes(&src).unwrap();
+            execute_import_from_nodes(c, &nodes, None, &Default::default()).unwrap();
+            let d: String = c.query_row("SELECT created FROM nodes WHERE title='Старая'", [], |r| r.get(0)).unwrap();
+            assert_eq!(d, "2008-03-15 14:25:30", "другая база: своя дата источника");
+        });
+    }
+
+    /// Триггер даты из промежуточной сборки мог остаться в файле базы — init
+    /// обязан его убрать: само его наличие удваивает время вставки.
+    #[test]
+    fn init_drops_leftover_created_trigger() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        c.execute_batch(
+            "CREATE TRIGGER nodes_created_default AFTER INSERT ON nodes WHEN NEW.created IS NULL
+             BEGIN UPDATE nodes SET created = datetime('now', 'localtime') WHERE id = NEW.id; END;").unwrap();
+        init(&c).unwrap();
+        let n: i64 = c.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "триггер остался в базе");
+    }
+
+    /// Сортировка по дате: без даты — в конце при обоих направлениях.
+    #[test]
+    fn sort_by_created_puts_undated_last() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        for (t, d) in [("нет-1", None), ("2008", Some("2008-03-15 14:25:30")),
+                       ("нет-2", None), ("2026", Some("2026-09-29 12:00:00"))] {
+            c.execute("INSERT INTO nodes (kind, title, created) VALUES ('bookmark', ?1, ?2)", params![t, d]).unwrap();
+        }
+        let order = |desc: bool| -> Vec<String> {
+            let mut st = c.prepare(&format!("SELECT title FROM nodes ORDER BY {}, id",
+                                            sort_order_sql("created", desc))).unwrap();
+            let v = st.query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect();
+            v
+        };
+        assert_eq!(order(false), vec!["2008", "2026", "нет-1", "нет-2"]);
+        assert_eq!(order(true),  vec!["2026", "2008", "нет-1", "нет-2"]);
     }
 
     /// Дубль из расширения — по правилу окна «Новая ссылка»: точный адрес,

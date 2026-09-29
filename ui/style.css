@@ -623,6 +623,17 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   line-height: 1.4;
 }
 #info-bar-url:hover { color: var(--accent); text-decoration: underline; }
+#info-bar-url-row { display: flex; align-items: baseline; gap: 10px; }
+#info-bar-url-row #info-bar-url { flex: 1; min-width: 0; }
+/* Дата добавления — справа от адреса, мелко; пустая (старые ссылки) не видна */
+.created-date {
+  flex-shrink: 0;
+  font-size: calc(var(--ui-font) - 2px);
+  color: var(--text-dim);
+  white-space: nowrap;
+  user-select: text;
+}
+.created-date:empty { display: none; }
 #info-bar-note {
   font-size: calc(var(--ui-font) - 1px);
   color: var(--text2, #555);

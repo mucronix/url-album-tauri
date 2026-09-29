@@ -1207,12 +1207,7 @@ async fn check_url(url: String) -> UrlCheckResult {
 #[tauri::command]
 fn sort_all_bookmarks(state: tauri::State<AppState>, by: String, desc: bool) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let dir = if desc { "DESC" } else { "ASC" };
-    let col = match by.as_str() {
-        "url"     => "COALESCE(url,'')",
-        "created" => "COALESCE(created,'zzzz')",
-        _         => "title",
-    };
+    let order = db::sort_order_sql(&by, desc);
     let folder_ids: Vec<i64> = {
         let mut s = conn.prepare("SELECT id FROM nodes WHERE kind='folder'")
             .map_err(|e| e.to_string())?;
@@ -1225,7 +1220,7 @@ fn sort_all_bookmarks(state: tauri::State<AppState>, by: String, desc: bool) -> 
     for fid in folder_ids {
         let sql = format!(
             "SELECT id FROM nodes WHERE parent={fid}
-             ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, {col} {dir}"
+             ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, {order}"
         );
         let ids: Vec<i64> = {
             let mut s = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1525,16 +1520,11 @@ fn sort_folder(
     desc: bool,
 ) -> Result<Vec<i64>, String> {
     let conn  = state.db.lock().map_err(|e| e.to_string())?;
-    let dir   = if desc { "DESC" } else { "ASC" };
-    let col   = match by.as_str() {
-        "url"     => "COALESCE(url, '')",
-        "created" => "COALESCE(created, 'zzzz')",
-        _         => "title",
-    };
+    let order = db::sort_order_sql(&by, desc);
     // Folders first, then bookmarks, each group sorted by chosen column
     let sql = format!(
         "SELECT id FROM nodes WHERE parent = ?1
-         ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, {col} {dir}"
+         ORDER BY CASE kind WHEN 'folder' THEN 0 ELSE 1 END, {order}"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let ids: Vec<i64> = stmt
@@ -2062,14 +2052,7 @@ fn set_sort_idx(state: tauri::State<AppState>, id: i64, sort_idx: i64) -> Result
 #[tauri::command]
 fn create_folder(state: tauri::State<AppState>, parent_id: Option<i64>, title: String) -> Result<i64, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    // IS works with both NULL and integer in SQLite
-    let max: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(sort_idx),-1) FROM nodes WHERE parent IS ?1",
-        rusqlite::params![parent_id], |r| r.get(0)
-    ).unwrap_or(-1);
-    conn.execute("INSERT INTO nodes (parent,kind,title,sort_idx) VALUES(?1,'folder',?2,?3)",
-        rusqlite::params![parent_id, title, max + 1]).map_err(|e| e.to_string())?;
-    Ok(conn.last_insert_rowid())
+    db::insert_folder(&conn, parent_id, &title).map_err(|e| e.to_string())
 }
 
 fn find_or_create_inbox_folder(conn: &Connection) -> Result<i64, String> {
@@ -2081,15 +2064,7 @@ fn find_or_create_inbox_folder(conn: &Connection) -> Result<i64, String> {
     ).optional().map_err(|e| e.to_string())? {
         return Ok(id);
     }
-    let max: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(sort_idx),-1) FROM nodes WHERE parent IS NULL",
-        [], |r| r.get(0),
-    ).unwrap_or(-1);
-    conn.execute(
-        "INSERT INTO nodes (parent,kind,title,sort_idx) VALUES(NULL,'folder',?1,?2)",
-        rusqlite::params![INBOX_FOLDER_NAME, max + 1],
-    ).map_err(|e| e.to_string())?;
-    Ok(conn.last_insert_rowid())
+    db::insert_folder(conn, None, INBOX_FOLDER_NAME).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2101,15 +2076,9 @@ fn create_bookmark(
     note: Option<String>,
 ) -> Result<i64, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let max: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(sort_idx),-1) FROM nodes WHERE parent=?1", [parent_id], |r| r.get(0)
-    ).unwrap_or(-1);
     let note_val: Option<String> = note.filter(|s| !s.trim().is_empty());
-    conn.execute(
-        "INSERT INTO nodes (parent,kind,title,url,note,sort_idx) VALUES(?1,'bookmark',?2,?3,?4,?5)",
-        rusqlite::params![parent_id, title, url, note_val, max + 1],
-    ).map_err(|e| e.to_string())?;
-    Ok(conn.last_insert_rowid())
+    db::insert_bookmark(&conn, Some(parent_id), &title, &url, note_val.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 // ── DB utilities ─────────────────────────────────────────────────────────────
@@ -3377,16 +3346,8 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                     },
                 }
             };
-            let max: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(sort_idx),-1) FROM nodes WHERE parent=?1",
-                [folder_id], |r| r.get(0),
-            ).unwrap_or(-1);
-            match conn.execute(
-                "INSERT INTO nodes (parent,kind,title,url,note,sort_idx) \
-                 VALUES(?1,'bookmark',?2,?3,?4,?5)",
-                rusqlite::params![folder_id, &title, &url, note_val, max + 1],
-            ) {
-                Ok(_)  => conn.last_insert_rowid(),
+            match db::insert_bookmark(&conn, Some(folder_id), &title, &url, note_val.as_deref()) {
+                Ok(id) => id,
                 Err(e) => {
                     logger::log(&format!("расширение: 500 /bookmarks, ошибка базы: {e}"));
                     respond_json(req, 500,

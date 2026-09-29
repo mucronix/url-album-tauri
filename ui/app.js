@@ -636,7 +636,12 @@ function _dSortedRows(nodes) {
     switch(_dSortCol) {
       case 'u': va = a.url    || ''; vb = b.url    || ''; break;
       case 'f': va = getFolderPath(a.parent) || ''; vb = getFolderPath(b.parent) || ''; break;
-      case 'd': va = a.created|| ''; vb = b.created|| ''; break;
+      case 'd': {
+        // Без даты — в конце при обоих направлениях, как sort_order_sql в Rust
+        const da = formatCreated(a.created) ? a.created : '', db = formatCreated(b.created) ? b.created : '';
+        if (!da || !db) return (!da) - (!db);
+        va = da; vb = db; break;
+      }
       default:  va = a.title  || ''; vb = b.title  || ''; break;
     }
     return _dSortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
@@ -656,7 +661,7 @@ function _dRenderTable(nodes) {
     const tr = document.createElement('tr');
     tr.className = 'dupes-row';
     const folder = getFolderPath(node.parent) || '—';
-    const date   = parseUADate(node.created)  || '—';
+    const date   = formatCreated(node.created) || '—';
     tr.innerHTML = `<td class="dupes-td" title="${node.title}"><span>${node.title}</span></td>`
                  + `<td class="dupes-td dupes-td-url" title="${node.url}"><span>${node.url}</span></td>`
                  + `<td class="dupes-td" title="${folder}"><span>${folder}</span></td>`
@@ -1765,9 +1770,18 @@ function makeDlgDraggable(dlgEl, handleEl) {
   document.addEventListener("mouseup", () => { drag.on = false; });
 }
 
-function parseUADate(s) {
-  if (!s || s.length < 12) return "—";
-  return `${s.slice(0,2)}.${s.slice(2,4)}.20${s.slice(4,6)} ${s.slice(6,8)}:${s.slice(8,10)}:${s.slice(10,12)}`;
+// Дата создания в базе — «ГГГГ-ММ-ДД чч:мм:сс» (db::init переводит и старые
+// даты ua.dat). Показ — «ДД.ММ.ГГГГ чч:мм». Нет даты или не разобрана —
+// пустая строка: у старых ссылок не показываем ничего, не «01.01.1970».
+function formatCreated(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(s || '');
+  return m ? `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}` : '';
+}
+
+function _showCreated(el, node) {
+  const d = formatCreated(node?.created);
+  el.textContent = d;
+  el.title = d ? `Добавлена ${d}` : '';
 }
 
 // ── Link properties dialog ─────────────────────────────────────────────────
@@ -1789,6 +1803,10 @@ function openPropsDialog(node) {
   const thumbEl = document.getElementById("props-thumb");
   thumbEl.textContent = node.thumb || "—";
   thumbEl.title       = node.thumb || "";
+  // Дата — из allNodes, как и заметка: сюда приходят и копии узла
+  const created = formatCreated((allNodes.find(n => n.id === node.id) ?? node).created);
+  document.getElementById("props-created").textContent = created;
+  document.getElementById("props-created-row").style.display = created ? "" : "none";
   // Reset drag position
   const dlg = document.getElementById("props-dlg");
   dlg.style.position = ""; dlg.style.left = ""; dlg.style.top = ""; dlg.style.margin = "";
@@ -5552,6 +5570,7 @@ function showDetailView(node) {
 
   detailUrlEl.textContent = url;
   detailUrlEl.title = url;
+  _showCreated(document.getElementById('detail-date'), node);
 
   const detailFavEl = document.getElementById('detail-favicon');
   if (detailFavEl) {
@@ -5613,6 +5632,7 @@ function showInfoBar(node) {
   const url = node.url || '';
   infoBarUrl.textContent = url;
   infoBarUrl.title = url;
+  _showCreated(document.getElementById('info-bar-date'), node);
   _renderNoteBox(infoBarNote, node);
   infoBarEl.classList.remove('hidden');
   infoBarUrl.onclick = () => { if (url) openWithBrowser(url, resolveOpenerForNode(node)); };
