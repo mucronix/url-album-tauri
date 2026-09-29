@@ -1927,15 +1927,21 @@ function openMoveToDialog(node) {
     const okBtn     = document.getElementById('move-to-ok');
     okBtn.disabled  = true;
     const openIds   = saveOpenState();
+    const id        = _moveToNode.id;
+    const oldParent = allNodes.find(n => n.id === id)?.parent ?? null;
     try {
       const t0 = performance.now();
-      await invoke('move_node', { id: _moveToNode.id, newParent });
+      await invoke('move_node', { id, newParent });
       const t1 = performance.now();
       close();
-      allNodes   = await invoke('get_tree');
-      allFolders = allNodes.filter(n => n.kind === 'folder');
-      renderTree();
-      restoreOpenState(openIds);
+      const point = await _applyMovedNode(id, oldParent, newParent)
+        .catch(err => { logUi(`«Переместить в…»: точечное обновление не удалось — ${err}`); return false; });
+      if (!point) {
+        allNodes   = await invoke('get_tree');
+        allFolders = allNodes.filter(n => n.kind === 'folder');
+        renderTree();
+        restoreOpenState(openIds);
+      }
       if (newParent !== null) {
         // Папка назначения может лежать в ещё не построенных ветках —
         // сначала раскрыть путь к ней, как при переходе из поиска
@@ -1944,7 +1950,9 @@ function openMoveToDialog(node) {
         if (ti) openTreeFolder(ti);
       }
       const t2 = performance.now();
-      if (activeFolderId != null) await loadFolderContents(activeFolderId);
+      if (activeFolderId != null && (!point || activeFolderId === oldParent || activeFolderId === newParent)) {
+        await loadFolderContents(activeFolderId);
+      }
       const t3 = performance.now();
       nextPaint().then(() => logTiming('«Переместить в…»', t0, t1, t2, t3));
     } catch(e) {
