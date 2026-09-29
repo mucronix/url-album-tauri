@@ -275,10 +275,20 @@ function _applyFolderTitle(id, title) {
   const rn = gridEl.querySelector(`.card[data-id="${id}"] .row-name`);
   if (rn) rn.textContent = title;
 
+  _refreshBreadcrumbIfOnPath(id);
+}
+
+// Путь сверху пересобирается, если узел id — открытая папка, её предок или
+// открытая ссылка (у ссылки — также папка ссылки или её предок). Родитель
+// ссылки берётся из allNodes: после переноса копия в activeBookmarkNode
+// может помнить старый.
+function _refreshBreadcrumbIfOnPath(id) {
   const onPath = (fid) => fid != null && fid !== -1 && (fid === id || getAncestorIds(fid).has(id));
   if (activeBookmarkNode) {
-    const p = activeBookmarkNode.parent;
-    if (onPath(p)) breadcrumb.textContent = buildBreadcrumbText(p) + "  /  " + activeBookmarkNode.title;
+    const p = (allNodes.find(n => n.id === activeBookmarkNode.id) ?? activeBookmarkNode).parent;
+    if (activeBookmarkNode.id === id || onPath(p)) {
+      breadcrumb.textContent = buildBreadcrumbText(p) + "  /  " + activeBookmarkNode.title;
+    }
   } else if (onPath(activeFolderId)) {
     breadcrumb.textContent = buildBreadcrumbText(activeFolderId);
   }
@@ -993,6 +1003,47 @@ function _attachTreeChild(parentId, node) {
     return sib && foldersFirst(node, sib) < 0;
   });
   container.insertBefore(createTreeNode(node, _treeDepth(node)), before || null);
+}
+
+// Строка узла уходит из дерева вместе с построенной веткой. Ушёл последний
+// ребёнок — у родителя снимаются «+», раскрытие и сборщик, как у папки без детей.
+function _detachTreeRow(parentId, id) {
+  _detachTreeChild(parentId, id);
+  treeEl.querySelector(`.tree-item[data-id="${id}"]`)?.parentElement.remove();
+  if (parentId == null) return;
+  const parent = allNodes.find(n => n.id === parentId);
+  const pItem  = treeEl.querySelector(`.tree-item[data-id="${parentId}"]`);
+  if (!pItem || parent?.children?.length) return;
+  delete pItem.querySelector(':scope > .arrow').dataset.hasChildren;
+  pItem.classList.remove('open');
+  pItem.parentElement.querySelector(':scope > .tree-children')?.remove();
+  _treeChildBuilders.delete(pItem);
+}
+
+// Перенос после move_node: узел и оба родителя — из get_nodes (sort_idx
+// ставит Rust, count меняется у обоих при переносе ссылки). Строка переезжает
+// на новое место; раскрытое внутри перенесённой папки остаётся раскрытым,
+// выделенная строка в ней — выделенной. false — точечно не вышло.
+async function _applyMovedNode(id, oldParent, newParent) {
+  const rows = await invoke('get_nodes', { ids: [id, oldParent, newParent].filter(x => x != null) });
+  const row  = rows.find(r => r.id === id);
+  if (!row || (row.parent ?? null) !== (newParent ?? null)) return false;
+
+  const oldItem    = treeEl.querySelector(`.tree-item[data-id="${id}"]`);
+  const activeId   = oldItem?.parentElement.querySelector('.tree-item.active')?.dataset.id;
+  const openInside = oldItem
+    ? new Set([...oldItem.parentElement.querySelectorAll('.tree-item.open')].map(el => Number(el.dataset.id)))
+    : new Set();
+  _detachTreeRow(oldParent, id);
+
+  const node = _applyNodeRows(rows).find(n => n.id === id);
+  _attachTreeChild(newParent, node);
+  _updateFolderBadge(oldParent);
+  _updateFolderBadge(newParent);
+  if (openInside.size) restoreOpenState(openInside);
+  if (activeId) treeEl.querySelector(`.tree-item[data-id="${activeId}"]`)?.classList.add('active');
+  _refreshBreadcrumbIfOnPath(id);
+  return true;
 }
 
 function removeSubtreeFromState(ids) {
@@ -4547,21 +4598,29 @@ function _isDragValid(targetFolderId) {
 
 async function _doDrop(targetFolderId) {
   if (!_isDragValid(targetFolderId) || !_dragNode) return;
-  const openIds = saveOpenState();
+  const id        = _dragNode.id;
+  const oldParent = allNodes.find(n => n.id === id)?.parent ?? null;
+  const openIds   = saveOpenState();
   try {
     const t0 = performance.now();
-    await invoke('move_node', { id: _dragNode.id, newParent: targetFolderId });
+    await invoke('move_node', { id, newParent: targetFolderId });
     const t1 = performance.now();
-    allNodes   = await invoke('get_tree');
-    allFolders = allNodes.filter(n => n.kind === 'folder');
-    renderTree();
-    restoreOpenState(openIds);
+    const point = await _applyMovedNode(id, oldParent, targetFolderId)
+      .catch(err => { logUi(`перетаскивание: точечное обновление не удалось — ${err}`); return false; });
+    if (!point) {
+      allNodes   = await invoke('get_tree');
+      allFolders = allNodes.filter(n => n.kind === 'folder');
+      renderTree();
+      restoreOpenState(openIds);
+    }
     if (targetFolderId !== null) {
       const ti = treeEl.querySelector(`.tree-item[data-id="${targetFolderId}"]`);
       if (ti) openTreeFolder(ti);
     }
     const t2 = performance.now();
-    if (activeFolderId != null) await loadFolderContents(activeFolderId);
+    if (activeFolderId != null && (!point || activeFolderId === oldParent || activeFolderId === targetFolderId)) {
+      await loadFolderContents(activeFolderId);
+    }
     const t3 = performance.now();
     nextPaint().then(() => logTiming('перетаскивание', t0, t1, t2, t3));
   } catch(e) { console.error('move_node:', e); }
