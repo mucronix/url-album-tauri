@@ -1680,6 +1680,9 @@ function openMoveToDialog(node) {
       renderTree();
       restoreOpenState(openIds);
       if (newParent !== null) {
+        // Папка назначения может лежать в ещё не построенных ветках —
+        // сначала раскрыть путь к ней, как при переходе из поиска
+        expandTreePath(newParent);
         const ti = treeEl.querySelector(`.tree-item[data-id="${newParent}"]`);
         if (ti) openTreeFolder(ti);
       }
