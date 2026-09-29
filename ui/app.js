@@ -232,8 +232,7 @@ function startInlineRename(folderId) {
         const node = allNodes.find(n => n.id === folderId);
         if (node) node.title = newName;
         allFolders = allNodes.filter(n => n.kind === 'folder');
-        if (activeFolderId === folderId)
-          breadcrumb.textContent = buildBreadcrumbText(folderId);
+        _applyFolderTitle(folderId, newName);
       } catch(e) { console.error(e); }
     }
   }
@@ -253,6 +252,25 @@ function startInlineRename(folderId) {
     if (e.key === 'Enter')  { e.preventDefault(); input.blur(); }
     if (e.key === 'Escape') { cancel(); }
   });
+}
+
+// Новое имя папки — во все места, где оно видно: строка дерева, строка правой
+// панели и путь сверху, если переименована открытая папка или её предок
+// (у открытой ссылки — папка ссылки или её предок). node.title и allFolders
+// вызывающий обновляет до вызова: из них собирается путь.
+function _applyFolderTitle(id, title) {
+  const ti = treeEl.querySelector(`.tree-item[data-id="${id}"] .label`);
+  if (ti) ti.textContent = title;
+  const rn = gridEl.querySelector(`.card[data-id="${id}"] .row-name`);
+  if (rn) rn.textContent = title;
+
+  const onPath = (fid) => fid != null && fid !== -1 && (fid === id || getAncestorIds(fid).has(id));
+  if (activeBookmarkNode) {
+    const p = activeBookmarkNode.parent;
+    if (onPath(p)) breadcrumb.textContent = buildBreadcrumbText(p) + "  /  " + activeBookmarkNode.title;
+  } else if (onPath(activeFolderId)) {
+    breadcrumb.textContent = buildBreadcrumbText(activeFolderId);
+  }
 }
 
 // ── Create folder + select + inline rename ────────────────────────────────────
@@ -1618,8 +1636,7 @@ async function saveFolderPropsDialog() {
   const n = allNodes.find(n => n.id === fpropsNode.id);
   if (n) n.title = title;
   allFolders = allNodes.filter(n => n.kind === "folder");
-  const ti = treeEl.querySelector(`.tree-item[data-id="${fpropsNode.id}"] .label`);
-  if (ti) ti.textContent = title;
+  _applyFolderTitle(fpropsNode.id, title);
   return true;
 }
 
