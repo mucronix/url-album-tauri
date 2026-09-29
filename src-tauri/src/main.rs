@@ -1949,6 +1949,16 @@ async fn save_text_file(window: tauri::Window, content: String, default_name: Op
 /// генерируемые ею макросы конфликтуют по имени. Модулям (`logger`, `relay`)
 /// нужен доступ к содержимому, а знание о том, где лежит файл, должно
 /// оставаться в одном месте.
+/// «Не допускать дублей» (`noDuplicateUrls`) — читается из settings.json на
+/// каждый вызов, как прокси: включил в настройках — следующая ссылка из
+/// расширения уже проверяется, без перезапуска. Файл не разобран — false,
+/// как умолчание в app.js.
+fn no_duplicate_urls_from_settings() -> bool {
+    serde_json::from_str::<serde_json::Value>(&read_settings_raw()).ok()
+        .and_then(|v| v.get("noDuplicateUrls").and_then(|x| x.as_bool()))
+        .unwrap_or(false)
+}
+
 pub(crate) fn read_settings_raw() -> String {
     read_config_raw("settings.json")
 }
@@ -3306,6 +3316,10 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
             continue;
         }
 
+        // Проверка дубля — только при «не допускать дублей», как у окна «Новая
+        // ссылка» (режим «диалог» идёт через него же). Файл читаем до захвата базы.
+        let check_dupes = no_duplicate_urls_from_settings();
+
         // INSERT — conn and state dropped at end of block, before spawn
         let bookmark_id: i64 = {
             let state = handle.state::<AppState>();
@@ -3318,6 +3332,30 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                     continue;
                 }
             };
+            // Под той же блокировкой, что и INSERT: между проверкой и вставкой
+            // вторую такую же ссылку не добавить.
+            if check_dupes {
+                match db::find_live_bookmark_by_url(&conn, &url) {
+                    Ok(Some(hit)) => {
+                        logger::log(&format!(
+                            "расширение: дубль не добавлен, адрес уже есть (id={}): {url}", hit.id));
+                        let body = serde_json::json!({
+                            "status": "exists",
+                            "id":     hit.id,
+                            "folder": hit.folder_title,
+                        });
+                        respond_json(req, 200, &body.to_string(), cors);
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        logger::log(&format!("расширение: 500 /bookmarks, проверка дубля: {e}"));
+                        respond_json(req, 500,
+                            &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), cors);
+                        continue;
+                    }
+                }
+            }
             let folder_id = {
                 let requested = v["folder_id"].as_i64();
                 let validated = requested.and_then(|id| {

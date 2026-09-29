@@ -170,6 +170,28 @@ pub fn update_note(conn: &Connection, id: i64, note: &str) -> Result<usize> {
     conn.execute("UPDATE nodes SET note = ?1 WHERE id = ?2", params![val, id])
 }
 
+/// Живая ссылка с тем же адресом — для проверки дубля при добавлении из
+/// расширения. Правило то же, что у окна «Новая ссылка» (`noDuplicateUrls`
+/// в app.js): точное совпадение адреса после обрезки пробелов, только не в
+/// корзине. Несколько совпадений — первое по id.
+pub struct UrlHit {
+    pub id:           i64,
+    pub folder_title: Option<String>,  // None — ссылка в корне
+}
+
+pub fn find_live_bookmark_by_url(conn: &Connection, url: &str) -> Result<Option<UrlHit>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT b.id, f.title
+         FROM nodes b LEFT JOIN nodes f ON f.id = b.parent
+         WHERE b.kind = 'bookmark' AND b.url = ?1
+           AND (b.deleted IS NULL OR b.deleted = 0)
+         ORDER BY b.id LIMIT 1",
+        params![url.trim()],
+        |r| Ok(UrlHit { id: r.get(0)?, folder_title: r.get(1)? }),
+    ).optional()
+}
+
 pub fn get_bookmarks(conn: &Connection, folder_id: i64) -> Result<Vec<Bookmark>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, url, thumb, note, favicon
@@ -1222,6 +1244,37 @@ mod tests {
         assert_eq!(note_of_l(&c), None, "строка из пробелов — это отсутствие заметки");
 
         assert_eq!(update_note(&c, 9999, "текст").unwrap(), 0, "несуществующая ссылка — 0 строк");
+    }
+
+    /// Дубль из расширения — по правилу окна «Новая ссылка»: точный адрес,
+    /// только живые ссылки, первое совпадение по id, с папкой, где лежит.
+    #[test]
+    fn find_live_bookmark_by_url_follows_new_link_rule() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let work = folder(&c, None, "Работа", 0);
+        let misc = folder(&c, None, "Разное", 1);
+        let gone = link(&c, Some(work), "в корзине", "https://trash.example/", 0);
+        c.execute("UPDATE nodes SET deleted = 1, deleted_parent = parent, parent = NULL WHERE id = ?1",
+            params![gone]).unwrap();
+        let first  = link(&c, Some(misc), "первая", "https://a.example/page", 0);
+        link(&c, Some(work), "вторая", "https://a.example/page", 1);
+        let rooted = link(&c, None, "в корне", "https://root.example/", 2);
+
+        let hit = find_live_bookmark_by_url(&c, "  https://a.example/page ").unwrap()
+            .expect("совпадение есть");
+        assert_eq!((hit.id, hit.folder_title.as_deref()),
+                   (first, Some("Разное")), "первое по id, с его папкой");
+
+        let hit = find_live_bookmark_by_url(&c, "https://root.example/").unwrap().expect("в корне");
+        assert_eq!((hit.id, hit.folder_title), (rooted, None));
+
+        assert!(find_live_bookmark_by_url(&c, "https://trash.example/").unwrap().is_none(),
+                "ссылка из корзины дублем не считается");
+        for other in ["https://a.example/page/", "https://A.example/page", "http://a.example/page"] {
+            assert!(find_live_bookmark_by_url(&c, other).unwrap().is_none(),
+                    "{other}: правило окна — точное совпадение");
+        }
     }
 
     /// Подзапрос count обязан идти по покрывающему индексу: без него SQLite

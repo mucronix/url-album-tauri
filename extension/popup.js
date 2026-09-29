@@ -166,7 +166,14 @@ async function init() {
       } else if (!r.ok) {
         setStatus(`Ошибка ${r.status}`, 'error');
       } else {
-        setStatus('Добавлено ✓', 'ok');
+        // При «не допускать дублей» программа не добавляет уже известный адрес
+        // и отвечает status: "exists" с названием папки (null — корень).
+        const res = await r.json().catch(() => ({}));
+        if (res.status === 'exists') {
+          setStatus(res.folder ? `Уже есть в папке «${res.folder}»` : 'Уже есть в корне');
+        } else {
+          setStatus('Добавлено ✓', 'ok');
+        }
       }
     } catch {
       setStatus(MSG_NO_APP, 'error');
