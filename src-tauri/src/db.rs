@@ -59,6 +59,12 @@ pub fn init(conn: &Connection) -> Result<()> {
     // Migration: add soft-delete columns if absent
     conn.execute("ALTER TABLE nodes ADD COLUMN deleted INTEGER DEFAULT 0", []).ok();
     conn.execute("ALTER TABLE nodes ADD COLUMN deleted_parent INTEGER", []).ok();
+    // Покрывающий индекс для `count` в tree_select: в idx_parent нет `deleted`,
+    // и без него подзапрос читал строку таблицы на каждую ссылку (на 91 тыс.
+    // ссылок — больше половины времени get_tree). Только после миграции `deleted`.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_parent_live ON nodes (parent, kind, deleted)", [],
+    )?;
     // Открывать через: обработчик открытия для папки (NULL/ключ браузера/custom:путь)
     conn.execute("ALTER TABLE nodes ADD COLUMN opener TEXT", []).ok();
     Ok(())
@@ -1135,6 +1141,75 @@ mod tests {
             assert_eq!(serde_json::to_value(n).unwrap(), tree[&n.id], "узел {} расходится с get_tree", n.id);
         }
         assert_eq!(got[1].count, 1, "count папки A без удалённой ссылки");
+    }
+
+    /// `count` — только ссылки непосредственно в папке: в дереве живые (включая
+    /// старые строки с deleted = NULL), в корзине удалённые. Строки «удалённая,
+    /// но parent на живую папку» и «живая, но parent на удалённую» штатным путём
+    /// не возникают — они здесь, чтобы проверить условие на deleted с обеих сторон.
+    #[test]
+    fn tree_count_live_and_trash() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let set_deleted = |id: i64, detach: bool| {
+            let sql = if detach { "UPDATE nodes SET deleted = 1, deleted_parent = parent, parent = NULL WHERE id = ?1" }
+                      else      { "UPDATE nodes SET deleted = 1 WHERE id = ?1" };
+            c.execute(sql, params![id]).unwrap();
+        };
+        let a  = folder(&c, None, "A", 0);
+        let s  = folder(&c, Some(a), "S", 0);
+        link(&c, Some(a), "a1", "https://a1.example", 1);
+        link(&c, Some(a), "a2", "https://a2.example", 2);
+        let a3 = link(&c, Some(a), "a3", "https://a3.example", 3);
+        let a4 = link(&c, Some(a), "a4", "https://a4.example", 4);
+        let a5 = link(&c, Some(a), "a5", "https://a5.example", 5);
+        link(&c, Some(s), "s1", "https://s1.example", 1);
+        // Папка D с содержимым удалена так, как это делает delete_folder
+        let d  = folder(&c, Some(a), "D", 6);
+        let dd = folder(&c, Some(d), "DD", 0);
+        let d1 = link(&c, Some(d), "d1", "https://d1.example", 1);
+        let d2 = link(&c, Some(d), "d2", "https://d2.example", 2);
+        let d3 = link(&c, Some(d), "d3", "https://d3.example", 3);
+        let dd1 = link(&c, Some(dd), "dd1", "https://dd1.example", 1);
+
+        set_deleted(a3, true);                                    // ссылка удалена сама по себе
+        c.execute("UPDATE nodes SET deleted = NULL WHERE id = ?1", params![a4]).unwrap(); // старая строка
+        set_deleted(a5, false);                                   // удалена, parent остался A
+        for id in [dd, d1, d2, dd1] { set_deleted(id, false); }   // потомки D (d3 оставлен живым)
+        set_deleted(d, true);
+
+        let counts = |nodes: Vec<TreeNode>| -> std::collections::HashMap<i64, i64> {
+            nodes.into_iter().map(|n| (n.id, n.count)).collect()
+        };
+        let tree = counts(get_tree(&c).unwrap());
+        assert_eq!(tree[&a], 3, "A: a1, a2 и a4 (deleted = NULL); без a3, a5, папок S и D");
+        assert_eq!(tree[&s], 1, "S: s1");
+        let nodes = counts(get_nodes(&c, &[a, s]).unwrap());
+        assert_eq!((nodes[&a], nodes[&s]), (3, 1), "get_nodes считает так же, как get_tree");
+
+        let trash = counts(get_trash(&c).unwrap());
+        assert_eq!(trash[&d], 2, "D в корзине: d1 и d2, без живой d3 и папки DD");
+        assert_eq!(trash[&dd], 1, "DD в корзине: dd1");
+        assert_eq!(trash[&a3], 0, "у ссылки count = 0");
+        let _ = d3;
+    }
+
+    /// Подзапрос count обязан идти по покрывающему индексу: без него SQLite
+    /// читает строку таблицы на каждую ссылку, и get_tree на 91 тыс. ссылок
+    /// тратит на count больше половины времени. Ловит и пропажу индекса, и
+    /// новое условие в подзапросе, которого в индексе нет.
+    #[test]
+    fn tree_count_uses_covering_index() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        for (trash, filter) in [(false, "WHERE (deleted IS NULL OR deleted = 0)"), (true, "WHERE deleted = 1")] {
+            let sql = format!("EXPLAIN QUERY PLAN {} {filter} ORDER BY sort_idx, id", tree_select(trash));
+            let mut st = c.prepare(&sql).unwrap();
+            let plan: Vec<String> = st.query_map([], |r| r.get::<_, String>(3)).unwrap()
+                .map(|x| x.unwrap()).collect();
+            assert!(plan.iter().any(|l| l.contains("SEARCH b USING COVERING INDEX idx_parent_live")),
+                "trash={trash}: подзапрос count не покрыт индексом, план: {plan:?}");
+        }
     }
 
     /// Дети родителя в том порядке, в каком их покажет интерфейс: по sort_idx,
