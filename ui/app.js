@@ -181,19 +181,29 @@ function saveOpenState() {
   );
 }
 
+// Дерево ленивое: вложенная папка может быть ещё не построена, поэтому путь
+// к каждой строится явно. Порядок openIds тогда не важен, а открытая папка
+// внутри свёрнутой остаётся открытой, как было до ленивого дерева.
 function restoreOpenState(openIds) {
   openIds.forEach(id => {
-    const item = treeEl.querySelector(`.tree-item[data-id="${id}"]`);
-    if (!item) return;
-    const ch = item.parentElement?.querySelector(':scope > .tree-children');
-    if (ch) { ch.classList.add('open'); item.classList.add('open'); }
+    const item = ensureTreePath(id);
+    if (item) openTreeFolder(item);
   });
 }
 
 // ── Inline folder rename ───────────────────────────────────────────────────────
 
 function startInlineRename(folderId) {
-  const item = treeEl.querySelector(`.tree-item[data-id="${folderId}"]`);
+  // Из правой панели папка может лежать в свёрнутой или ещё не построенной
+  // ветке — поле ввода в скрытом блоке не получает фокус, и переименование
+  // молча не происходит. Раскрываем путь, чтобы строка стала видимой;
+  // видимую не трогаем — иначе аккордеон свернул бы соседние ветки.
+  let item = treeEl.querySelector(`.tree-item[data-id="${folderId}"]`);
+  if (!item || !item.offsetParent) {
+    expandTreePath(folderId);
+    item = treeEl.querySelector(`.tree-item[data-id="${folderId}"]`);
+    item?.scrollIntoView({ block: 'nearest' });
+  }
   if (!item) return;
   const labelEl = item.querySelector('.label');
   if (!labelEl) return;
@@ -264,8 +274,7 @@ async function createFolderAndRename(parentId) {
     // If subfolder — expand parent
     if (parentId != null) {
       const parentItem = treeEl.querySelector(`.tree-item[data-id="${parentId}"]`);
-      const ch = parentItem?.parentElement?.querySelector(':scope > .tree-children');
-      if (ch) { ch.classList.add('open'); parentItem?.classList.add('open'); }
+      if (parentItem) openTreeFolder(parentItem);
     }
 
     await selectFolder(newId);
@@ -365,6 +374,8 @@ async function runChecker() {
       chkBarFill.style.width   = Math.round(_ck.done / total * 100) + "%";
 
       if (!r.ok) {
+        // Строка может быть в ещё не построенной ветке — метку берёт createTreeNode
+        _brokenIds.add(b.id);
         treeEl.querySelector(`.tree-item[data-id="${b.id}"]`)?.classList.add("broken");
       }
       addCheckerRow(r, b.title);
@@ -772,6 +783,15 @@ function collectSubtreeIds(folderId) {
   return ids;
 }
 
+// Ленивое дерево строит детей из node.children, заполненного в buildTree.
+// Точечное удаление без renderTree обязано убрать узел и оттуда, иначе при
+// первом раскрытии родителя удалённое снова появится в дереве.
+function _detachTreeChild(parentId, id) {
+  if (parentId == null) return;
+  const parent = allNodes.find(n => n.id === parentId);
+  if (parent?.children) parent.children = parent.children.filter(c => c.id !== id);
+}
+
 function removeSubtreeFromState(ids) {
   for (let i = allNodes.length - 1; i >= 0; i--) {
     if (ids.has(allNodes[i].id)) allNodes.splice(i, 1);
@@ -790,6 +810,7 @@ function deleteFolder(node) {
     await invoke("delete_folder", { id: node.id }).catch(console.error);
 
     removeSubtreeFromState(ids);
+    _detachTreeChild(node.parent, node.id);
 
     // Surgical: remove folder wrapper (takes tree-children with it)
     treeEl.querySelector(`.tree-item[data-id="${node.id}"]`)?.parentElement?.remove();
@@ -1409,6 +1430,7 @@ function deleteBookmark(node) {
     const idx = allNodes.findIndex(n => n.id === node.id);
     if (idx >= 0) allNodes.splice(idx, 1);
     allFolders = allNodes.filter(n => n.kind === "folder");
+    _detachTreeChild(node.parent, node.id);
 
     // Surgical DOM update — no renderTree(), no collapse
     decrementFolderBadge(node.parent);
@@ -1659,8 +1681,7 @@ function openMoveToDialog(node) {
       restoreOpenState(openIds);
       if (newParent !== null) {
         const ti = treeEl.querySelector(`.tree-item[data-id="${newParent}"]`);
-        const ch = ti?.parentElement?.querySelector(':scope > .tree-children');
-        if (ti && ch) { ch.classList.add('open'); ti.classList.add('open'); }
+        if (ti) openTreeFolder(ti);
       }
       if (activeFolderId != null) await loadFolderContents(activeFolderId);
     } catch(e) {
@@ -2667,12 +2688,7 @@ function handleToolbarAction(id) {
   if (!cmd) return;
   // Special local actions (not going through handleMenuAction)
   if (id === 'toggle-expand-all') {
-    const anyOpen = !!treeEl.querySelector('.tree-children.open');
-    treeEl.querySelectorAll('.tree-children').forEach(el => {
-      el.classList.toggle('open', !anyOpen);
-      el.previousElementSibling?.classList.toggle('open', !anyOpen);
-    });
-    _syncExpandToggleUI();
+    toggleExpandAll();
     return;
   }
   if (id === 'move-up')   { tbMoveItem(-1); return; }
@@ -3417,15 +3433,9 @@ function handleMenuAction(action) {
     case 'new-subfolder':
       doNewSubfolder();
       break;
-    case 'toggle-expand-all': {
-      const anyOpen = !!treeEl.querySelector('.tree-children.open');
-      treeEl.querySelectorAll('.tree-children').forEach(el => {
-        el.classList.toggle('open', !anyOpen);
-        el.previousElementSibling?.classList.toggle('open', !anyOpen);
-      });
-      _syncExpandToggleUI();
+    case 'toggle-expand-all':
+      toggleExpandAll();
       break;
-    }
     case 'settings':
       openSettingsDialog();
       break;
@@ -4322,8 +4332,7 @@ async function _doDrop(targetFolderId) {
     restoreOpenState(openIds);
     if (targetFolderId !== null) {
       const ti = treeEl.querySelector(`.tree-item[data-id="${targetFolderId}"]`);
-      const ch = ti?.parentElement?.querySelector(':scope > .tree-children');
-      if (ti && ch) { ch.classList.add('open'); ti.classList.add('open'); }
+      if (ti) openTreeFolder(ti);
     }
     if (activeFolderId != null) await loadFolderContents(activeFolderId);
   } catch(e) { console.error('move_node:', e); }
@@ -4415,12 +4424,9 @@ function _initDragDrop() {
         _clearDragOver();
         targetEl.classList.add(wantClass);
         if (wantClass === 'drag-over') {
-          const childrenEl = targetEl.parentElement?.querySelector(':scope > .tree-children');
-          if (childrenEl && !childrenEl.classList.contains('open')) {
-            _dragExpandTimer = setTimeout(() => {
-              childrenEl.classList.add('open');
-              targetEl.classList.add('open');
-            }, 650);
+          // Дети могут быть ещё не построены — признак берётся из сборщика
+          if (_treeChildBuilders.has(targetEl) && !targetEl.classList.contains('open')) {
+            _dragExpandTimer = setTimeout(() => openTreeFolder(targetEl), 650);
           }
         }
       }
@@ -4430,12 +4436,8 @@ function _initDragDrop() {
       if (!targetEl.classList.contains('drag-over')) {
         _clearDragOver();
         targetEl.classList.add('drag-over');
-        const childrenEl = targetEl.parentElement?.querySelector(':scope > .tree-children');
-        if (childrenEl && !childrenEl.classList.contains('open')) {
-          _dragExpandTimer = setTimeout(() => {
-            childrenEl.classList.add('open');
-            targetEl.classList.add('open');
-          }, 650);
+        if (_treeChildBuilders.has(targetEl) && !targetEl.classList.contains('open')) {
+          _dragExpandTimer = setTimeout(() => openTreeFolder(targetEl), 650);
         }
       }
     }
@@ -4545,6 +4547,12 @@ function _makeFolderDropTarget(_el, _folderId, _childrenEl) {}
 
 // ── Tree ──────────────────────────────────────────────────────────────────
 
+// Folders always above bookmarks within each level
+function foldersFirst(a, b) {
+  if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
+  return (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id;
+}
+
 function buildTree() {
   const map = new Map();
   for (const n of allNodes) { n.children = []; map.set(n.id, n); }
@@ -4555,11 +4563,6 @@ function buildTree() {
     else map.get(n.parent)?.children.push(map.get(n.id));
   }
 
-  // Folders always above bookmarks within each level
-  const foldersFirst = (a, b) => {
-    if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
-    return (a.sort_idx ?? 0) - (b.sort_idx ?? 0) || a.id - b.id;
-  };
   roots.sort(foldersFirst);
   for (const node of map.values()) node.children.sort(foldersFirst);
 
@@ -4605,8 +4608,19 @@ function appendTrashNode() {
   treeEl.appendChild(wrap);
 }
 
+// Ленивое дерево: у папки сначала строится только строка, а .tree-children —
+// при первом раскрытии (ensureTreeChildren), и дальше остаётся в DOM. На базе
+// в 91 тыс. ссылок полная постройка давала ~460 тыс. элементов и десятки тысяч
+// картинок в свёрнутых папках. Сборщик детей хранится здесь, ключ — строка папки.
+let _treeChildBuilders = new WeakMap();
+// Метки «битая ссылка» от проверки ссылок: строка может быть ещё не построена,
+// createTreeNode берёт метку отсюда. Полная перестройка стирает их, как и раньше.
+const _brokenIds = new Set();
+
 function renderTree() {
   const roots = buildTree();
+  _treeChildBuilders = new WeakMap();
+  _brokenIds.clear();
   treeEl.innerHTML = "";
   for (const node of roots) {
     treeEl.appendChild(createTreeNode(node, 0));
@@ -4671,26 +4685,27 @@ function createTreeNode(node, depth) {
       item.appendChild(badge);
     }
 
+    // Дети строятся при первом раскрытии. Список и порядок берутся в этот
+    // момент: удаление и sortFolder без renderTree правят node.children и
+    // sort_idx, а не DOM ещё не построенной папки.
     let childrenEl = null;
     if (node.children.length > 0) {
-      childrenEl = document.createElement("div");
-      childrenEl.className = "tree-children";
-      for (const child of node.children) {
-        childrenEl.appendChild(createTreeNode(child, depth + 1));
-      }
-      wrap.appendChild(childrenEl);
+      _treeChildBuilders.set(item, () => {
+        if (childrenEl) return childrenEl;
+        childrenEl = document.createElement("div");
+        childrenEl.className = "tree-children";
+        for (const child of [...node.children].sort(foldersFirst)) {
+          childrenEl.appendChild(createTreeNode(child, depth + 1));
+        }
+        wrap.appendChild(childrenEl);
+        return childrenEl;
+      });
     }
-
-    // ── Drop target (folders only) ──────────────────────────────────────────
-    _makeFolderDropTarget(item, node.id, childrenEl);
 
     // Click on [+]/[-] box — toggle open/close only
     arrow.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (!childrenEl) return;
-      const opening = !childrenEl.classList.contains("open");
-      childrenEl.classList.toggle("open", opening);
-      item.classList.toggle("open", opening);
+      toggleTreeFolder(item);
     });
 
     // Click on folder label area — highlight + show contents, no toggle
@@ -4704,10 +4719,7 @@ function createTreeNode(node, depth) {
 
     item.addEventListener("dblclick", (e) => {
       e.stopPropagation();
-      if (!childrenEl) return;
-      const opening = !childrenEl.classList.contains("open");
-      childrenEl.classList.toggle("open", opening);
-      item.classList.toggle("open", opening);
+      toggleTreeFolder(item);
     });
 
     item.addEventListener("contextmenu", (e) => {
@@ -4721,6 +4733,7 @@ function createTreeNode(node, depth) {
   } else {
     // Bookmark leaf
     item.className = "tree-item link";
+    if (_brokenIds.has(node.id)) item.classList.add("broken");
 
     const icon = document.createElement("span");
     icon.className = "tree-link-icon";
@@ -4853,6 +4866,75 @@ function getAncestorIds(folderId) {
   return ids;
 }
 
+// ── Lazy tree helpers ─────────────────────────────────────────────────────
+// Строит .tree-children папки при первом вызове (закрытым) и возвращает его;
+// null — у папки нет детей или это не папка дерева (Корзина, ссылка).
+function ensureTreeChildren(item) {
+  const build = _treeChildBuilders.get(item);
+  return build ? build() : null;
+}
+
+function openTreeFolder(item) {
+  const ch = ensureTreeChildren(item);
+  if (ch) { ch.classList.add("open"); item.classList.add("open"); }
+  return ch;
+}
+
+function toggleTreeFolder(item) {
+  const ch = ensureTreeChildren(item);
+  if (!ch) return;
+  const opening = !ch.classList.contains("open");
+  ch.classList.toggle("open", opening);
+  item.classList.toggle("open", opening);
+}
+
+// Строит (не раскрывая) ветки от корня до узла. Возвращает его строку или
+// null, если узла нет в дереве.
+function ensureTreePath(id) {
+  const ancestors = [];
+  let cur = allNodes.find(n => n.id === id)?.parent;
+  while (cur != null) {
+    ancestors.unshift(cur);
+    cur = allFolders.find(f => f.id === cur)?.parent;
+  }
+  for (const aid of ancestors) {
+    const a = treeEl.querySelector(`.tree-item[data-id="${aid}"]`);
+    if (!a) return null;
+    ensureTreeChildren(a);
+  }
+  return treeEl.querySelector(`.tree-item[data-id="${id}"]`);
+}
+
+// «Развернуть/Свернуть все папки». Раскрытие строит всё дерево — по явной
+// команде это допустимо; время уходит в журнал строкой «Замер:».
+function toggleExpandAll() {
+  const anyOpen = !!treeEl.querySelector(".tree-children.open");
+  if (anyOpen) {
+    treeEl.querySelectorAll(".tree-children").forEach(el => {
+      el.classList.remove("open");
+      el.previousElementSibling?.classList.remove("open");
+    });
+    _syncExpandToggleUI();
+    return;
+  }
+  const t0 = performance.now();
+  // Обход в ширину: раскрытая папка строит детей, среди них — следующие папки
+  const queue = [...treeEl.querySelectorAll(":scope > div > .tree-item:not(.link)")];
+  for (let i = 0; i < queue.length; i++) {
+    const ch = openTreeFolder(queue[i]);
+    if (ch) queue.push(...ch.querySelectorAll(":scope > div > .tree-item:not(.link)"));
+  }
+  const t1 = performance.now();
+  _syncExpandToggleUI();
+  nextPaint().then(() => {
+    const t2 = performance.now();
+    logUi(`Замер: развернуть все — построение ${Math.round(t1 - t0)}, ` +
+          `раскладка и кадр ${Math.round(t2 - t1)}, всего ${Math.round(t2 - t0)} мс; ` +
+          `в дереве ${treeEl.getElementsByTagName('*').length} элементов, ` +
+          `${treeEl.getElementsByTagName('img').length} картинок`);
+  });
+}
+
 // Single-branch accordion: close every open branch not on the path to activeFolderId
 function collapseSiblingBranches(activeFolderId) {
   const keep = getAncestorIds(activeFolderId);
@@ -4875,11 +4957,10 @@ function expandTreePath(folderId) {
     ancestors.unshift(cur);
     cur = allFolders.find(f => f.id === cur)?.parent;
   }
+  // Сверху вниз: раскрытие предка строит строку следующего
   for (const id of ancestors) {
     const item = treeEl.querySelector(`.tree-item[data-id="${id}"]`);
-    if (!item) continue;
-    const children = item.parentElement.querySelector(":scope > .tree-children");
-    if (children) { children.classList.add("open"); item.classList.add("open"); }
+    if (item) openTreeFolder(item);
   }
   if (appSettings.accordionTree) collapseSiblingBranches(folderId);
 }
@@ -4911,10 +4992,7 @@ function navigateToResult(result) {
     // expandTreePath only opens ancestors of node.parent, not node.parent itself —
     // open it explicitly so the bookmark leaf is visible in the tree
     const parentItem = treeEl.querySelector(`.tree-item[data-id="${node.parent}"]`);
-    if (parentItem) {
-      const ch = parentItem.parentElement?.querySelector(":scope > .tree-children");
-      if (ch) { ch.classList.add("open"); parentItem.classList.add("open"); }
-    }
+    if (parentItem) openTreeFolder(parentItem);
   }
   _activateTreeItem(node);
   requestAnimationFrame(() => {
@@ -5185,8 +5263,7 @@ treeEl.addEventListener("keydown", (e) => {
       if (node) selectTreeBookmark(node);
     }
   } else if (e.key === "ArrowRight" && focused.dataset.kind === "folder") {
-    const ch = focused.parentElement.querySelector(":scope > .tree-children");
-    if (ch && !ch.classList.contains("open")) { ch.classList.add("open"); focused.classList.add("open"); }
+    openTreeFolder(focused);
   } else if (e.key === "ArrowLeft" && focused.dataset.kind === "folder") {
     const ch = focused.parentElement.querySelector(":scope > .tree-children");
     if (ch?.classList.contains("open")) { ch.classList.remove("open"); focused.classList.remove("open"); }
@@ -5226,8 +5303,7 @@ function selectFolder(folderId, expand = true, noTreeExpand = false) {
   if (folderTreeItem) {
     if (expand) {
       // Force-open the folder itself (navigating from outside the tree)
-      const ch = folderTreeItem.parentElement?.querySelector(":scope > .tree-children");
-      if (ch) { ch.classList.add("open"); folderTreeItem.classList.add("open"); }
+      openTreeFolder(folderTreeItem);
     }
     folderTreeItem.classList.add("active");
     folderTreeItem.scrollIntoView({ block: "nearest" });
@@ -5552,6 +5628,9 @@ function extractDomain(url) {
 
 function setFaviconOnEl(el, src, fallback = '●') {
   const img = document.createElement('img');
+  // Значок грузится, только когда строка близко к видимой области: в дереве
+  // и в правой панели их десятки тысяч. Ставить ДО src.
+  img.loading = 'lazy';
   img.src = src;
   img.className = 'favicon-icon';
   img.onerror = () => { img.remove(); if (!el.firstChild) el.textContent = fallback; };
@@ -5787,10 +5866,7 @@ function navigateToCard(node) {
   if (node.parent != null) {
     expandTreePath(node.parent);
     const parentItem = treeEl.querySelector(`.tree-item[data-id="${node.parent}"]`);
-    if (parentItem) {
-      const ch = parentItem.parentElement.querySelector(":scope > .tree-children");
-      if (ch) { ch.classList.add("open"); parentItem.classList.add("open"); }
-    }
+    if (parentItem) openTreeFolder(parentItem);
   }
   _activateTreeItem(node);
   showInfoBar(node);
@@ -5814,11 +5890,10 @@ function focusTreeLink(node) {
     ancestors.unshift(cur);
     cur = allFolders.find(f => f.id === cur)?.parent ?? null;
   }
-  // Open each ancestor folder
+  // Open each ancestor folder (top-down: opening one builds the next)
   for (const id of ancestors) {
     const item = treeEl.querySelector(`.tree-item[data-id="${id}"]`);
-    const ch   = item?.parentElement?.querySelector(':scope > .tree-children');
-    if (item && ch) { ch.classList.add('open'); item.classList.add('open'); }
+    if (item) openTreeFolder(item);
   }
   // Highlight the link and scroll to it
   _activateTreeItem(node);
