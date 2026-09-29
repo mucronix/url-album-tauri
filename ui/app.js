@@ -845,8 +845,8 @@ function _detachTreeChild(parentId, id) {
   if (parent?.children) parent.children = parent.children.filter(c => c.id !== id);
 }
 
-// Отладочная сверка точечного состояния с базой: Ctrl+Alt+Shift+V, только при
-// включённом журнале. Перечитывает get_tree и сравнивает с allNodes: набор
+// Отладочная сверка точечного состояния с базой: «Справка → Сверить с базой»
+// или Ctrl+Alt+Shift+V (runVerifyState), только при включённом журнале. Перечитывает get_tree и сравнивает с allNodes: набор
 // узлов, поля, node.children, порядок построенных веток дерева, бейджи, «+»
 // у папок и порядок строк правой панели. Итог — одна строка журнала.
 async function _verifyState() {
@@ -919,7 +919,30 @@ async function _verifyState() {
   logUi(errs.length === 0
     ? `Сверка: совпадает, ${fresh.length} узлов, ${ms} мс`
     : `Сверка: ${errs.length} расхождений, ${ms} мс; первые: ${errs.slice(0, 20).join('; ')}`);
-  setStatus(errs.length === 0 ? 'Сверка: совпадает' : `Сверка: ${errs.length} расхождений — см. журнал`);
+  return { nodes: fresh.length, errors: errs.length, ms };
+}
+
+// Запуск сверки из меню «Справка» и по Ctrl+Alt+Shift+V. На большой базе
+// get_tree идёт ~2 с: без отклика человек жмёт повторно, и прогоны шли
+// параллельно, каждый дольше (до 10 с). Поэтому — надпись сразу, один прогон
+// за раз, итог в окне, а не во временной строке состояния.
+let _verifyRunning = false;
+async function runVerifyState() {
+  if (!appSettings.logEnabled || _verifyRunning) return;
+  _verifyRunning = true;
+  setStatus('Сверка…', { sticky: true });
+  try {
+    const r = await _verifyState();
+    showNotice('Сверка с базой', r.errors === 0
+      ? `Совпадает: ${r.nodes} узлов, ${r.ms} мс.`
+      : `Расхождений: ${r.errors} (${r.ms} мс). Подробности — в журнале, строка «Сверка:».`);
+  } catch (err) {
+    logUi(`Сверка: отказ — ${err}`);
+    showNotice('Сверка с базой', `Не удалось: ${err}`);
+  } finally {
+    clearStatus();
+    _verifyRunning = false;
+  }
 }
 
 // ── Точечные обновления без get_tree ────────────────────────────────────────
@@ -2830,6 +2853,9 @@ const MENU_DATA = [
       '---',
       { label: 'Проверить обновления',  icon: 'refresh',  action: 'check-updates' },
       '---',
+      // Отладка: виден только при включённом журнале (_syncDebugMenu)
+      { label: 'Сверить с базой',       icon: 'refresh',  action: 'verify-state', debugOnly: true, shortcut: 'Ctrl+Alt+Shift+V' },
+      { sep: true, debugOnly: true },
       { label: 'О программе',           icon: 'info',     action: 'about'        },
     ]
   },
@@ -3475,15 +3501,17 @@ function buildMenubar() {
     drop.className = 'menu-dropdown';
 
     for (const item of menu.items) {
-      if (item === '---') {
+      if (item === '---' || item.sep) {
         const sep = document.createElement('div');
         sep.className = 'menu-sep';
+        if (item.debugOnly) sep.dataset.debugOnly = '1';
         drop.appendChild(sep);
         continue;
       }
       const entry = document.createElement('div');
       const hasSub = Array.isArray(item.sub);
       entry.className = 'menu-entry' + (item.todo ? ' disabled' : '') + (hasSub ? ' has-sub' : '');
+      if (item.debugOnly) entry.dataset.debugOnly = '1';
 
       const icon = document.createElement('span');
       icon.className = 'entry-icon';
@@ -3546,6 +3574,7 @@ function buildMenubar() {
         group.classList.add('open');
         if (menu.id === 'view') _syncExpandToggleUI();
         if (menu.id === 'file') _populateRecentDbs(drop);
+        if (menu.id === 'help') _syncDebugMenu(drop);
       }
     });
 
@@ -3554,6 +3583,7 @@ function buildMenubar() {
         closeAllMenus();
         group.classList.add('open');
         if (menu.id === 'file') _populateRecentDbs(drop);
+        if (menu.id === 'help') _syncDebugMenu(drop);
       }
     });
   }
@@ -3582,6 +3612,14 @@ function buildMenubar() {
 
 function closeAllMenus() {
   document.querySelectorAll('.menu-group.open').forEach(g => g.classList.remove('open'));
+}
+
+// Отладочные пункты меню — только при включённом журнале: итог сверки и
+// замеры пишутся туда же. Проверяется при каждом открытии меню, поэтому
+// галочка в настройках действует без перезапуска.
+function _syncDebugMenu(drop) {
+  drop.querySelectorAll('[data-debug-only]')
+    .forEach(el => el.classList.toggle('hidden', !appSettings.logEnabled));
 }
 
 function _syncExpandToggleUI() {
@@ -3770,6 +3808,9 @@ function handleMenuAction(action) {
     case 'about':
       openAboutDialog();
       break;
+    case 'verify-state':
+      runVerifyState();
+      break;
 
     case 'close-db':
       invoke('close_db').catch(console.error);
@@ -3808,7 +3849,7 @@ function handleMenuAction(action) {
 document.addEventListener('keydown', e => {
   const _editing = e.target.matches('input,textarea,select') || e.target.isContentEditable;
   if (e.ctrlKey && e.altKey && e.shiftKey && e.code === 'KeyV' && appSettings.logEnabled) {
-    e.preventDefault(); _verifyState().catch(err => logUi(`Сверка: отказ — ${err}`)); return;
+    e.preventDefault(); runVerifyState(); return;
   }
   if (e.altKey && e.key === 'ArrowLeft'  && !_editing) { e.preventDefault(); goBack();    return; }
   if (e.altKey && e.key === 'ArrowRight' && !_editing) { e.preventDefault(); goForward(); return; }
