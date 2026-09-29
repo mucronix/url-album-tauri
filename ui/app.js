@@ -6202,11 +6202,34 @@ gridEl.addEventListener("contextmenu", (e) => {
 });
 
 // ── Browser extension events ──────────────────────────────────────────────
-window.__TAURI__.event.listen('bookmark-added', async () => {
+// Быстрое добавление из расширения: Rust уже вставил ссылку и прислал её id.
+// Папка может оказаться новой — «Новые ссылки» Rust создаёт в корне сам.
+// Возвращает false, если точечно не вышло: тогда полная перезагрузка.
+async function _addBookmarkFromEvent(id) {
+  if (id == null) return false;
+  const [row] = await invoke('get_nodes', { ids: [id] });
+  if (!row || row.parent == null) return false;
+  const [folderRow] = await invoke('get_nodes', { ids: [row.parent] });
+  if (!folderRow) return false;
+  const newFolder = !allNodes.some(n => n.id === folderRow.id);
+  if (newFolder && folderRow.parent != null && !allNodes.some(n => n.id === folderRow.parent)) return false;
+  const [folder, node] = _applyNodeRows([folderRow, row]);
+  if (newFolder) _attachTreeChild(folder.parent, folder);
+  _attachTreeChild(folder.id, node);
+  _updateFolderBadge(folder.id);
+  return true;
+}
+
+window.__TAURI__.event.listen('bookmark-added', async (e) => {
     const t0 = performance.now();
-    await refreshTree();
+    const ok = await _addBookmarkFromEvent(e.payload?.id)
+      .catch(err => { logUi(`ссылка из расширения: точечное обновление не удалось — ${err}`); return false; });
+    if (!ok) { await refreshTree(); return; }
     const t1 = performance.now();
-    nextPaint().then(() => logTiming('ссылка из расширения', t0, t0, t1, t1));
+    const folderId = allNodes.find(n => n.id === e.payload.id)?.parent;
+    if (activeFolderId != null && activeFolderId === folderId) await loadFolderContents(activeFolderId);
+    const t2 = performance.now();
+    nextPaint().then(() => logTiming('ссылка из расширения', t0, t0, t1, t2));
 });
 
 window.__TAURI__.event.listen('extension-add-request', (e) => {
