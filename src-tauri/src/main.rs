@@ -375,6 +375,25 @@ fn get_data_dir(state: tauri::State<AppState>) -> Result<String, String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
+/// Имя файла снимка годится, только если это имя внутри `Data`, без пути:
+/// `..`, разделители и `:` (диск, `C:x`, потоки NTFS) не пропускаются.
+fn thumb_file_name_ok(name: &str) -> bool {
+    !name.is_empty() && name != "." && !name.contains("..")
+        && !name.contains(['/', '\\', ':'])
+}
+
+/// Время изменения файла снимка, миллисекунды Unix — дата рисунка в строке
+/// состояния (в местное время переводит JS). `None` — имя с путём, файла нет
+/// или время не читается.
+#[tauri::command]
+fn get_thumb_time(filename: String, state: tauri::State<AppState>) -> Option<i64> {
+    if !thumb_file_name_ok(&filename) { return None; }
+    let dir = std::path::PathBuf::from(get_data_dir(state).ok()?);
+    let modified = std::fs::metadata(dir.join(&filename)).ok()?.modified().ok()?;
+    let ms = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
+    i64::try_from(ms).ok()
+}
+
 // ── HTTP client / прокси ─────────────────────────────────────────────────────
 
 /// URL для проверки прокси. Тот же хост, что и в фолбэке favicon: раз он
@@ -1043,10 +1062,7 @@ fn store_thumb(
         return Ok(false);
     }
 
-    match conn.execute(
-        "UPDATE nodes SET thumb = ?1 WHERE id = ?2",
-        rusqlite::params![filename, id],
-    ) {
+    match db::set_thumb(&conn, id, filename) {
         Ok(0) => {
             match std::fs::remove_file(data_dir.join(filename)) {
                 Ok(())   => logger::log(&format!(
@@ -3735,6 +3751,7 @@ fn main() {
             checkpoint_db,
             open_file,
             get_data_dir,
+            get_thumb_time,
             fetch_favicon,
             update_node_favicon,
             close_db,
@@ -3774,4 +3791,20 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thumb_file_name_rejects_paths() {
+        assert!(thumb_file_name_ok("123.png"));
+        assert!(thumb_file_name_ok("1234567890.png"));
+        for bad in ["", ".", "..", "../album.db", "..\\album.db", "a..b.png",
+                    "sub/1.png", "sub\\1.png", "/1.png", "\\1.png",
+                    "C:1.png", "C:\\x.png", "1.png:stream"] {
+            assert!(!thumb_file_name_ok(bad), "пропущено: {bad:?}");
+        }
+    }
 }

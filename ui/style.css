@@ -625,15 +625,6 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 #info-bar-url:hover { color: var(--accent); text-decoration: underline; }
 #info-bar-url-row { display: flex; align-items: baseline; gap: 10px; }
 #info-bar-url-row #info-bar-url { flex: 1; min-width: 0; }
-/* Дата добавления — справа от адреса, мелко; пустая (старые ссылки) не видна */
-.created-date {
-  flex-shrink: 0;
-  font-size: calc(var(--ui-font) - 2px);
-  color: var(--text-dim);
-  white-space: nowrap;
-  user-select: text;
-}
-.created-date:empty { display: none; }
 #info-bar-note {
   font-size: calc(var(--ui-font) - 1px);
   color: var(--text2, #555);
@@ -1622,26 +1613,36 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 20px;
+  height: 22px;
   padding: 0 8px;
   background: var(--bg2);
   border-top: 1px solid var(--border);
-  font-size: calc(var(--ui-font) - 3px);
-  color: var(--text-dim);
+  font-size: calc(var(--ui-font) - 1px);
+  color: var(--text);
   flex-shrink: 0;
   overflow: hidden;
   white-space: nowrap;
   gap: 8px;
 }
+/* Счётчики слева, даты ссылки посередине, сообщения справа: крайние делят
+   остаток поровну, поэтому середина стоит по центру, пока хватает места */
 #sb-left {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#sb-right {
+#sb-item {
   flex-shrink: 0;
-  max-width: 50%;
+  display: flex;
+  gap: 16px;
+  user-select: text;
+}
+#sb-item span:empty { display: none; }
+#sb-right {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
 }

@@ -183,12 +183,25 @@ fn tree_node_from_row(row: &rusqlite::Row) -> rusqlite::Result<TreeNode> {
         thumb:   row.get(5)?,
         note:    row.get(6)?,
         created: row.get(7)?,
-        visited: row.get(8)?,
+        // В базе visited лежит как в ua.dat (ДДММГГччммсс) — в UI отдаём в общем
+        // формате, чтобы показ шёл через тот же formatCreated. Неразобранное — как есть.
+        visited: row.get::<_, Option<String>>(8)?
+                    .map(|v| ua_date_to_iso(&v).unwrap_or(v)),
         favicon:  row.get(9)?,
         sort_idx: row.get(10)?,
         count:    row.get(11)?,
         opener:   row.get(12)?,
     })
+}
+
+/// Записать имя нового снимка. `visited` из ua.dat обнуляется тем же запросом:
+/// UI показывает её как дату рисунка, и после пересъёма она осталась бы от
+/// старого снимка — дальше дата рисунка берётся из времени файла.
+pub fn set_thumb(conn: &Connection, id: i64, filename: &str) -> Result<usize> {
+    conn.execute(
+        "UPDATE nodes SET thumb = ?1, visited = NULL WHERE id = ?2",
+        params![filename, id],
+    )
 }
 
 pub fn get_tree(conn: &Connection) -> Result<Vec<TreeNode>> {
@@ -2348,5 +2361,45 @@ mod tests {
         assert_eq!(got("Rust"),   (Some("https://rust-lang.org/".into()), None));
         assert_eq!(got("Пример"), (Some("https://example.com/".into()),
                                    Some("проверка заметки 12345".into())));
+    }
+
+    /// Дата рисунка в строке состояния — visited из ua.dat. В get_tree и
+    /// get_nodes она обязана прийти в общем формате (JS показывает её через
+    /// formatCreated как «ДД.ММ.ГГГГ чч:мм»), неразобранная — как есть.
+    #[test]
+    fn visited_comes_as_iso() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let a = link(&c, None, "a", "https://a.ru", 0);
+        let b = link(&c, None, "b", "https://b.ru", 1);
+        let n = link(&c, None, "n", "https://n.ru", 2);
+        c.execute("UPDATE nodes SET visited = '251208143005' WHERE id = ?1", params![a]).unwrap();
+        c.execute("UPDATE nodes SET visited = 'мусор' WHERE id = ?1", params![b]).unwrap();
+        let tree = get_tree(&c).unwrap();
+        let v = |id: i64| tree.iter().find(|t| t.id == id).unwrap().visited.clone();
+        assert_eq!(v(a).as_deref(), Some("2008-12-25 14:30:05"));
+        assert_eq!(v(b).as_deref(), Some("мусор"));
+        assert_eq!(v(n), None);
+        let one = get_nodes(&c, &[a]).unwrap();
+        assert_eq!(one[0].visited.as_deref(), Some("2008-12-25 14:30:05"));
+    }
+
+    /// Новый снимок: visited от старого обязана пропасть, иначе внизу осталась
+    /// бы дата снимка из ua.dat. Соседние ссылки не трогаются.
+    #[test]
+    fn set_thumb_clears_visited() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let a = link(&c, None, "a", "https://a.ru", 0);
+        let b = link(&c, None, "b", "https://b.ru", 1);
+        c.execute("UPDATE nodes SET visited = '251208143005', thumb = 'old.png'", []).unwrap();
+        assert_eq!(set_thumb(&c, a, &format!("{a}.png")).unwrap(), 1);
+        let row = |id: i64| -> (Option<String>, Option<String>) {
+            c.query_row("SELECT thumb, visited FROM nodes WHERE id = ?1", params![id],
+                        |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        assert_eq!(row(a), (Some(format!("{a}.png")), None));
+        assert_eq!(row(b), (Some("old.png".into()), Some("251208143005".into())));
+        assert_eq!(set_thumb(&c, 9999, "x.png").unwrap(), 0);
     }
 }

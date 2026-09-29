@@ -1546,10 +1546,13 @@ async function refreshThumb(node) {
 
 function _applyThumbToCard(id, title, newPath) {
   const n = allNodes.find(n => n.id === id);
-  if (n) n.thumb = newPath;
+  // visited в базе обнулил store_thumb — дата рисунка теперь по файлу
+  if (n) { n.thumb = newPath; n.visited = null; }
   // Если эта ссылка открыта в detail-view — обновить картинку сразу, без клика
   if (activeBookmarkNode?.id === id) {
     activeBookmarkNode.thumb = newPath;
+    activeBookmarkNode.visited = null;
+    _showItemStatus(activeBookmarkNode);
     detailImgEl.src = convertFileSrc(thumbFilePath(newPath)) + '?v=' + Date.now();
     detailImgEl.style.display = '';
     detailNoImgEl.style.display = 'none';
@@ -1581,6 +1584,7 @@ async function clearThumb(node) {
   // Update detail view
   if (activeBookmarkNode?.id === node.id) {
     activeBookmarkNode.thumb = null;
+    _showItemStatus(activeBookmarkNode);
     detailImgEl.style.display  = "none";
     detailNoImgEl.style.display = "";
     setNoImgPlaceholder({ ...node, thumb: null });
@@ -1778,10 +1782,31 @@ function formatCreated(s) {
   return m ? `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}` : '';
 }
 
-function _showCreated(el, node) {
-  const d = formatCreated(node?.created);
-  el.textContent = d;
-  el.title = d ? `Добавлена ${d}` : '';
+// То же «ДД.ММ.ГГГГ чч:мм» для Date (время файла снимка, местное).
+function formatLocalDate(d) {
+  const p = (x) => String(x).padStart(2, '0');
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// Середина строки состояния, как в старом URL-Album: «Добавлено» и «Рисунок»
+// выделенной ссылки; null — очистить. Дата рисунка — visited из ua.dat
+// (store_thumb обнуляет её при новом снимке), иначе время файла снимка.
+// Ответ get_thumb_time приходит позже: если выделение за это время сменилось,
+// он отбрасывается по номеру вызова.
+let _sbItemSeq = 0;
+function _showItemStatus(node) {
+  const seq = ++_sbItemSeq;
+  const n = node ? (allNodes.find(x => x.id === node.id) ?? node) : null;
+  const created = formatCreated(n?.created);
+  const thumbEl = document.getElementById('sb-thumb');
+  document.getElementById('sb-created').textContent = created ? `Добавлено: ${created}` : '';
+  thumbEl.textContent = '';
+  if (!n?.thumb) return;
+  const visited = formatCreated(n.visited);
+  if (visited) { thumbEl.textContent = `Рисунок: ${visited}`; return; }
+  invoke('get_thumb_time', { filename: n.thumb }).then(ms => {
+    if (seq === _sbItemSeq && ms != null) thumbEl.textContent = `Рисунок: ${formatLocalDate(new Date(ms))}`;
+  }).catch(() => {});
 }
 
 // ── Link properties dialog ─────────────────────────────────────────────────
@@ -5570,7 +5595,7 @@ function showDetailView(node) {
 
   detailUrlEl.textContent = url;
   detailUrlEl.title = url;
-  _showCreated(document.getElementById('detail-date'), node);
+  _showItemStatus(node);
 
   const detailFavEl = document.getElementById('detail-favicon');
   if (detailFavEl) {
@@ -5632,7 +5657,7 @@ function showInfoBar(node) {
   const url = node.url || '';
   infoBarUrl.textContent = url;
   infoBarUrl.title = url;
-  _showCreated(document.getElementById('info-bar-date'), node);
+  _showItemStatus(node);
   _renderNoteBox(infoBarNote, node);
   infoBarEl.classList.remove('hidden');
   infoBarUrl.onclick = () => { if (url) openWithBrowser(url, resolveOpenerForNode(node)); };
@@ -5640,6 +5665,7 @@ function showInfoBar(node) {
 
 function hideInfoBar() {
   commitNoteEdit();
+  _showItemStatus(null);
   infoBarEl?.classList.add('hidden');
 }
 
