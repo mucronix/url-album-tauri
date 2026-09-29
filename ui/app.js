@@ -6887,12 +6887,18 @@ window.__TAURI__.event.listen('extension-add-request', (e) => {
     openNewItemDlg('link', { url, title, prefillFolderId: folder_id ?? null });
 });
 
-// Трей: «Добавить из буфера». РИСК 3: окно получает фокус асинхронно — даём небольшую
-// задержку, иначе navigator.clipboard.readText() может прийти пустым. Если буфер будет
-// приходить пустым — перейти на чтение в Rust (arboard) с готовым текстом в payload.
+// Трей, F8 и доп. хоткей: «Добавить из буфера». Буфер читает Rust (clipboard_text):
+// navigator.clipboard.readText() в WebView2 показывает запрос разрешения и забирает
+// фокус. Фокус окна Rust-чтению не нужен — прежняя задержка 150 мс снята.
+// Буфер занят другой программой — окно всё равно открывается, с пустым адресом.
 window.__TAURI__.event.listen('tray-add-from-clipboard', async () => {
-    await new Promise(r => setTimeout(r, 150));
-    const text = await navigator.clipboard.readText().catch(() => '');
+    let text = '';
+    try {
+        text = (await invoke('clipboard_text') ?? '').trim();
+    } catch (err) {
+        logUi(`Добавить из буфера: ${err}`);
+        setStatus('Буфер занят другой программой — вставьте адрес вручную (Ctrl+V)');
+    }
     openNewItemDlg('link', { url: text });
 });
 
