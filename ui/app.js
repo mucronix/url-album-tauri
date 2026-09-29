@@ -289,16 +289,13 @@ function _applyFolderTitle(id, title) {
 async function createFolderAndRename(parentId) {
   try {
     const t0 = performance.now();
-    const openIds = saveOpenState();
     const newId = await invoke('create_folder', { parentId, title: 'Новая папка' });
     const t1 = performance.now();
-    allNodes = await invoke('get_tree');
-    allFolders = allNodes.filter(n => n.kind === 'folder');
+    const [node] = _applyNodeRows(await invoke('get_nodes', { ids: [newId] }));
     const t2 = performance.now();
-    renderTree();
+    if (node) _attachTreeChild(parentId, node);
+    else await refreshTree();   // не должно случаться: узел только что создан
     const t3 = performance.now();
-    restoreOpenState(openIds);
-    const t4 = performance.now();
 
     // If subfolder — expand parent
     if (parentId != null) {
@@ -314,8 +311,8 @@ async function createFolderAndRename(parentId) {
     await nextPaint();
     const t6 = performance.now();
     const ms = (a, b) => Math.round(b - a);
-    logUi(`Замер: создание папки — create_folder ${ms(t0, t1)}, get_tree ${ms(t1, t2)}, ` +
-          `renderTree ${ms(t2, t3)}, restoreOpenState ${ms(t3, t4)}, selectFolder ${ms(t4, t5)}, ` +
+    logUi(`Замер: создание папки — create_folder ${ms(t0, t1)}, get_nodes ${ms(t1, t2)}, ` +
+          `вставка в дерево ${ms(t2, t3)}, selectFolder ${ms(t3, t5)}, ` +
           `раскладка и кадр ${ms(t5, t6)}, всего ${ms(t0, t6)} мс`);
   } catch(e) { console.error(e); }
 }
@@ -913,6 +910,89 @@ async function _verifyState() {
     ? `Сверка: совпадает, ${fresh.length} узлов, ${ms} мс`
     : `Сверка: ${errs.length} расхождений, ${ms} мс; первые: ${errs.slice(0, 20).join('; ')}`);
   setStatus(errs.length === 0 ? 'Сверка: совпадает' : `Сверка: ${errs.length} расхождений — см. журнал`);
+}
+
+// ── Точечные обновления без get_tree ────────────────────────────────────────
+// Строки из get_nodes — в allNodes: замена полей по id или вставка нового узла.
+// sort_idx и count берутся только отсюда, не вычисляются в JS: Rust ставит
+// MAX(sort_idx)+1 по всем детям родителя, а у корня в MAX попадает и корзина.
+// Возвращает узлы allNodes в порядке строк.
+function _applyNodeRows(rows) {
+  const byId = new Map(allNodes.map(n => [n.id, n]));
+  const out = rows.map(r => {
+    const n = byId.get(r.id);
+    if (n) return Object.assign(n, r);   // children у строки нет — остаются прежние
+    const fresh = { ...r, children: [] };
+    allNodes.push(fresh);
+    return fresh;
+  });
+  allFolders = allNodes.filter(n => n.kind === 'folder');
+  updateStatusLeft();
+  return out;
+}
+
+// Отступ строки дерева — по числу предков, как в createTreeNode.
+function _treeDepth(node) {
+  return node.parent == null ? 0 : getAncestorIds(node.parent).size + 1;
+}
+
+// Бейдж папки в дереве по node.count; строки нет — ничего не делать.
+function _updateFolderBadge(id) {
+  if (id == null) return;
+  const n    = allNodes.find(x => x.id === id);
+  const item = treeEl.querySelector(`.tree-item[data-id="${id}"]`);
+  if (!n || !item) return;
+  let badge = item.querySelector(':scope > .tree-count');
+  if (n.count > 0) {
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'tree-count';
+      item.appendChild(badge);
+    }
+    badge.textContent = n.count;
+  } else {
+    badge?.remove();
+  }
+}
+
+// Пара к _detachTreeChild: узел — в parent.children и, если ветка родителя
+// уже построена, строкой в нужное место (по foldersFirst). Не построена —
+// ленивая сборка подхватит узел из children. У родителя не было детей —
+// ставится «+» и сборщик ветки.
+function _attachTreeChild(parentId, node) {
+  let siblings;
+  if (parentId != null) {
+    const parent = allNodes.find(n => n.id === parentId);
+    if (!parent) return;
+    if (!parent.children) parent.children = [];
+    if (!parent.children.some(c => c.id === node.id)) parent.children.push(node);
+    siblings = parent.children;
+  } else {
+    siblings = allNodes.filter(n => n.parent == null);
+  }
+
+  let container = treeEl;
+  if (parentId != null) {
+    const pItem = treeEl.querySelector(`.tree-item[data-id="${parentId}"]`);
+    if (!pItem) return;
+    if (!_treeChildBuilders.has(pItem)) {
+      pItem.querySelector(':scope > .arrow').dataset.hasChildren = '1';
+      _installChildBuilder(pItem, allNodes.find(n => n.id === parentId), _treeDepth(node) - 1);
+      return;
+    }
+    container = pItem.parentElement.querySelector(':scope > .tree-children');
+    if (!container) return;
+  }
+  if (container.querySelector(`:scope > div > .tree-item[data-id="${node.id}"]`)) return;
+
+  const byId = new Map(siblings.map(n => [n.id, n]));
+  const before = [...container.children].find(w => {
+    const id = Number(w.querySelector(':scope > .tree-item')?.dataset.id);
+    if (id === -1) return true;                    // Корзина — всегда последней
+    const sib = byId.get(id);
+    return sib && foldersFirst(node, sib) < 0;
+  });
+  container.insertBefore(createTreeNode(node, _treeDepth(node)), before || null);
 }
 
 function removeSubtreeFromState(ids) {
@@ -4777,6 +4857,25 @@ function renderTree(keepMarks = false) {
   updateStatusLeft();
 }
 
+// Дети строятся при первом раскрытии. Список и порядок берутся в этот
+// момент: удаление и sortFolder без renderTree правят node.children и
+// sort_idx, а не DOM ещё не построенной папки. Строка item уже должна
+// лежать в своей обёртке — туда же ляжет .tree-children.
+function _installChildBuilder(item, node, depth) {
+  const wrap = item.parentElement;
+  let childrenEl = null;
+  _treeChildBuilders.set(item, () => {
+    if (childrenEl) return childrenEl;
+    childrenEl = document.createElement("div");
+    childrenEl.className = "tree-children";
+    for (const child of [...node.children].sort(foldersFirst)) {
+      childrenEl.appendChild(createTreeNode(child, depth + 1));
+    }
+    wrap.appendChild(childrenEl);
+    return childrenEl;
+  });
+}
+
 function createTreeNode(node, depth) {
   const wrap = document.createElement("div");
 
@@ -4833,22 +4932,7 @@ function createTreeNode(node, depth) {
       item.appendChild(badge);
     }
 
-    // Дети строятся при первом раскрытии. Список и порядок берутся в этот
-    // момент: удаление и sortFolder без renderTree правят node.children и
-    // sort_idx, а не DOM ещё не построенной папки.
-    let childrenEl = null;
-    if (node.children.length > 0) {
-      _treeChildBuilders.set(item, () => {
-        if (childrenEl) return childrenEl;
-        childrenEl = document.createElement("div");
-        childrenEl.className = "tree-children";
-        for (const child of [...node.children].sort(foldersFirst)) {
-          childrenEl.appendChild(createTreeNode(child, depth + 1));
-        }
-        wrap.appendChild(childrenEl);
-        return childrenEl;
-      });
-    }
+    if (node.children.length > 0) _installChildBuilder(item, node, depth);
 
     // Click on [+]/[-] box — toggle open/close only
     arrow.addEventListener("click", (e) => {
