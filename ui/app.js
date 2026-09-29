@@ -19,6 +19,17 @@ function nextPaint() {
   return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 }
 
+// Строка «Замер:» для правок дерева: изменение в базе (t0→t1), обновление
+// allNodes и дерева (t1→t2), правая панель и выделение (t2→t3), раскладка
+// и кадр (t3→сейчас). Зовётся после nextPaint. Одинаковые фазы до и после
+// перевода на точечные обновления — чтобы замеры сравнивались построчно.
+function logTiming(what, t0, t1, t2, t3) {
+  const t4 = performance.now();
+  const ms = (a, b) => Math.round(b - a);
+  logUi(`Замер: ${what} — в базе ${ms(t0, t1)}, обновление ${ms(t1, t2)}, ` +
+        `панель ${ms(t2, t3)}, раскладка и кадр ${ms(t3, t4)}, всего ${ms(t0, t4)} мс`);
+}
+
 // ── Link checker ─────────────────────────────────────────────────────────
 // Column config: id → CSS-var suffix, label, default width
 const CHK_COLS = [
@@ -1709,7 +1720,9 @@ function openMoveToDialog(node) {
     okBtn.disabled  = true;
     const openIds   = saveOpenState();
     try {
+      const t0 = performance.now();
       await invoke('move_node', { id: _moveToNode.id, newParent });
+      const t1 = performance.now();
       close();
       allNodes   = await invoke('get_tree');
       allFolders = allNodes.filter(n => n.kind === 'folder');
@@ -1722,7 +1735,10 @@ function openMoveToDialog(node) {
         const ti = treeEl.querySelector(`.tree-item[data-id="${newParent}"]`);
         if (ti) openTreeFolder(ti);
       }
+      const t2 = performance.now();
       if (activeFolderId != null) await loadFolderContents(activeFolderId);
+      const t3 = performance.now();
+      nextPaint().then(() => logTiming('«Переместить в…»', t0, t1, t2, t3));
     } catch(e) {
       alert('Ошибка перемещения: ' + e);
     } finally {
@@ -2944,7 +2960,9 @@ function tbMoveItem(dir) {
     const note = noteInput ? noteInput.value : '';
     overlay.classList.add('hidden');
     try {
+      const t0 = performance.now();
       const newId = await invoke('create_bookmark', { parentId: pid, title: name, url, note });
+      const t1 = performance.now();
 
       // Refresh in-memory state (tree badge counts update too)
       const openIds = saveOpenState();
@@ -2952,6 +2970,7 @@ function tbMoveItem(dir) {
       allFolders = allNodes.filter(n => n.kind === 'folder');
       renderTree();
       restoreOpenState(openIds);
+      const t2 = performance.now();
 
       // Reload right panel
       await loadFolderContents(pid);
@@ -2963,6 +2982,8 @@ function tbMoveItem(dir) {
         if (card) { gridSelectRow(card); card.scrollIntoView({ block: 'nearest' }); }
         navigateToCard(newNode);
       }
+      const t3 = performance.now();
+      nextPaint().then(() => logTiming('новая ссылка', t0, t1, t2, t3));
       // Fire-and-forget screenshot (mirrors quick-add via extension)
       if (url) {
         invoke('refresh_thumb', {
@@ -4365,7 +4386,9 @@ async function _doDrop(targetFolderId) {
   if (!_isDragValid(targetFolderId) || !_dragNode) return;
   const openIds = saveOpenState();
   try {
+    const t0 = performance.now();
     await invoke('move_node', { id: _dragNode.id, newParent: targetFolderId });
+    const t1 = performance.now();
     allNodes   = await invoke('get_tree');
     allFolders = allNodes.filter(n => n.kind === 'folder');
     renderTree();
@@ -4374,7 +4397,10 @@ async function _doDrop(targetFolderId) {
       const ti = treeEl.querySelector(`.tree-item[data-id="${targetFolderId}"]`);
       if (ti) openTreeFolder(ti);
     }
+    const t2 = performance.now();
     if (activeFolderId != null) await loadFolderContents(activeFolderId);
+    const t3 = performance.now();
+    nextPaint().then(() => logTiming('перетаскивание', t0, t1, t2, t3));
   } catch(e) { console.error('move_node:', e); }
 }
 
@@ -6009,8 +6035,11 @@ gridEl.addEventListener("contextmenu", (e) => {
 });
 
 // ── Browser extension events ──────────────────────────────────────────────
-window.__TAURI__.event.listen('bookmark-added', () => {
-    refreshTree();
+window.__TAURI__.event.listen('bookmark-added', async () => {
+    const t0 = performance.now();
+    await refreshTree();
+    const t1 = performance.now();
+    nextPaint().then(() => logTiming('ссылка из расширения', t0, t0, t1, t1));
 });
 
 window.__TAURI__.event.listen('extension-add-request', (e) => {
