@@ -363,6 +363,10 @@ struct ExportNode {
     title:  String,
     url:    Option<String>,
     note:   Option<String>,
+    /// created в секундах Unix для ADD_DATE экспорта HTML. Перевод из
+    /// местного времени — в SQL (strftime('%s', created, 'utc')); нет даты
+    /// или она не в нашем формате — None, и атрибут не пишется вовсе.
+    add_date: Option<i64>,
 }
 
 /// Поддерево папки для экспорта. Колонки `thumb` здесь больше нет — её читал
@@ -371,14 +375,16 @@ struct ExportNode {
 /// заполнялась бы именем файла картинки.
 fn get_subtree(conn: &Connection, folder_id: i64) -> Result<Vec<ExportNode>> {
     let mut stmt = conn.prepare(
-        "WITH RECURSIVE sub(id, parent, kind, title, url, note, sort_idx) AS (
-             SELECT id, parent, kind, title, url, note, sort_idx
+        "WITH RECURSIVE sub(id, parent, kind, title, url, note, sort_idx, created) AS (
+             SELECT id, parent, kind, title, url, note, sort_idx, created
              FROM nodes WHERE id = ?1
              UNION ALL
-             SELECT n.id, n.parent, n.kind, n.title, n.url, n.note, n.sort_idx
+             SELECT n.id, n.parent, n.kind, n.title, n.url, n.note, n.sort_idx, n.created
              FROM nodes n JOIN sub s ON n.parent = s.id
          )
-         SELECT id, parent, kind, title, url, note FROM sub ORDER BY sort_idx, id",
+         SELECT id, parent, kind, title, url, note,
+                CAST(strftime('%s', created, 'utc') AS INTEGER)
+         FROM sub ORDER BY sort_idx, id",
     )?;
     let result: Result<Vec<ExportNode>> = stmt.query_map(params![folder_id], |r| Ok(ExportNode {
         id:     r.get(0)?,
@@ -387,8 +393,15 @@ fn get_subtree(conn: &Connection, folder_id: i64) -> Result<Vec<ExportNode>> {
         title:  r.get(3)?,
         url:    r.get(4)?,
         note:   r.get(5)?,
+        // Дописано В КОНЕЦ: индексы 0–5 не сдвигаются
+        add_date: r.get(6)?,
     }))?.collect();
     result
+}
+
+///  ADD_DATE="…" для экспорта; без даты — пусто, атрибута нет совсем.
+fn html_add_date_attr(n: &ExportNode) -> String {
+    n.add_date.map(|s| format!(" ADD_DATE=\"{s}\"")).unwrap_or_default()
 }
 
 fn html_folder(nodes: &[ExportNode], parent: Option<i64>, depth: usize) -> String {
@@ -396,11 +409,11 @@ fn html_folder(nodes: &[ExportNode], parent: Option<i64>, depth: usize) -> Strin
     let mut out = String::new();
     for n in nodes.iter().filter(|n| n.parent == parent) {
         if n.kind == "folder" {
-            out.push_str(&format!("{indent}<DT><H3>{}</H3>\n{indent}<DL><p>\n", n.title));
+            out.push_str(&format!("{indent}<DT><H3{}>{}</H3>\n{indent}<DL><p>\n", html_add_date_attr(n), n.title));
             out.push_str(&html_folder(nodes, Some(n.id), depth + 1));
             out.push_str(&format!("{indent}</DL><p>\n"));
         } else if let Some(ref url) = n.url {
-            out.push_str(&format!("{indent}<DT><A HREF=\"{url}\">{}</A>\n", n.title));
+            out.push_str(&format!("{indent}<DT><A HREF=\"{url}\"{}>{}</A>\n", html_add_date_attr(n), n.title));
         }
     }
     out
@@ -527,6 +540,47 @@ fn html_unescape(s: &str) -> String {
      .replace("&#39;", "'")
 }
 
+// ── Даты источника при импорте ───────────────────────────────────────────────
+// Все форматы сводятся к секундам Unix (UTC), дальше — одно выражение в SQL:
+// COALESCE(datetime(?, 'unixepoch', 'localtime'), datetime('now', 'localtime')).
+// Вне 01.01.1990–01.01.2100 — не дата (нет атрибута, ноль, мусор, другая
+// единица измерения): получает время импорта, а не 1970 и не 1601.
+// Миллисекунды не угадываем — уходят за 2100 год и отсекаются.
+const UNIX_MIN: i64 = 631_152_000;    // 1990-01-01 00:00:00 UTC
+const UNIX_MAX: i64 = 4_102_444_800;  // 2100-01-01 00:00:00 UTC
+
+fn valid_unix(secs: i64) -> Option<i64> {
+    (UNIX_MIN..UNIX_MAX).contains(&secs).then_some(secs)
+}
+
+/// `ADD_DATE="секунды"` в теге `<A …>` или `<H3 …>` (регистр не важен).
+/// Ищем только внутри открывающего тега — в названии ссылки не ищем.
+fn html_add_date(line: &str, tag: &str) -> Option<i64> {
+    let lower = line.to_ascii_lowercase();  // ASCII: позиции байтов те же
+    let start = lower.find(tag)?;
+    let end = start + lower[start..].find('>')?;
+    let attrs = &lower[start..end];
+    let v = attrs.find("add_date=\"")? + "add_date=\"".len();
+    let val = &attrs[v..v + attrs[v..].find('"')?];
+    valid_unix(val.trim().parse::<i64>().ok()?)
+}
+
+/// Chromium `date_added`: микросекунды от 01.01.1601 UTC, строкой или числом.
+fn chromium_date(v: &serde_json::Value) -> Option<i64> {
+    const EPOCH_1601_TO_1970: i64 = 11_644_473_600;
+    let us: i64 = match v {
+        serde_json::Value::String(s) => s.trim().parse().ok()?,
+        serde_json::Value::Number(n) => n.as_i64()?,
+        _ => return None,
+    };
+    valid_unix(us / 1_000_000 - EPOCH_1601_TO_1970)
+}
+
+/// Firefox `moz_bookmarks.dateAdded`: микросекунды Unix.
+fn firefox_date(us: Option<i64>) -> Option<i64> {
+    valid_unix(us? / 1_000_000)
+}
+
 fn extract_h3(line: &str) -> Option<String> {
     let start = line.find("<H3").or_else(|| line.find("<h3"))?;
     let open_end = line[start..].find('>')? + start + 1;
@@ -572,8 +626,9 @@ pub fn import_html(conn: &Connection, html: &str, dest_parent: Option<i64>) -> R
                 let c = sort_counters.entry(parent).or_insert(0);
                 let si = *c; *c += 1;
                 conn.execute(
-                    "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1, 'folder', ?2, ?3, datetime('now', 'localtime'))",
-                    params![parent, &title, si],
+                    "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1, 'folder', ?2, ?3,
+                         COALESCE(datetime(?4, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
+                    params![parent, &title, si, html_add_date(t, "<h3")],
                 )?;
                 count += 1;
                 pending_folder = Some(conn.last_insert_rowid());
@@ -584,8 +639,9 @@ pub fn import_html(conn: &Connection, html: &str, dest_parent: Option<i64>) -> R
                 let c = sort_counters.entry(parent).or_insert(0);
                 let si = *c; *c += 1;
                 conn.execute(
-                    "INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1, 'bookmark', ?2, ?3, ?4, datetime('now', 'localtime'))",
-                    params![parent, &title, &url, si],
+                    "INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1, 'bookmark', ?2, ?3, ?4,
+                         COALESCE(datetime(?5, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
+                    params![parent, &title, &url, si, html_add_date(t, "<a ")],
                 )?;
                 count += 1;
             }
@@ -832,8 +888,9 @@ fn chromium_node(
         Some("folder") => {
             let name = node["name"].as_str().unwrap_or("Папка");
             conn.execute(
-                "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3, datetime('now', 'localtime'))",
-                params![parent, name, *sort],
+                "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3,
+                     COALESCE(datetime(?4, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
+                params![parent, name, *sort, chromium_date(&node["date_added"])],
             )?;
             *sort += 1; *folders += 1;
             let fid = conn.last_insert_rowid();
@@ -849,8 +906,9 @@ fn chromium_node(
             let url  = node["url"].as_str().unwrap_or("");
             if !url.is_empty() {
                 conn.execute(
-                    "INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1,'bookmark',?2,?3,?4, datetime('now', 'localtime'))",
-                    params![parent, name, url, *sort],
+                    "INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1,'bookmark',?2,?3,?4,
+                         COALESCE(datetime(?5, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
+                    params![parent, name, url, *sort, chromium_date(&node["date_added"])],
                 )?;
                 *sort += 1; *links += 1;
             }
@@ -877,8 +935,9 @@ pub fn import_chromium(conn: &Connection, json: &str, browser_name: &str) -> Res
                     if ch.is_empty() { continue; }
                     let name = sect["name"].as_str().unwrap_or(key);
                     conn.execute(
-                        "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3, datetime('now', 'localtime'))",
-                        params![root_id, name, sort],
+                        "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3,
+                             COALESCE(datetime(?4, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
+                        params![root_id, name, sort, chromium_date(&sect["date_added"])],
                     )?;
                     sort += 1; folders += 1;
                     let sid = conn.last_insert_rowid();
@@ -895,9 +954,14 @@ pub fn import_chromium(conn: &Connection, json: &str, browser_name: &str) -> Res
 }
 
 pub fn import_firefox(conn: &Connection, places_path: &str, browser_name: &str) -> Result<(usize, usize)> {
-    let tmp     = std::env::temp_dir().join("ua_ff_tmp.sqlite");
-    let tmp_wal = std::env::temp_dir().join("ua_ff_tmp.sqlite-wal");
-    let tmp_shm = std::env::temp_dir().join("ua_ff_tmp.sqlite-shm");
+    // Имя копии уникально на вызов: с постоянным `ua_ff_tmp.sqlite` два импорта
+    // разом (так идут тесты) удаляли копию друг у друга — «файл занят».
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let base = format!("ua_ff_tmp_{}_{}.sqlite", std::process::id(),
+                       SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let tmp     = std::env::temp_dir().join(&base);
+    let tmp_wal = std::env::temp_dir().join(format!("{base}-wal"));
+    let tmp_shm = std::env::temp_dir().join(format!("{base}-shm"));
 
     std::fs::copy(places_path, &tmp).map_err(to_rq)?;
     for (ext, dst) in &[("-wal", &tmp_wal), ("-shm", &tmp_shm)] {
@@ -911,15 +975,22 @@ pub fn import_firefox(conn: &Connection, places_path: &str, browser_name: &str) 
         "SELECT id FROM moz_bookmarks WHERE parent IS NULL LIMIT 1", [], |r| r.get(0),
     ).unwrap_or(1);
 
-    struct FfNode { id: i64, parent: i64, bk_type: i64, title: Option<String>, fk: Option<i64>, pos: i64 }
+    struct FfNode { id: i64, parent: i64, bk_type: i64, title: Option<String>, fk: Option<i64>, pos: i64,
+                    added: Option<i64> }
 
     let mut stmt = ff.prepare(
-        "SELECT id, COALESCE(parent,0), type, title, fk, COALESCE(position,0) FROM moz_bookmarks ORDER BY parent, position",
+        "SELECT id, COALESCE(parent,0), type, title, fk, COALESCE(position,0), dateAdded FROM moz_bookmarks ORDER BY parent, position",
     ).map_err(to_rq)?;
     let ff_nodes: Vec<FfNode> = {
         let r: rusqlite::Result<Vec<FfNode>> = stmt.query_map([], |r| Ok(FfNode {
             id: r.get(0)?, parent: r.get(1)?, bk_type: r.get(2)?,
             title: r.get(3)?, fk: r.get(4)?, pos: r.get(5)?,
+            // Не строго i64: мусор в колонке не должен ронять весь импорт —
+            // такая дата просто не дата (firefox_date → время импорта)
+            added: match r.get::<_, rusqlite::types::Value>(6)? {
+                rusqlite::types::Value::Integer(us) => Some(us),
+                _ => None,
+            },
         }))?.collect();
         r?
     };
@@ -946,8 +1017,9 @@ pub fn import_firefox(conn: &Connection, places_path: &str, browser_name: &str) 
         match node.bk_type {
             2 => {
                 let title = node.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("Закладки");
-                conn.execute("INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3, datetime('now', 'localtime'))",
-                    params![parent_db, title, node.pos])?;
+                conn.execute("INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3,
+                     COALESCE(datetime(?4, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
+                    params![parent_db, title, node.pos, firefox_date(node.added)])?;
                 id_map.insert(node.id, conn.last_insert_rowid());
                 folders += 1;
             }
@@ -956,8 +1028,9 @@ pub fn import_firefox(conn: &Connection, places_path: &str, browser_name: &str) 
                     if let Some(url) = places.get(&fk) {
                         if !url.starts_with("place:") {
                             let title = node.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(url.as_str());
-                            conn.execute("INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1,'bookmark',?2,?3,?4, datetime('now', 'localtime'))",
-                                params![parent_db, title, url, node.pos])?;
+                            conn.execute("INSERT INTO nodes (parent, kind, title, url, sort_idx, created) VALUES (?1,'bookmark',?2,?3,?4,
+                                 COALESCE(datetime(?5, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
+                                params![parent_db, title, url, node.pos, firefox_date(node.added)])?;
                             links += 1;
                         }
                     }
@@ -1438,11 +1511,11 @@ mod tests {
                 ff.execute_batch(
                     "CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT);
                      CREATE TABLE moz_bookmarks (id INTEGER PRIMARY KEY, parent INTEGER, type INTEGER,
-                                                 title TEXT, fk INTEGER, position INTEGER);
+                                                 title TEXT, fk INTEGER, position INTEGER, dateAdded INTEGER);
                      INSERT INTO moz_places VALUES (10, 'https://a.example/');
-                     INSERT INTO moz_bookmarks VALUES (1, NULL, 2, 'root', NULL, 0);
-                     INSERT INTO moz_bookmarks VALUES (2, 1, 2, 'Меню', NULL, 0);
-                     INSERT INTO moz_bookmarks VALUES (3, 2, 1, 'A', 10, 0);").unwrap();
+                     INSERT INTO moz_bookmarks VALUES (1, NULL, 2, 'root', NULL, 0, NULL);
+                     INSERT INTO moz_bookmarks VALUES (2, 1, 2, 'Меню', NULL, 0, NULL);
+                     INSERT INTO moz_bookmarks VALUES (3, 2, 1, 'A', 10, 0, NULL);").unwrap();
             }
             let (links, _) = import_firefox(c, p.to_str().unwrap(), "Firefox").unwrap();
             let _ = std::fs::remove_file(&p);
@@ -1461,6 +1534,161 @@ mod tests {
             let d: String = c.query_row("SELECT created FROM nodes WHERE title='Старая'", [], |r| r.get(0)).unwrap();
             assert_eq!(d, "2008-03-15 14:25:30", "другая база: своя дата источника");
         });
+    }
+
+    // ── Даты источника при импорте ──────────────────────────────────────────
+    // Известная дата: 1695484800 = 2023-09-23 16:00:00 UTC. В Chromium это
+    // 13339958400000000 (мкс от 1601), в Firefox — 1695484800000000 (мкс Unix).
+    // Ожидание считает сам SQLite (`localtime`) — тест не зависит от пояса.
+    const KNOWN: i64 = 1_695_484_800;
+
+    fn local_of(c: &Connection, secs: i64) -> String {
+        c.query_row("SELECT datetime(?1, 'unixepoch', 'localtime')", [secs], |r| r.get(0)).unwrap()
+    }
+    fn now_local(c: &Connection) -> String {
+        c.query_row("SELECT datetime('now', 'localtime')", [], |r| r.get(0)).unwrap()
+    }
+    fn created_by_title(c: &Connection, t: &str) -> String {
+        c.query_row("SELECT created FROM nodes WHERE title = ?1", [t], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("«{t}»: {e}"))
+    }
+    /// Не дата — время импорта: между «до» и «после» (строки ISO сравнимы).
+    fn assert_import_time(c: &Connection, t: &str, before: &str, after: &str) {
+        let d = created_by_title(c, t);
+        assert!(d.as_str() >= before && d.as_str() <= after,
+                "«{t}»: ожидалось время импорта ({before} … {after}), а стоит {d}");
+    }
+
+    #[test]
+    fn html_import_reads_add_date() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let html = format!(concat!(
+            "<DL><p>\n",
+            "<DT><H3 ADD_DATE=\"{k}\" LAST_MODIFIED=\"1\">Папка</H3>\n",
+            "<DL><p>\n",
+            "<DT><A HREF=\"https://a.example/\" ADD_DATE=\"{k}\" ICON=\"data:x\">Известная</A>\n",
+            "<DT><a href=\"https://b.example/\" add_date=\"{k}\">Строчные</a>\n",
+            "<DT><A HREF=\"https://c.example/\">Без атрибута</A>\n",
+            "<DT><A HREF=\"https://d.example/\" ADD_DATE=\"0\">Ноль</A>\n",
+            "<DT><A HREF=\"https://e.example/\" ADD_DATE=\"abc\">Мусор</A>\n",
+            "<DT><A HREF=\"https://f.example/\" ADD_DATE=\"-5\">Минус</A>\n",
+            "<DT><A HREF=\"https://g.example/\" ADD_DATE=\"{k}000\">Миллисекунды</A>\n",
+            "<DT><A HREF=\"https://h.example/\" ADD_DATE=\"\">Пусто</A>\n",
+            "<DT><A HREF=\"https://i.example/\">ADD_DATE=\"{k}\" в названии</A>\n",
+            "</DL><p>\n</DL><p>\n"), k = KNOWN);
+        let before = now_local(&c);
+        import_html(&c, &html, None).unwrap();
+        let after = now_local(&c);
+
+        let want = local_of(&c, KNOWN);
+        for t in ["Папка", "Известная", "Строчные"] {
+            assert_eq!(created_by_title(&c, t), want, "«{t}»: дата из ADD_DATE");
+        }
+        for t in ["Без атрибута", "Ноль", "Мусор", "Минус", "Миллисекунды", "Пусто",
+                  "ADD_DATE=\"1695484800\" в названии"] {
+            assert_import_time(&c, t, &before, &after);
+        }
+    }
+
+    #[test]
+    fn chromium_import_reads_date_added() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let json = r#"{"roots":{"bookmark_bar":{"name":"Панель","date_added":"13339958400000000","children":[
+            {"type":"folder","name":"Папка","date_added":"13339958400000000","children":[
+                {"type":"url","name":"Строкой","url":"https://a.example/","date_added":"13339958400000000"},
+                {"type":"url","name":"Числом","url":"https://b.example/","date_added":13339958400000000},
+                {"type":"url","name":"Без поля","url":"https://c.example/"},
+                {"type":"url","name":"Ноль","url":"https://d.example/","date_added":"0"},
+                {"type":"url","name":"Мусор","url":"https://e.example/","date_added":"abc"},
+                {"type":"url","name":"Минус","url":"https://f.example/","date_added":"-5"},
+                {"type":"url","name":"Секунды Unix","url":"https://g.example/","date_added":"1695484800"},
+                {"type":"url","name":"Не то","url":"https://h.example/","date_added":true}
+            ]}]}}}"#;
+        let before = now_local(&c);
+        import_chromium(&c, json, "Edge").unwrap();
+        let after = now_local(&c);
+
+        let want = local_of(&c, KNOWN);
+        for t in ["Панель", "Папка", "Строкой", "Числом"] {
+            assert_eq!(created_by_title(&c, t), want, "«{t}»: дата из date_added");
+        }
+        for t in ["Без поля", "Ноль", "Мусор", "Минус", "Секунды Unix", "Не то"] {
+            assert_import_time(&c, t, &before, &after);
+        }
+    }
+
+    #[test]
+    fn firefox_import_reads_date_added() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let p = std::env::temp_dir().join(format!("ua_test_ffdates_{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        {
+            let ff = Connection::open(&p).unwrap();
+            ff.execute_batch(&format!(
+                "CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT);
+                 CREATE TABLE moz_bookmarks (id INTEGER PRIMARY KEY, parent INTEGER, type INTEGER,
+                                             title TEXT, fk INTEGER, position INTEGER, dateAdded INTEGER);
+                 INSERT INTO moz_places VALUES (10,'https://a.example/'),(11,'https://b.example/'),
+                     (12,'https://c.example/'),(13,'https://d.example/'),(14,'https://e.example/'),
+                     (15,'https://f.example/');
+                 INSERT INTO moz_bookmarks VALUES (1, NULL, 2, 'root', NULL, 0, NULL);
+                 INSERT INTO moz_bookmarks VALUES (2, 1, 2, 'Папка', NULL, 0, {us});
+                 INSERT INTO moz_bookmarks VALUES (3, 2, 1, 'Известная', 10, 0, {us});
+                 INSERT INTO moz_bookmarks VALUES (4, 2, 1, 'Без даты', 11, 1, NULL);
+                 INSERT INTO moz_bookmarks VALUES (5, 2, 1, 'Ноль', 12, 2, 0);
+                 INSERT INTO moz_bookmarks VALUES (6, 2, 1, 'Минус', 13, 3, -5);
+                 INSERT INTO moz_bookmarks VALUES (7, 2, 1, 'Секунды', 14, 4, {k});
+                 INSERT INTO moz_bookmarks VALUES (8, 2, 1, 'Мусор', 15, 5, 'abc');",
+                us = KNOWN * 1_000_000, k = KNOWN)).unwrap();
+        }
+        let before = now_local(&c);
+        let res = import_firefox(&c, p.to_str().unwrap(), "Firefox");
+        let after = now_local(&c);
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(res.unwrap().0, 6, "все ссылки разобраны, мусор импорт не уронил");
+
+        let want = local_of(&c, KNOWN);
+        for t in ["Папка", "Известная"] {
+            assert_eq!(created_by_title(&c, t), want, "«{t}»: дата из dateAdded");
+        }
+        for t in ["Без даты", "Ноль", "Минус", "Секунды", "Мусор"] {
+            assert_import_time(&c, t, &before, &after);
+        }
+    }
+
+    /// Круг «экспорт HTML → импорт»: дата возвращается та же. У узлов без
+    /// даты (и с датой не в нашем формате) ADD_DATE нет совсем.
+    #[test]
+    fn html_export_import_keeps_created() {
+        let src = Connection::open_in_memory().unwrap();
+        init(&src).unwrap();
+        let root = folder(&src, None, "Корень", 0);
+        let f  = folder(&src, Some(root), "Папка", 0);
+        let a  = link(&src, Some(f), "С датой", "https://a.example/", 0);
+        link(&src, Some(f), "Без даты", "https://b.example/", 1);
+        let odd = link(&src, Some(f), "Чужой формат", "https://c.example/", 2);
+        src.execute("UPDATE nodes SET created = '2023-09-23 19:00:00' WHERE id = ?1", [f]).unwrap();
+        src.execute("UPDATE nodes SET created = '2021-02-03 04:05:06' WHERE id = ?1", [a]).unwrap();
+        src.execute("UPDATE nodes SET created = 'вчера' WHERE id = ?1", [odd]).unwrap();
+
+        let html = export_html(&src, root).unwrap();
+        for line in html.lines().filter(|l| l.contains("Без даты") || l.contains("Чужой формат")) {
+            assert!(!line.to_ascii_lowercase().contains("add_date"), "лишний ADD_DATE: {line}");
+        }
+        assert_eq!(html.matches("ADD_DATE=\"").count(), 2, "ADD_DATE только у папки и ссылки с датой:\n{html}");
+
+        let dest = Connection::open_in_memory().unwrap();
+        init(&dest).unwrap();
+        let before = now_local(&dest);
+        import_html(&dest, &html, None).unwrap();
+        let after = now_local(&dest);
+        assert_eq!(created_by_title(&dest, "Папка"), "2023-09-23 19:00:00");
+        assert_eq!(created_by_title(&dest, "С датой"), "2021-02-03 04:05:06");
+        assert_import_time(&dest, "Без даты", &before, &after);
+        assert_import_time(&dest, "Чужой формат", &before, &after);
     }
 
     /// Триггер даты из промежуточной сборки мог остаться в файле базы — init
