@@ -3945,6 +3945,18 @@ document.addEventListener('keydown', e => {
 
   // Enter — open URL (when not in input/search)
   if ((e.key === 'Enter' || (e.ctrlKey && e.key === 'Enter')) && !e.target.matches('input,textarea')) {
+    // Выделенная папка в списке (набором букв или правым щелчком) — зайти,
+    // как двойной щелчок. Не при фокусе в дереве: там Enter обрабатывает
+    // сама строка, а в списке может оставаться выделение от прошлого раза.
+    const selCard = gridEl.querySelector(".card.selected");
+    if (!activeBookmarkNode && selCard?.dataset.kind === 'folder'
+        && !gridEl.classList.contains('hidden')
+        && !document.activeElement?.classList.contains('tree-item')
+        && !document.querySelector('.dlg-overlay:not(.hidden)')) {
+      e.preventDefault();
+      selectFolder(parseInt(selCard.dataset.id, 10));
+      return;
+    }
     const n = activeBookmarkNode
       || allNodes.find(n => String(n.id) === gridEl.querySelector(".card.selected")?.dataset.id);
     if (n?.url) { e.preventDefault(); openWithBrowser(n.url, resolveOpenerForNode(n)); }
