@@ -4640,10 +4640,12 @@ let _treeChildBuilders = new WeakMap();
 // createTreeNode берёт метку отсюда. Полная перестройка стирает их, как и раньше.
 const _brokenIds = new Set();
 
-function renderTree() {
+// keepMarks=true — перестройка без смены данных («Свернуть все»): метки
+// проверки ссылок сохраняются, как сохранялись при простом снятии классов.
+function renderTree(keepMarks = false) {
   const roots = buildTree();
   _treeChildBuilders = new WeakMap();
-  _brokenIds.clear();
+  if (!keepMarks) _brokenIds.clear();
   treeEl.innerHTML = "";
   for (const node of roots) {
     treeEl.appendChild(createTreeNode(node, 0));
@@ -4933,11 +4935,27 @@ function ensureTreePath(id) {
 function toggleExpandAll() {
   const anyOpen = !!treeEl.querySelector(".tree-children.open");
   if (anyOpen) {
-    treeEl.querySelectorAll(".tree-children").forEach(el => {
-      el.classList.remove("open");
-      el.previousElementSibling?.classList.remove("open");
-    });
+    // Снятие класса с тысяч раскрытых веток стоило 10–13 с раскладки.
+    // Свёрнутое дерево — это ленивое дерево сразу после постройки, поэтому
+    // проще перестроить его из уже загруженного allNodes, без get_tree.
+    const t0 = performance.now();
+    const hadFocus = treeEl.contains(document.activeElement);
+    renderTree(true);
+    // Выделение: видна после сворачивания только папка верхнего уровня
+    // (или Корзина); выделенная глубже папка или ссылка скрыта, как и раньше
+    const item = activeFolderId != null && !activeBookmarkNode
+      ? treeEl.querySelector(`.tree-item[data-id="${activeFolderId}"]`) : null;
+    if (item) {
+      item.classList.add("active");
+      if (hadFocus) item.focus();
+    }
     _syncExpandToggleUI();
+    const t1 = performance.now();
+    nextPaint().then(() => {
+      const t2 = performance.now();
+      logUi(`Замер: свернуть все — перестройка ${Math.round(t1 - t0)}, ` +
+            `раскладка и кадр ${Math.round(t2 - t1)}, всего ${Math.round(t2 - t0)} мс`);
+    });
     return;
   }
   const t0 = performance.now();
