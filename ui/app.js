@@ -5899,14 +5899,7 @@ treeEl.addEventListener("keydown", (e) => {
       ? items[Math.min(idx + 1, items.length - 1)]
       : items[Math.max(idx - 1, 0)];
     if (!next || next === focused) return;
-    next.focus();
-    next.scrollIntoView({ block: "nearest" });
-    const id = parseInt(next.dataset.id, 10);
-    if (next.dataset.kind === "folder") selectFolder(id, false);
-    else {
-      const node = allNodes.find(n => n.id === id);
-      if (node) selectTreeBookmark(node);
-    }
+    _treeGoTo(next);
   } else if (e.key === "ArrowRight" && focused.dataset.kind === "folder") {
     openTreeFolder(focused);
   } else if (e.key === "ArrowLeft" && focused.dataset.kind === "folder") {
@@ -5914,6 +5907,166 @@ treeEl.addEventListener("keydown", (e) => {
     if (ch?.classList.contains("open")) { ch.classList.remove("open"); focused.classList.remove("open"); }
   }
 });
+
+// Переход на строку дерева — общий для ↑/↓ и набора букв: папка показывается
+// в списке, ссылка — в карточке. Отложенный переход набора здесь отменяется:
+// он устарел, раз человек ушёл стрелкой.
+function _treeGoTo(item) {
+  _typeAheadCancel();
+  item.focus();
+  item.scrollIntoView({ block: "nearest" });
+  const id = parseInt(item.dataset.id, 10);
+  if (item.dataset.kind === "folder") selectFolder(id, false);
+  else {
+    const node = allNodes.find(n => n.id === id);
+    if (node) selectTreeBookmark(node);
+  }
+}
+
+// ── Переход набором букв, как в Проводнике ─────────────────────────────────
+// Фокус на строке дерева — ищем среди видимых строк дерева (только раскрытые
+// ветки, ничего не раскрываем); иначе, если виден список, — в списке. Пауза
+// TYPEAHEAD_RESET_MS начинает набор заново. Набор из одной повторённой буквы
+// («ааа») идёт к следующему элементу на эту букву, иначе — первый, чьё название
+// начинается с набранного, от текущего включительно; оба по кругу.
+//
+// В дереве выделение двигается сразу на каждую букву, а показ папки в списке
+// или карточки — один раз, через TYPEAHEAD_APPLY_MS после последней буквы:
+// набор «абв» на большой базе иначе открыл бы три папки подряд. Отложенный
+// переход отменяется щелчком и ↑/↓, а любая другая клавиша (кроме Shift и
+// прочих модификаторов) выполняет его сразу — Enter, Ctrl+C и прочие должны
+// работать с тем, что уже выделено.
+// В списке тяжёлой части нет, там всё сразу: иначе Del за эти 150 мс удалил бы
+// прежнюю выделенную ссылку.
+const TYPEAHEAD_RESET_MS = 1000;
+const TYPEAHEAD_APPLY_MS = 150;
+let _taBuf = '', _taTime = 0, _taTitles = null, _taTimer = null, _taItem = null;
+
+function _typeAheadCancel() {
+  clearTimeout(_taTimer); _taTimer = null; _taItem = null;
+}
+function _typeAheadFlush() {
+  const item = _taItem;
+  if (!item) return;
+  _typeAheadCancel();
+  if (item.isConnected) _treeGoTo(item);
+}
+
+// Следующая видимая строка дерева (только раскрытые ветки) или null после
+// последней. Идём по соседям, а не собираем список: на полностью раскрытой
+// большой базе строк ~95 тыс., а совпадение обычно находится за несколько шагов.
+// Устройство: обёртка → [строка, .tree-children?], в .tree-children — обёртки.
+function _nextVisibleRow(item) {
+  const ch = item.nextElementSibling;
+  if (ch?.classList.contains('open')) {
+    const first = _rowIn(ch.firstElementChild);
+    if (first) return first;
+  }
+  let wrap = item.parentElement;
+  while (wrap && wrap !== treeEl) {
+    const next = _rowIn(wrap.nextElementSibling);
+    if (next) return next;
+    const up = wrap.parentElement;              // .tree-children или treeEl
+    wrap = up === treeEl ? null : up.parentElement;
+  }
+  return null;
+}
+// Первая строка среди обёрток начиная с wrap (пропуская не-строки)
+function _rowIn(wrap) {
+  for (; wrap; wrap = wrap.nextElementSibling) {
+    const it = wrap.firstElementChild;
+    if (it?.classList.contains('tree-item')) return it;
+  }
+  return null;
+}
+
+// Поиск по кругу. rows — массив (список) или null (дерево, обход соседями).
+// Регистр переводится только у начала названия: toLocaleLowerCase по всем
+// 95 тыс. названиям заранее стоил ~150 мс на первую букву.
+function _typeAheadFind(cur, buf, rows) {
+  const same = [...buf].every(ch => ch === buf[0]);
+  const want = same ? buf[0] : buf;
+  const hits = (el) => {
+    const t = _taTitles.get(parseInt(el.dataset.id, 10));
+    return t != null && t.slice(0, want.length).toLowerCase() === want;
+  };
+  if (rows) {
+    if (!rows.length) return null;
+    const i = rows.indexOf(cur);
+    const start = i < 0 ? 0 : (same ? i + 1 : i);
+    for (let k = 0; k < rows.length; k++) {
+      const el = rows[(start + k) % rows.length];
+      if (hits(el)) return el;
+    }
+    return null;
+  }
+  const first = _rowIn(treeEl.firstElementChild);
+  if (!first) return null;
+  const begin = !cur ? first : (same ? (_nextVisibleRow(cur) ?? first) : cur);
+  let el = begin;
+  do {
+    if (hits(el)) return el;
+    el = _nextVisibleRow(el) ?? first;
+  } while (el !== begin);
+  return null;
+}
+
+document.addEventListener('keydown', (e) => {
+  const isChar = e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey;
+  if (!isChar) {
+    // Shift перед заглавной — часть набора; ↑/↓ сами уходят с этой строки,
+    // переход для неё уже не нужен; остальное — выполнить сразу
+    if (!_taItem || ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) return;
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') _typeAheadCancel();
+    else _typeAheadFlush();
+    return;
+  }
+  const t = e.target;
+  if (t.matches?.('input,textarea,select') || t.isContentEditable) return;
+  if (document.querySelector('.dlg-overlay:not(.hidden), .menu-group.open')
+      || !ctxMenuEl.classList.contains('hidden')) return;
+
+  const inTree = document.activeElement?.classList.contains('tree-item')
+              && treeEl.contains(document.activeElement);
+  const inGrid = !inTree && !gridEl.classList.contains('hidden')
+              && searchResultsEl.classList.contains('hidden');
+  if (!inTree && !inGrid) return;
+
+  const now = performance.now();
+  if (now - _taTime > TYPEAHEAD_RESET_MS) _taBuf = '';
+  _taTime = now;
+  const ch = e.key.toLowerCase();
+  if (ch === ' ' && !_taBuf) return;
+  e.preventDefault();
+  _taBuf += ch;
+  // Названия — на серию нажатий: переименование между сериями подхватится
+  if (!_taTitles || _taBuf.length === 1) {
+    _taTitles = new Map();
+    for (const n of allNodes) _taTitles.set(n.id, n.title || '');
+    _taTitles.set(-1, 'Корзина');
+  }
+
+  if (inTree) {
+    const hit = _typeAheadFind(_taItem || document.activeElement, _taBuf, null);
+    if (!hit) return;
+    treeEl.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
+    hit.classList.add('active');
+    hit.focus();
+    hit.scrollIntoView({ block: 'nearest' });
+    clearTimeout(_taTimer);
+    _taItem  = hit;
+    _taTimer = setTimeout(_typeAheadFlush, TYPEAHEAD_APPLY_MS);
+  } else {
+    const rows = [...gridEl.querySelectorAll('.card')];
+    const hit = _typeAheadFind(gridEl.querySelector('.card.selected'), _taBuf, rows);
+    if (!hit) return;
+    gridSelectRow(hit);
+    hit.scrollIntoView({ block: 'nearest' });
+    if (hit.dataset.kind === 'folder') { hideInfoBar(); activeBookmarkNode = null; }
+    else showInfoBar(nodeFromCard(hit));
+  }
+}, true);
+document.addEventListener('mousedown', _typeAheadCancel, true);
 
 // expand=true      → force-open the folder (navigation from right panel / programmatic)
 // expand=false     → don't touch open state (tree click already toggled it)
