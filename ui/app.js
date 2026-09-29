@@ -158,10 +158,10 @@ let _ck = {
 };
 
 function getBookmarksUnder(folderId) {
+  const kids = childrenByParent();
   const result = [];
   const visit = (id) => {
-    for (const n of allNodes) {
-      if (n.parent !== id) continue;
+    for (const n of kids.get(id) || []) {
       if (n.kind === "bookmark" && n.url) result.push(n);
       else if (n.kind === "folder") visit(n.id);
     }
@@ -1583,9 +1583,10 @@ let   fpropsNode    = null;
 makeDlgDraggable(document.getElementById("fprops-dlg"), document.querySelector("#fprops-dlg .props-drag-handle"));
 
 function getFolderStats(folderId) {
+  const kids = childrenByParent();
   let links = 0, folders = 0;
   const visit = (id) => {
-    allNodes.filter(n => n.parent === id).forEach(n => {
+    (kids.get(id) || []).forEach(n => {
       if (n.kind === "bookmark") links++;
       else { folders++; visit(n.id); }
     });
@@ -5747,12 +5748,11 @@ function startFaviconWorkers() {
 }
 
 function collectBookmarksRecursive(folderId) {
+  const kids   = childrenByParent();
   const result = [];
   const queue  = [folderId];
-  while (queue.length > 0) {
-    const id = queue.shift();
-    for (const n of allNodes) {
-      if (n.parent !== id) continue;
+  for (let i = 0; i < queue.length; i++) {
+    for (const n of kids.get(queue[i]) || []) {
       if (n.kind === 'bookmark' && n.url) result.push(n);
       else if (n.kind === 'folder') queue.push(n.id);
     }
