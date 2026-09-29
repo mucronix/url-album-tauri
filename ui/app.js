@@ -3121,12 +3121,15 @@ function tbMoveItem(dir) {
       const newId = await invoke('create_bookmark', { parentId: pid, title: name, url, note });
       const t1 = performance.now();
 
-      // Refresh in-memory state (tree badge counts update too)
-      const openIds = saveOpenState();
-      allNodes   = await invoke('get_tree');
-      allFolders = allNodes.filter(n => n.kind === 'folder');
-      renderTree();
-      restoreOpenState(openIds);
+      // Точечно: новая ссылка и её папка (count для бейджа) — из базы
+      const rows = _applyNodeRows(await invoke('get_nodes', { ids: [newId, pid] }));
+      const added = rows.find(n => n.id === newId);
+      if (added) {
+        _attachTreeChild(pid, added);
+        _updateFolderBadge(pid);
+      } else {
+        await refreshTree();   // не должно случаться: ссылка только что создана
+      }
       const t2 = performance.now();
 
       // Reload right panel
