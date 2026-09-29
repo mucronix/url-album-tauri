@@ -587,10 +587,31 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 /* Compact info bar — single-click selection, grid stays visible */
 #info-bar {
   flex-shrink: 0;
-  border-top: 2px solid var(--border);
   background: var(--bg);
-  padding: 5px 12px 6px;
+  padding: 0 12px 6px;
 }
+
+/* Разделитель над заметкой — по образцу #splitter, только поперёк.
+   Полоса 2px заменила прежнюю border-top, зона захвата шире за счёт ::before. */
+.note-splitter {
+  height: 2px;
+  flex-shrink: 0;
+  background: var(--border);
+  cursor: row-resize;
+  position: relative;
+  z-index: 20;
+}
+#info-bar .note-splitter { margin: 0 -12px 5px; }
+.note-splitter::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -3px;
+  bottom: -3px;
+}
+.note-splitter:hover,
+.note-splitter.dragging { background: var(--accent); }
 #info-bar-url {
   font-size: var(--ui-font);
   font-weight: 600;
@@ -605,12 +626,35 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 #info-bar-note {
   font-size: calc(var(--ui-font) - 1px);
   color: var(--text2, #555);
-  max-height: 40px;
+  height: var(--info-note-h, 48px);
+  max-height: 60vh;   /* окно уменьшили после перетаскивания — список не съедается */
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.45;
   margin-top: 2px;
+}
+
+/* Заметка: пустая — приглашение, щелчок — правка на месте */
+.note-box { cursor: text; }
+.note-box.empty { color: var(--text-dim); font-style: italic; }
+.note-box.editing { overflow: hidden; padding: 0; }
+.note-edit {
+  display: block;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  resize: none;
+  margin: 0;
+  border: 1px solid var(--accent);
+  outline: none;
+  padding: 3px 6px;
+  font: inherit;
+  font-style: normal;
+  line-height: inherit;
+  color: var(--text);
+  background: var(--bg);
+  white-space: pre-wrap;
 }
 
 /* ── Detail view — integrated viewer pane ────────────────────────────────── */
@@ -666,7 +710,6 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 #detail-footer {
   flex-shrink: 0;
   background: var(--bg);
-  border-top: 2px solid var(--border);
 }
 
 #detail-url-row {
@@ -708,18 +751,19 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   border-top: 1px solid var(--border);
 }
 #detail-note {
-  min-height: 28px;
-  max-height: 68px;
+  height: var(--detail-note-h, 68px);
+  max-height: 60vh;
+  box-sizing: border-box;
   font-size: calc(var(--ui-font) - 1px);
   color: var(--text2, #444);
   line-height: 1.5;
   padding: 5px 12px 6px;
   white-space: pre-wrap;
   word-break: break-word;
-  cursor: default;
   user-select: text;
   overflow-y: auto;
 }
+#detail-note.editing { padding: 2px 6px 3px; }
 
 /* ── Link checker utility panel ─────────────────────────────────────────── */
 #checker-panel {

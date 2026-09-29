@@ -1400,10 +1400,14 @@ fn switch_db(state: tauri::State<'_, AppState>, new_path: std::path::PathBuf) ->
     db::init(&new_conn).map_err(|e| e.to_string())?;
     migrate_thumb_to_filename(&new_conn, &new_path.parent().unwrap_or(&new_path).join("Data"));
     *db_guard = new_conn;
-    drop(db_guard);
 
+    // Путь меняется, пока `db` ещё захвачен: store_thumb и update_note сверяют
+    // путь под тем же `db`, и между подменой соединения и пути у них не должно
+    // быть окна, где новая база видна со старым путём.
     let mut path_guard = state.db_path.lock().map_err(|e| e.to_string())?;
     *path_guard = new_path.clone();
+    drop(path_guard);
+    drop(db_guard);
     save_last_db(&new_path);
     save_recent_db(&new_path);
     logger::log(&format!("открыта база: {}", new_path.display()));
@@ -1579,13 +1583,31 @@ async fn pick_browser_file(window: tauri::Window) -> Option<String> {
         .map(|f| f.path().to_string_lossy().into_owned())
 }
 
+/// Правка заметки на месте. `db_path` — база, в которой заметку начали
+/// править: если с тех пор открыли другую, запись отклоняется, иначе текст
+/// лёг бы в чужую базу, где этот id принадлежит другой ссылке.
 #[tauri::command]
-fn update_note(state: tauri::State<AppState>, id: i64, note: String) -> Result<(), String> {
+fn update_note(state: tauri::State<AppState>, id: i64, note: String, db_path: String) -> Result<(), String> {
+    // Порядок захвата — как в store_thumb и switch_db: `db`, затем `db_path`.
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let val: Option<String> = if note.trim().is_empty() { None } else { Some(note) };
-    conn.execute("UPDATE nodes SET note = ?1 WHERE id = ?2", rusqlite::params![val, id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let same_db = state.db_path.lock()
+        .map(|p| p.as_path() == std::path::Path::new(&db_path))
+        .unwrap_or(false);
+    if !same_db {
+        logger::log(&format!("заметка id={id}: база сменилась во время правки, не сохранена"));
+        return Err("Открыта другая база — заметка не сохранена.".into());
+    }
+    match db::update_note(&conn, id, &note) {
+        Ok(0) => {
+            logger::log(&format!("заметка id={id}: ссылки больше нет, не сохранена"));
+            Err("Ссылка удалена — заметка не сохранена.".into())
+        }
+        Ok(_) => Ok(()),
+        Err(e) => {
+            logger::log(&format!("заметка id={id}: не сохранена: {e}"));
+            Err(e.to_string())
+        }
+    }
 }
 
 #[tauri::command]

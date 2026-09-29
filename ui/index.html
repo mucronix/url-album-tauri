@@ -73,8 +73,9 @@
 
       <!-- Compact info bar — shown on single-click selection, grid stays visible -->
       <div id="info-bar" class="hidden">
+        <div class="note-splitter" id="info-note-splitter" title="Потяните, чтобы изменить высоту заметки"></div>
         <div id="info-bar-url"></div>
-        <div id="info-bar-note"></div>
+        <div id="info-bar-note" class="note-box"></div>
       </div>
 
       <!-- Full viewer — shown on double-click only, replaces grid -->
@@ -87,13 +88,14 @@
           </div>
         </div>
         <div id="detail-footer">
+          <div class="note-splitter" id="detail-note-splitter" title="Потяните, чтобы изменить высоту заметки"></div>
           <div id="detail-url-row">
             <img id="detail-favicon" class="favicon-icon hidden" src="" alt="">
             <span id="detail-url"></span>
             <button id="detail-open-btn" title="Открыть в браузере">↗</button>
           </div>
           <div id="detail-note-section">
-            <div id="detail-note"></div>
+            <div id="detail-note" class="note-box"></div>
           </div>
         </div>
       </div>

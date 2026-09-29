@@ -3,6 +3,7 @@
   "description": "Default capabilities for URL Album",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-destroy"
   ]
 }

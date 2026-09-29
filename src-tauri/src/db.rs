@@ -162,6 +162,14 @@ pub fn get_trash(conn: &Connection) -> Result<Vec<TreeNode>> {
     result
 }
 
+/// Заметка пишется как есть — отступы, пустые строки, пробелы по краям;
+/// только строка из одних пробелов становится NULL (как в update_bookmark).
+/// Возвращает число изменённых строк: 0 — такой ссылки уже нет.
+pub fn update_note(conn: &Connection, id: i64, note: &str) -> Result<usize> {
+    let val: Option<&str> = if note.trim().is_empty() { None } else { Some(note) };
+    conn.execute("UPDATE nodes SET note = ?1 WHERE id = ?2", params![val, id])
+}
+
 pub fn get_bookmarks(conn: &Connection, folder_id: i64) -> Result<Vec<Bookmark>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, url, thumb, note, favicon
@@ -1192,6 +1200,28 @@ mod tests {
         assert_eq!(trash[&dd], 1, "DD в корзине: dd1");
         assert_eq!(trash[&a3], 0, "у ссылки count = 0");
         let _ = d3;
+    }
+
+    /// Правка заметки на месте: многострочный текст с отступами обязан
+    /// вернуться из get_tree байт в байт — отступы, табуляция, пустая строка,
+    /// пробелы в конце строк, перевод строки в конце. Пустая — NULL.
+    #[test]
+    fn note_saved_verbatim() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let a = folder(&c, None, "A", 0);
+        let l = link(&c, Some(a), "L", "https://l.example", 0);
+        let note_of_l = |c: &Connection| get_tree(c).unwrap().into_iter()
+            .find(|n| n.id == l).unwrap().note;
+
+        let text = "  Список:\n    - первый  \n\t- второй\n\n        глубже\n";
+        assert_eq!(update_note(&c, l, text).unwrap(), 1);
+        assert_eq!(note_of_l(&c).as_deref(), Some(text), "заметка изменилась при сохранении");
+
+        assert_eq!(update_note(&c, l, "  \n\t ").unwrap(), 1);
+        assert_eq!(note_of_l(&c), None, "строка из пробелов — это отсутствие заметки");
+
+        assert_eq!(update_note(&c, 9999, "текст").unwrap(), 0, "несуществующая ссылка — 0 строк");
     }
 
     /// Подзапрос count обязан идти по покрывающему индексу: без него SQLite

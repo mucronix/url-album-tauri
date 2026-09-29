@@ -1783,7 +1783,9 @@ function openPropsDialog(node) {
   propsNode        = node;
   propsTitle.value = node.title || "";
   propsUrl.value   = node.url   || "";
-  propsNote.value  = node.note  || "";
+  // Заметку — из allNodes: сюда приходят и копии узла (nodeFromCard,
+  // контекстное меню), а правка на месте обновляет только allNodes.
+  propsNote.value  = allNodes.find(n => n.id === node.id)?.note ?? node.note ?? "";
   const thumbEl = document.getElementById("props-thumb");
   thumbEl.textContent = node.thumb || "—";
   thumbEl.title       = node.thumb || "";
@@ -1819,10 +1821,10 @@ async function savePropsDialog() {
     // Immediately refresh detail panel — no restart or re-select needed
     detailUrlEl.textContent = url;
     detailUrlEl.title = url;
-    detailNoteEl.textContent = note;
     breadcrumb.textContent = (propsNode.parent != null
       ? buildBreadcrumbText(propsNode.parent) + "  /  " : "") + title;
   }
+  _applyNoteToUI(propsNode.id, _storedNote(note));  // info-bar, карточка, подсказка в гриде
   return true;
 }
 
@@ -3040,6 +3042,7 @@ function tbMoveItem(dir) {
     const errEl = document.getElementById('open-db-err');
     if (errEl) errEl.textContent = '';
     try {
+      await flushNoteEdit();
       await invoke('open_db');
       close();
       await showApp();
@@ -3476,7 +3479,8 @@ function _populateRecentDbs(drop) {
       el.addEventListener('click', (ev) => {
         ev.stopPropagation();
         closeAllMenus();
-        invoke('switch_db', { newPath: p })
+        flushNoteEdit()   // заметка — в ту базу, где её правили, до переключения
+          .then(() => invoke('switch_db', { newPath: p }))
           .then(() => showApp())
           .catch(e => showNotice('Не удалось открыть базу', String(e)));
       });
@@ -3766,12 +3770,14 @@ function handleMenuAction(action) {
       raiseOverlay(document.getElementById('open-db-overlay'));
       break;
     case 'new-db':
-      invoke('create_new_db')
+      flushNoteEdit()
+        .then(() => invoke('create_new_db'))
         .then(() => showApp())
         .catch(e => { if (e !== 'Отменено') console.error('create_new_db:', e); });
       break;
     case 'clear-db':
       deleteConfirm('Очистить базу данных?\nВсе закладки, папки и скриншоты будут удалены.', async () => {
+        await flushNoteEdit();
         await Promise.all([invoke('clear_db'), invoke('clear_screenshots')]).catch(console.error);
         allNodes = []; allFolders = [];
         activeFolderId = null;
@@ -3813,8 +3819,10 @@ function handleMenuAction(action) {
       break;
 
     case 'close-db':
-      invoke('close_db').catch(console.error);
-      showImportScreen();
+      flushNoteEdit().then(() => {
+        invoke('close_db').catch(console.error);
+        showImportScreen();
+      });
       break;
 
     case 'db-properties':
@@ -3996,6 +4004,8 @@ let appSettings = {
   showToolbar:   true,
   listColWidth:  42,   // % width of "Название" column
   sidebarWidth:  230,  // px
+  infoNoteHeight:   48,  // px, заметка под списком (#info-bar)
+  detailNoteHeight: 68,  // px, заметка в карточке (#detail-view)
   accordionTree: true,
   confirmDelete: true,
   noDuplicateUrls: false,
@@ -4061,6 +4071,8 @@ function applySettings(save = true) {
   }
   applyColWidth(appSettings.listColWidth ?? 42, false);
   applySidebarWidth(appSettings.sidebarWidth ?? 230, false);
+  applyNoteHeight('infoNoteHeight',   appSettings.infoNoteHeight   ?? 48, false);
+  applyNoteHeight('detailNoteHeight', appSettings.detailNoteHeight ?? 68, false);
   document.documentElement.style.setProperty('--ui-font', (appSettings.uiFontSize || 13) + 'px');
   invoke('set_extension_add_mode', { mode: appSettings.extensionAddMode || 'quick' }).catch(() => {});
   invoke('set_hotkey', { combo: appSettings.hotkey || null })
@@ -4186,6 +4198,62 @@ function applyColWidth(pct, persist = true) {
     document.addEventListener('mouseup', onUp);
   });
 })();
+
+// ── Разделители над заметкой ──────────────────────────────────────────────────
+// Два места, у каждого своя высота: под списком (#info-bar) и в карточке.
+const NOTE_MIN_H     = 36;   // две строки заметки
+const NOTE_RESERVE_H = 100;  // столько остаётся списку или снимку
+const NOTE_H_VARS = { infoNoteHeight: '--info-note-h', detailNoteHeight: '--detail-note-h' };
+
+function applyNoteHeight(key, px, persist = true) {
+  appSettings[key] = Math.max(NOTE_MIN_H, Math.round(Number(px) || NOTE_MIN_H));
+  document.documentElement.style.setProperty(NOTE_H_VARS[key], appSettings[key] + 'px');
+  if (persist) saveAppSettings();
+}
+
+// reserveEl() — то, что сжимается, пока заметка растёт: список или снимок.
+function initNoteSplitter(splitterId, boxId, key, reserveEl) {
+  const splitter = document.getElementById(splitterId);
+  const box      = document.getElementById(boxId);
+  if (!splitter || !box) return;
+
+  splitter.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = box.offsetHeight;
+    // Потолок считается один раз, по раскладке на момент нажатия: список или
+    // снимок могут ужаться не ниже NOTE_RESERVE_H.
+    const maxH = Math.max(NOTE_MIN_H, startH + (reserveEl()?.offsetHeight ?? 0) - NOTE_RESERVE_H);
+
+    splitter.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMove = (ev) => {
+      const h = Math.max(NOTE_MIN_H, Math.min(maxH, startH - (ev.clientY - startY)));
+      applyNoteHeight(key, h, false);
+    };
+
+    const onUp = () => {
+      splitter.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      applyNoteHeight(key, appSettings[key], true);
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+initNoteSplitter('info-note-splitter', 'info-bar-note', 'infoNoteHeight', () => {
+  const grid = document.getElementById('grid');
+  return grid.classList.contains('hidden') ? document.getElementById('search-results') : grid;
+});
+initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
+  () => document.getElementById('detail-thumb-wrap'));
 
 // ── Settings dialog ────────────────────────────────────────────────────────────
 
@@ -4488,6 +4556,7 @@ document.getElementById("wb-import").addEventListener("click", async () => {
 // ── Statusbar state ───────────────────────────────────────────────────────
 let _sbTimer         = null;   // auto-clear timer for temp messages
 let currentDbName    = '';     // basename of current DB file
+let currentDbPath    = '';     // полный путь — к нему привязана правка заметки
 let _sbInFolderCount = null;   // item count in active folder; null = no folder selected
 let _sbSearchCount   = null;   // search result count; null = not in search mode
 
@@ -4495,12 +4564,13 @@ let _sbSearchCount   = null;   // search result count; null = not in search mode
 async function updateWindowTitle() {
   try {
     const p = await invoke('get_db_path');
+    currentDbPath = p || '';
     currentDbName = p ? p.replace(/\\/g, '/').split('/').pop() : '';
     const title = `URL Album ${APP_VERSION}`;
     document.title = title;
     await invoke('set_window_title', { title });
     rootZone.textContent = currentDbName || '↑ Корень';
-  } catch(_) { currentDbName = ''; }
+  } catch(_) { currentDbName = ''; currentDbPath = ''; }
 }
 
 // ── Statusbar API ─────────────────────────────────────────────────────────
@@ -5470,6 +5540,7 @@ searchClearBtn.addEventListener("click", clearSearch);
 
 // ── Detail view ───────────────────────────────────────────────────────────
 function showDetailView(node) {
+  commitNoteEdit();
   activeBookmarkNode = node;
   searchbarEl.classList.add("hidden");
   gridEl.classList.add("hidden");
@@ -5494,7 +5565,7 @@ function showDetailView(node) {
     }
   }
 
-  detailNoteEl.textContent = node.note || "";
+  _renderNoteBox(detailNoteEl, node);
 
   // Viewer: show real thumbnail, or subtle domain placeholder
   detailThumbEl.style.display = "";
@@ -5537,18 +5608,186 @@ const infoBarUrl  = document.getElementById('info-bar-url');
 const infoBarNote = document.getElementById('info-bar-note');
 
 function showInfoBar(node) {
+  commitNoteEdit();
   activeBookmarkNode = node;
   const url = node.url || '';
   infoBarUrl.textContent = url;
   infoBarUrl.title = url;
-  infoBarNote.textContent = node.note || '';
-  infoBarNote.style.display = node.note ? '' : 'none';
+  _renderNoteBox(infoBarNote, node);
   infoBarEl.classList.remove('hidden');
   infoBarUrl.onclick = () => { if (url) openWithBrowser(url, resolveOpenerForNode(node)); };
 }
 
 function hideInfoBar() {
+  commitNoteEdit();
   infoBarEl?.classList.add('hidden');
+}
+
+// ── Заметка: правка на месте ────────────────────────────────────────────────
+// Щелчок по заметке (или по «Добавить описание…») превращает её в поле.
+// Сохранение — по уходу фокуса и Ctrl+Enter, Esc — отмена всей правки.
+// Переход на другую ссылку сохраняет молча: это тот же уход фокуса.
+//
+// Запись привязана к базе, где правку начали (`dbPath`): Rust отклонит её,
+// если открыта другая. Смена и закрытие базы, закрытие окна сначала ждут
+// flushNoteEdit(), поэтому до отказа в обычной жизни не доходит.
+const NOTE_PLACEHOLDER = 'Добавить описание…';
+let _noteEdit   = null;               // { box, id, dbPath, orig, saved, ta }
+let _noteSaving = Promise.resolve();  // цепочка записей — строго по очереди
+
+const _normNote = (s) => (s ?? '').replace(/\r\n?/g, '\n');
+// Значение, которое вернул бы get_tree: строка из пробелов — это null.
+const _storedNote = (s) => (s && s.trim() ? s : null);
+
+function _renderNoteBox(box, node) {
+  box.dataset.id = node.id;
+  box.classList.toggle('empty', !node.note);
+  box.textContent = node.note || NOTE_PLACEHOLDER;
+  box.title = 'Щёлкните, чтобы изменить заметку';
+}
+
+// Точечное обновление везде, где заметка видна. Окно «Свойства» берёт
+// заметку из allNodes при открытии (openPropsDialog).
+function _applyNoteToUI(id, note) {
+  const n = allNodes.find(x => x.id === id);
+  if (n) n.note = note;
+  if (activeBookmarkNode?.id === id) activeBookmarkNode.note = note;  // может быть копией
+  for (const box of [infoBarNote, detailNoteEl]) {
+    if (Number(box.dataset.id) === id && _noteEdit?.box !== box) {
+      _renderNoteBox(box, { id, note });
+    }
+  }
+  const card = gridEl.querySelector(`.card[data-id="${id}"]`);
+  if (card) { if (note) card.title = note; else card.removeAttribute('title'); }
+}
+
+function startNoteEdit(box, e) {
+  if (_noteEdit?.box === box) return;
+  commitNoteEdit();
+  const id = Number(box.dataset.id);
+  if (!id) return;
+  const orig = allNodes.find(x => x.id === id)?.note ?? activeBookmarkNode?.note ?? null;
+
+  // Курсор — туда, куда щёлкнули (пока в блоке ещё текст, а не поле)
+  let caret = (orig || '').length;
+  if (orig && e && document.caretRangeFromPoint) {
+    const r = document.caretRangeFromPoint(e.clientX, e.clientY);
+    if (r && r.startContainer.parentNode === box) caret = r.startOffset;
+  }
+
+  const ta = document.createElement('textarea');
+  ta.className = 'note-edit';
+  ta.spellcheck = false;
+  ta.value = orig || '';
+  ta.placeholder = NOTE_PLACEHOLDER;
+  const ed = { box, id, dbPath: currentDbPath, orig, saved: orig, ta };
+  _noteEdit = ed;
+
+  box.classList.add('editing');
+  box.classList.remove('empty');
+  box.removeAttribute('title');
+  box.textContent = '';
+  box.appendChild(ta);
+  ta.focus();
+  ta.setSelectionRange(caret, caret);
+
+  // Глобальные клавиши (Esc закрывает карточку, F2/F4, Ctrl+F, Ctrl+N,
+  // Alt+стрелки) посреди набора не нужны — событие дальше поля не идёт.
+  ta.addEventListener('keydown', (ev) => {
+    ev.stopPropagation();
+    if (ev.key === 'Escape') { ev.preventDefault(); cancelNoteEdit(); }
+    else if (ev.key === 'Enter' && ev.ctrlKey) { ev.preventDefault(); commitNoteEdit(); }
+  });
+  // Родное меню «Вырезать / Копировать / Вставить»: иначе событие всплывёт
+  // до detailViewEl.oncontextmenu и откроется меню ссылки.
+  ta.addEventListener('contextmenu', (ev) => ev.stopPropagation());
+  ta.addEventListener('blur', () => {
+    if (_noteEdit !== ed) return;
+    // Окно потеряло фокус (Alt+Tab, трей, F8): сохранить, но поле оставить —
+    // вернулся и продолжаешь. Уход фокуса внутри окна — конец правки.
+    if (!document.hasFocus()) _queueNoteSave(ed, ta.value);
+    else commitNoteEdit();
+  });
+}
+
+// Закрывает поле сразу (синхронно), запись уходит в очередь.
+// Возвращает обещание, которое выполнится после всех записей.
+function commitNoteEdit() {
+  const ed = _noteEdit;
+  if (!ed) return _noteSaving;
+  _noteEdit = null;
+  const text = ed.ta.value;
+  ed.box.classList.remove('editing');
+  _renderNoteBox(ed.box, { id: ed.id, note: _storedNote(text) });
+  return _queueNoteSave(ed, text);
+}
+
+function cancelNoteEdit() {
+  const ed = _noteEdit;
+  if (!ed) return _noteSaving;
+  _noteEdit = null;
+  ed.box.classList.remove('editing');
+  _renderNoteBox(ed.box, { id: ed.id, note: ed.orig });
+  // Если окно успело потерять фокус и промежуточный текст уже записан —
+  // отмена возвращает в базу то, что было до начала правки.
+  return _queueNoteSave(ed, ed.orig ?? '');
+}
+
+// Всё, что открыто, — сохранить и дождаться записи. Перед сменой, закрытием
+// базы и закрытием окна.
+function flushNoteEdit() { return commitNoteEdit(); }
+
+function _queueNoteSave(ed, text) {
+  if (_normNote(text) === _normNote(ed.saved) ||
+      (_storedNote(text) === null && _storedNote(ed.saved) === null)) {
+    return _noteSaving;  // ничего не изменилось — не трогаем ни базу, ни \r\n
+  }
+  const note = _storedNote(text);
+  ed.saved = note;  // следующая проверка сравнивает уже с этим
+  _noteSaving = _noteSaving.then(() =>
+    invoke('update_note', { id: ed.id, note: text, dbPath: ed.dbPath })
+      .then(() => _applyNoteToUI(ed.id, note))
+      .catch((err) => {
+        // Отказ записан в журнал в Rust (update_note) — здесь только окно.
+        ed.saved = allNodes.find(x => x.id === ed.id)?.note ?? ed.orig;
+        showNotice('Заметка не сохранена', String(err));
+        const box = ed.box;
+        if (ed.dbPath === currentDbPath && Number(box.dataset.id) === ed.id && !_noteEdit &&
+            !box.closest('.hidden')) {
+          // Ссылка ещё на экране — вернуть поле с набранным текстом
+          _renderNoteBox(box, { id: ed.id, note: ed.saved });
+          startNoteEdit(box, null);
+          if (_noteEdit) { _noteEdit.ta.value = text; _noteEdit.orig = ed.orig; }
+        } else if (ed.dbPath === currentDbPath && Number(box.dataset.id) === ed.id &&
+                   _noteEdit?.box !== box) {
+          // Тот же id в другой базе — чужая ссылка, её блок не трогаем
+          _renderNoteBox(box, { id: ed.id, note: ed.saved });
+        }
+      }));
+  return _noteSaving;
+}
+
+for (const box of [infoBarNote, detailNoteEl]) {
+  box.addEventListener('click', (e) => {
+    if (_noteEdit?.box === box) return;
+    // Выделяли текст, чтобы скопировать, — это не приглашение к правке
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && box.contains(sel.anchorNode)) return;
+    startNoteEdit(box, e);
+  });
+}
+
+// Крестик окна: сначала дописать заметку, потом закрыть. Tauri ждёт
+// обработчик и сам уничтожает окно (нужно core:window:allow-destroy).
+// Обработчик не должен бросать: иначе окно не закроется вовсе.
+try {
+  window.__TAURI__.window.getCurrentWindow().onCloseRequested(async () => {
+    try {
+      await Promise.race([flushNoteEdit(), new Promise(r => setTimeout(r, 2000))]);
+    } catch (_) {}
+  });
+} catch (e) {
+  logUi(`закрытие окна: обработчик не подключён: ${e}`);
 }
 
 // Full viewer (double-click): hides grid, shows detail panel
@@ -5576,6 +5815,7 @@ function hideDetailView() {
 }
 
 function clearSelection() {
+  commitNoteEdit();
   activeBookmarkNode = null;
   hideInfoBar();
   detailViewEl.classList.add("hidden");
