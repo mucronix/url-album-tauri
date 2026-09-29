@@ -2320,6 +2320,13 @@ fn get_db_properties(state: tauri::State<'_, AppState>) -> Result<DbProperties, 
 // ── URL scheme (urlalbum://) ─────────────────────────────────────────────────
 
 /// Register urlalbum:// protocol handler in HKCU (no admin required).
+///
+/// С 2.3.3 при запуске НЕ вызывается: README обещает «не пишет в реестр», а
+/// протоколом никто не пользуется (расширение ходит через HTTP-сервер).
+/// Разбор ссылки (`parse_url_scheme`, `pending_open`, вторая копия) оставлен —
+/// ключ, записанный прежними версиями, продолжает работать. Функция — на
+/// случай, если регистрацию вернут явной командой, а не молча при старте.
+#[allow(dead_code)]
 fn register_url_scheme() {
     let exe = match std::env::current_exe() {
         Ok(p) => p.to_string_lossy().into_owned(),
@@ -3592,8 +3599,8 @@ fn main() {
                 user_hotkey:        Mutex::new(None),
             });
 
-            // Register urlalbum:// protocol handler (idempotent)
-            register_url_scheme();
+            // urlalbum:// при запуске больше не регистрируется (2.3.3):
+            // программа не пишет в реестр, см. register_url_scheme
 
             // Spawn HTTP server for browser extension
             {
