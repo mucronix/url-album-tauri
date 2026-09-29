@@ -36,6 +36,14 @@ fn get_tree(state: tauri::State<AppState>) -> Result<Vec<db::TreeNode>, String> 
     Ok(tree)
 }
 
+/// Узлы по id для точечного обновления интерфейса без get_tree: тот же SELECT
+/// и те же поля, удалённые не приходят.
+#[tauri::command]
+fn get_nodes(state: tauri::State<AppState>, ids: Vec<i64>) -> Result<Vec<db::TreeNode>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::get_nodes(&conn, &ids).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_bookmarks(
     state: tauri::State<AppState>,
@@ -3639,6 +3647,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_tree,
+            get_nodes,
             get_bookmarks,
             is_empty,
             find_uadat,

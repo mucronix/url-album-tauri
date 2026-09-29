@@ -84,71 +84,75 @@ pub fn is_empty(conn: &Connection) -> bool {
         == 0
 }
 
-pub fn get_tree(conn: &Connection) -> Result<Vec<TreeNode>> {
-    let mut stmt = conn.prepare(
+// Один SELECT и одно сопоставление полей на get_tree, get_nodes и get_trash:
+// точечное обновление в JS берёт узел из get_nodes и обязано получить его
+// ровно таким, каким его отдала бы полная перезагрузка. `count` — число
+// ссылок непосредственно в папке, живых или (для корзины) удалённых.
+fn tree_select(trash: bool) -> String {
+    let child_deleted = if trash { "b.deleted = 1" } else { "(b.deleted IS NULL OR b.deleted = 0)" };
+    format!(
         "SELECT id, parent, kind, title, url, thumb, note, created, visited, favicon, sort_idx,
                 CASE WHEN kind = 'folder'
                      THEN (SELECT COUNT(*) FROM nodes b
                            WHERE b.parent = nodes.id AND b.kind = 'bookmark'
-                             AND (b.deleted IS NULL OR b.deleted = 0))
+                             AND {child_deleted})
                      ELSE 0
                 END AS count,
                 opener
-         FROM nodes
-         WHERE (deleted IS NULL OR deleted = 0)
-         ORDER BY sort_idx, id",
-    )?;
-    let result: rusqlite::Result<Vec<TreeNode>> = stmt.query_map([], |row| {
-        Ok(TreeNode {
-            id:      row.get(0)?,
-            parent:  row.get(1)?,
-            kind:    row.get(2)?,
-            title:   row.get(3)?,
-            url:     row.get(4)?,
-            thumb:   row.get(5)?,
-            note:    row.get(6)?,
-            created: row.get(7)?,
-            visited: row.get(8)?,
-            favicon:  row.get(9)?,
-            sort_idx: row.get(10)?,
-            count:    row.get(11)?,
-            opener:   row.get(12)?,
-        })
-    })?.collect();
+         FROM nodes"
+    )
+}
+
+fn tree_node_from_row(row: &rusqlite::Row) -> rusqlite::Result<TreeNode> {
+    Ok(TreeNode {
+        id:      row.get(0)?,
+        parent:  row.get(1)?,
+        kind:    row.get(2)?,
+        title:   row.get(3)?,
+        url:     row.get(4)?,
+        thumb:   row.get(5)?,
+        note:    row.get(6)?,
+        created: row.get(7)?,
+        visited: row.get(8)?,
+        favicon:  row.get(9)?,
+        sort_idx: row.get(10)?,
+        count:    row.get(11)?,
+        opener:   row.get(12)?,
+    })
+}
+
+pub fn get_tree(conn: &Connection) -> Result<Vec<TreeNode>> {
+    let mut stmt = conn.prepare(&format!(
+        "{} WHERE (deleted IS NULL OR deleted = 0) ORDER BY sort_idx, id",
+        tree_select(false)
+    ))?;
+    let result: rusqlite::Result<Vec<TreeNode>> = stmt.query_map([], tree_node_from_row)?.collect();
     result
 }
 
+/// Узлы по списку id — для точечного обновления без get_tree. Удалённые и
+/// несуществующие пропускаются, порядок — как в `ids`.
+pub fn get_nodes(conn: &Connection, ids: &[i64]) -> Result<Vec<TreeNode>> {
+    use rusqlite::OptionalExtension;
+    let mut stmt = conn.prepare(&format!(
+        "{} WHERE id = ?1 AND (deleted IS NULL OR deleted = 0)",
+        tree_select(false)
+    ))?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(n) = stmt.query_row([id], tree_node_from_row).optional()? {
+            out.push(n);
+        }
+    }
+    Ok(out)
+}
+
 pub fn get_trash(conn: &Connection) -> Result<Vec<TreeNode>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, parent, kind, title, url, thumb, note, created, visited, favicon, sort_idx,
-                CASE WHEN kind = 'folder'
-                     THEN (SELECT COUNT(*) FROM nodes b
-                           WHERE b.parent = nodes.id AND b.kind = 'bookmark'
-                             AND b.deleted = 1)
-                     ELSE 0
-                END AS count,
-                opener
-         FROM nodes
-         WHERE deleted = 1
-         ORDER BY sort_idx, id",
-    )?;
-    let result: rusqlite::Result<Vec<TreeNode>> = stmt.query_map([], |row| {
-        Ok(TreeNode {
-            id:      row.get(0)?,
-            parent:  row.get(1)?,
-            kind:    row.get(2)?,
-            title:   row.get(3)?,
-            url:     row.get(4)?,
-            thumb:   row.get(5)?,
-            note:    row.get(6)?,
-            created: row.get(7)?,
-            visited: row.get(8)?,
-            favicon:  row.get(9)?,
-            sort_idx: row.get(10)?,
-            count:    row.get(11)?,
-            opener:   row.get(12)?,
-        })
-    })?.collect();
+    let mut stmt = conn.prepare(&format!(
+        "{} WHERE deleted = 1 ORDER BY sort_idx, id",
+        tree_select(true)
+    ))?;
+    let result: rusqlite::Result<Vec<TreeNode>> = stmt.query_map([], tree_node_from_row)?.collect();
     result
 }
 
@@ -1103,6 +1107,34 @@ mod tests {
             params![parent, title, url, si],
         ).unwrap();
         c.last_insert_rowid()
+    }
+
+    /// get_nodes — источник точечных обновлений в JS: узел обязан прийти ровно
+    /// таким, каким его отдаёт get_tree, включая count без удалённых ссылок,
+    /// а удалённый узел не должен прийти вовсе.
+    #[test]
+    fn get_nodes_matches_get_tree() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let a  = folder(&c, None, "A", 0);
+        let b  = folder(&c, Some(a), "B", 2);
+        let l1 = link(&c, Some(a), "L1", "https://one.example", 0);
+        let l2 = link(&c, Some(a), "L2", "https://two.example", 1);
+        c.execute("UPDATE nodes SET note = 'заметка', favicon = 'one.example.png', thumb = 'shot.png' WHERE id = ?1",
+            params![l1]).unwrap();
+        c.execute("UPDATE nodes SET deleted = 1, deleted_parent = parent, parent = NULL WHERE id = ?1",
+            params![l2]).unwrap();
+
+        let got = get_nodes(&c, &[b, l2, a, l1, 9999]).unwrap();
+        let got_ids: Vec<i64> = got.iter().map(|n| n.id).collect();
+        assert_eq!(got_ids, vec![b, a, l1], "удалённый и несуществующий не приходят, порядок как в запросе");
+
+        let tree: std::collections::HashMap<i64, serde_json::Value> = get_tree(&c).unwrap().iter()
+            .map(|n| (n.id, serde_json::to_value(n).unwrap())).collect();
+        for n in &got {
+            assert_eq!(serde_json::to_value(n).unwrap(), tree[&n.id], "узел {} расходится с get_tree", n.id);
+        }
+        assert_eq!(got[1].count, 1, "count папки A без удалённой ссылки");
     }
 
     /// Дети родителя в том порядке, в каком их покажет интерфейс: по sort_idx,
