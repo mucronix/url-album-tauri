@@ -1051,6 +1051,9 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   color: #000;
   user-select: none;
 }
+/* Меню редактирования открывается и из окон (.dlg-overlay 9000,
+   #confirm-overlay 10000) — должно быть поверх них */
+#ctx-menu.ctx-edit { z-index: 10001; }
 .ctx-item {
   display: flex;
   align-items: center;

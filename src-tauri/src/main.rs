@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod clipboard;
 mod db;
 mod importer;
 mod logger;
@@ -392,6 +393,16 @@ fn get_thumb_time(filename: String, state: tauri::State<AppState>) -> Option<i64
     let modified = std::fs::metadata(dir.join(&filename)).ok()?.modified().ok()?;
     let ms = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
     i64::try_from(ms).ok()
+}
+
+/// Текст из буфера обмена для «Вставить» в меню полей ввода (см. clipboard.rs:
+/// navigator.clipboard.readText в WebView2 показывает запрос разрешения).
+/// `null` — текста в буфере нет; ошибка — буфер держит другая программа.
+/// Блокирующая (паузы между попытками открыть буфер) — поэтому spawn_blocking.
+#[tauri::command]
+async fn clipboard_text() -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(clipboard::read_text)
+        .await.map_err(|e| e.to_string())?
 }
 
 // ── HTTP client / прокси ─────────────────────────────────────────────────────
@@ -3752,6 +3763,7 @@ fn main() {
             open_file,
             get_data_dir,
             get_thumb_time,
+            clipboard_text,
             fetch_favicon,
             update_node_favicon,
             close_db,

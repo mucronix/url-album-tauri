@@ -2420,7 +2420,99 @@ function showContextMenu(e, node) {
 function hideContextMenu() {
   closeSubFloat();
   ctxMenuEl.classList.add("hidden");
+  ctxMenuEl.classList.remove("ctx-edit");
 }
+
+// ── Меню редактирования в текстовых полях ──────────────────────────────────
+// Родное меню WebView2 здесь не годится: в нём «Эмодзи», «Вставить как обычный
+// текст», «Направление письма», нет «Удалить», недоступное скрыто, а не серое;
+// у полей только для чтения оно вовсе меню страницы. К тому же событие из поля
+// всплывает до строки дерева или карточки и открывает меню папки или ссылки
+// (так было в переименовании папки). Поэтому — перехват на document в фазе
+// capture, раньше любых точечных обработчиков, и своё меню.
+const EDIT_INPUT_TYPES = ['text', 'search', 'url', 'email', 'tel', 'password', 'number'];
+function _isTextField(t) {
+  return t instanceof HTMLTextAreaElement
+      || (t instanceof HTMLInputElement && EDIT_INPUT_TYPES.includes(t.type));
+}
+
+// Есть ли в буфере текст — через Rust (clipboard_text). navigator.clipboard.
+// readText здесь нельзя: WebView2 показывает запрос разрешения, хотя
+// permissions.query отвечает «granted», а запрос забирает фокус у поля.
+// Ошибка (буфер держит другая программа) или долгий ответ — «Вставить» доступна.
+async function _clipboardHasText() {
+  try {
+    const txt = await Promise.race([
+      invoke('clipboard_text'),
+      new Promise(r => setTimeout(() => r(undefined), 300)),
+    ]);
+    return txt === undefined || (txt != null && txt.length > 0);
+  } catch { return true; }
+}
+
+async function showEditMenu(field, x, y) {
+  const canPaste = await _clipboardHasText();
+  const ro  = field.readOnly;
+  const pwd = field.type === 'password';
+  // У type=number браузер не отдаёт выделение (selectionStart === null):
+  // считаем, что оно есть, если поле не пустое — команда сработает на выделенное
+  const hasSel = field.selectionStart == null
+    ? field.value !== ''
+    : field.selectionStart !== field.selectionEnd;
+  const run = (fn) => () => { field.focus(); fn(); };
+
+  closeSubFloat();
+  ctxMenuEl.innerHTML = '';
+  ctxMenuEl.append(
+    ctxItem(null, 'Отменить', 'Ctrl+Z', run(() => document.execCommand('undo')), ro),
+    ctxSep(),
+    ctxItem(null, 'Вырезать', 'Ctrl+X', run(() => document.execCommand('cut')), ro || pwd || !hasSel),
+    ctxItem('copy', 'Копировать', 'Ctrl+C', run(() => document.execCommand('copy')), pwd || !hasSel),
+    ctxItem(null, 'Вставить', 'Ctrl+V', run(() => {
+      // insertText, а не присваивание value: остаётся в истории Ctrl+Z
+      // и даёт полю обычное событие input
+      invoke('clipboard_text')
+        .then(txt => { if (txt) { field.focus(); document.execCommand('insertText', false, txt); } })
+        .catch(err => {
+          // Rust отказ не пишет: при проверке для меню он штатный и не нужен
+          logUi(`меню «Вставить»: ${err}`);
+          showNotice('Вставить', `Не удалось прочитать буфер обмена: ${err}. Попробуйте ещё раз.`);
+        });
+    }), ro || !canPaste),
+    ctxItem(null, 'Удалить', 'Del', run(() => document.execCommand('delete')), ro || !hasSel),
+    ctxSep(),
+    ctxItem(null, 'Выделить всё', 'Ctrl+A', run(() => field.select()), field.value === ''),
+  );
+  ctxMenuEl.classList.add('ctx-edit');
+  ctxMenuEl.classList.remove('hidden');
+  const mw = ctxMenuEl.offsetWidth, mh = ctxMenuEl.offsetHeight;
+  ctxMenuEl.style.left = Math.min(x, window.innerWidth  - mw - 4) + 'px';
+  ctxMenuEl.style.top  = Math.min(y, window.innerHeight - mh - 4) + 'px';
+}
+
+document.addEventListener('contextmenu', (e) => {
+  const t = e.target;
+  if (!_isTextField(t) || t.disabled) return;
+  e.preventDefault();
+  e.stopPropagation();
+  hideContextMenu();
+  showEditMenu(t, e.clientX, e.clientY);
+}, true);
+
+// Щелчок по пункту не должен забирать фокус у поля: переименование и заметка
+// по уходу фокуса сохраняются и закрываются, не дождавшись команды.
+ctxMenuEl.addEventListener('mousedown', (e) => {
+  if (ctxMenuEl.classList.contains('ctx-edit')) e.preventDefault();
+});
+
+// Esc при открытом меню редактирования закрывает только меню — иначе дошёл бы
+// до поля и отменил правку заметки или переименование, закрыл окно. Любая
+// другая клавиша закрывает меню и идёт дальше как обычно.
+document.addEventListener('keydown', (e) => {
+  if (!ctxMenuEl.classList.contains('ctx-edit') || ctxMenuEl.classList.contains('hidden')) return;
+  hideContextMenu();
+  if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 
 // Capture phase: fires before ANY element's stopPropagation
 document.addEventListener("mousedown", (e) => {
@@ -3951,6 +4043,7 @@ document.addEventListener('keydown', e => {
     const selCard = gridEl.querySelector(".card.selected");
     if (!activeBookmarkNode && selCard?.dataset.kind === 'folder'
         && !gridEl.classList.contains('hidden')
+        && ctxMenuEl.classList.contains('hidden')
         && !document.activeElement?.classList.contains('tree-item')
         && !document.querySelector('.dlg-overlay:not(.hidden)')) {
       e.preventDefault();
@@ -4552,8 +4645,9 @@ async function init() {
   // Гасим родное меню WebView2 («Назад / Обновить / Сохранить как / Печать»)
   // везде, где нет своего обработчика. На document и в фазе всплытия (без capture) —
   // точечные обработчики (дерево, грид, detail-view) отрабатывают первыми
-  // и показывают наши меню как раньше. Родное меню оставляем только в
-  // РЕДАКТИРУЕМЫХ полях: у readonly/disabled WebView2 показывает меню страницы.
+  // и показывают наши меню как раньше. Текстовые поля сюда не доходят — у них
+  // своё меню редактирования (showEditMenu, перехват в фазе capture); проверка
+  // полей ниже осталась для прочих редактируемых элементов.
   document.addEventListener('contextmenu', (e) => {
     const t = e.target;
     if (t && (((t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') && !t.readOnly && !t.disabled)
@@ -5756,9 +5850,6 @@ function startNoteEdit(box, e) {
     if (ev.key === 'Escape') { ev.preventDefault(); cancelNoteEdit(); }
     else if (ev.key === 'Enter' && ev.ctrlKey) { ev.preventDefault(); commitNoteEdit(); }
   });
-  // Родное меню «Вырезать / Копировать / Вставить»: иначе событие всплывёт
-  // до detailViewEl.oncontextmenu и откроется меню ссылки.
-  ta.addEventListener('contextmenu', (ev) => ev.stopPropagation());
   ta.addEventListener('blur', () => {
     if (_noteEdit !== ed) return;
     // Окно потеряло фокус (Alt+Tab, трей, F8): сохранить, но поле оставить —
