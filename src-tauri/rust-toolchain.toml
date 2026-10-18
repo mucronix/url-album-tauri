@@ -1,0 +1,11 @@
+# Только ветка win7-probe: сборка под x86_64-win7-windows-msvc.
+# Цель tier 3 — готовой std для неё нет, std собирается из rust-src:
+#   cargo build --release -Z build-std=std,panic_abort --target x86_64-win7-windows-msvc
+# Дата nightly закреплена, чтобы сборка была воспроизводимой.
+# Не раньше 2026-10-17: в nightly-2026-10-15 std под win7 не собирается
+# (`is_console` скрыт cfg, PR rust-lang/rust#164170, влит 14.10), починка —
+# #164360 «Restore Win7 compilation», влита 16.10.
+[toolchain]
+channel    = "nightly-2026-10-17"
+components = ["rust-src"]
+profile    = "minimal"

@@ -28,3 +28,11 @@ panic         = "abort"
 codegen-units = 1
 lto           = true
 strip         = true
+
+# Только ветка win7-probe. ctor 0.8.0 и dtor 0.3.0 узнают Windows по
+# target_vendor = "pc", а у x86_64-win7-windows-msvc vendor = "win7" —
+# compile_error! в tauri-utils. Копии отличаются одной заменой условия
+# на any(target_vendor = "pc", target_vendor = "win7").
+[patch.crates-io]
+ctor = { path = "win7-patches/ctor" }
+dtor = { path = "win7-patches/dtor" }
