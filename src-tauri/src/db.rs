@@ -298,6 +298,29 @@ pub fn find_live_bookmark_by_url(conn: &Connection, url: &str) -> Result<Option<
     ).optional()
 }
 
+/// «Открывать через…» корневой папки, в которой лежит узел: путь к exe либо
+/// `None` (не задано, пусто, узел в корне или в корзине). Правило то же, что у
+/// `resolveOpenerForNode` в app.js, — подъём по `parent` до папки с
+/// `parent IS NULL`. Нужен снимку: тот идёт из Rust мимо JS (расширение).
+pub fn root_opener(conn: &Connection, id: i64) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    // Глубина ограничена на случай цикла в parent: штатно его не бывает
+    // (move_node проверяет), но рекурсивный CTE на цикле не остановится сам.
+    let opener: Option<Option<String>> = conn.query_row(
+        "WITH RECURSIVE up(id, parent, kind, opener, depth) AS (
+             SELECT id, parent, kind, opener, 0 FROM nodes WHERE id = ?1
+             UNION ALL
+             SELECT n.id, n.parent, n.kind, n.opener, up.depth + 1
+             FROM nodes n JOIN up ON n.id = up.parent
+             WHERE up.depth < 1000
+         )
+         SELECT opener FROM up WHERE parent IS NULL AND kind = 'folder' LIMIT 1",
+        params![id],
+        |r| r.get(0),
+    ).optional()?;
+    Ok(opener.flatten().filter(|s| !s.trim().is_empty()))
+}
+
 pub fn get_bookmarks(conn: &Connection, folder_id: i64) -> Result<Vec<Bookmark>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, url, thumb, note, favicon
@@ -1334,6 +1357,41 @@ mod tests {
             params![parent, title, url, si],
         ).unwrap();
         c.last_insert_rowid()
+    }
+
+    /// Снимок берёт браузер корневой папки, как и открытие ссылки: на любой
+    /// глубине — opener самой верхней папки, а не ближайшей; пусто — как не задано.
+    #[test]
+    fn root_opener_walks_to_top_folder() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let top  = folder(&c, None, "Прокси", 0);
+        let mid  = folder(&c, Some(top), "Вложенная", 0);
+        let deep = link(&c, Some(mid), "Глубоко", "https://deep.example", 0);
+        let near = link(&c, Some(top), "Рядом", "https://near.example", 1);
+        let bare = folder(&c, None, "Без браузера", 1);
+        let l_bare = link(&c, Some(bare), "Обычная", "https://plain.example", 0);
+        let in_root = link(&c, None, "В корне", "https://root.example", 2);
+        let empty = folder(&c, None, "Пустой opener", 2);
+        let l_empty = link(&c, Some(empty), "Л", "https://e.example", 0);
+
+        let tor = r"D:\Tor Browser\Browser\firefox.exe";
+        c.execute("UPDATE nodes SET opener = ?1 WHERE id = ?2", params![tor, top]).unwrap();
+        // У вложенной папки свой opener — его брать НЕЛЬЗЯ, решает корневая.
+        c.execute("UPDATE nodes SET opener = 'C:\\x\\chrome.exe' WHERE id = ?1", params![mid]).unwrap();
+        c.execute("UPDATE nodes SET opener = '' WHERE id = ?1", params![empty]).unwrap();
+
+        assert_eq!(root_opener(&c, deep).unwrap().as_deref(), Some(tor), "глубокая ссылка");
+        assert_eq!(root_opener(&c, near).unwrap().as_deref(), Some(tor), "ссылка прямо в корневой папке");
+        assert_eq!(root_opener(&c, l_bare).unwrap(), None, "корневая папка без opener");
+        assert_eq!(root_opener(&c, in_root).unwrap(), None, "ссылка в корне");
+        assert_eq!(root_opener(&c, l_empty).unwrap(), None, "пустая строка = не задано");
+        assert_eq!(root_opener(&c, 9999).unwrap(), None, "нет такого узла");
+
+        // В корзине: parent = NULL, папки над ней нет — как ссылка в корне.
+        c.execute("UPDATE nodes SET deleted = 1, deleted_parent = parent, parent = NULL WHERE id = ?1",
+            params![deep]).unwrap();
+        assert_eq!(root_opener(&c, deep).unwrap(), None, "ссылка в корзине");
     }
 
     /// get_nodes — источник точечных обновлений в JS: узел обязан прийти ровно
