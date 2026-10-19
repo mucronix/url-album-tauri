@@ -333,18 +333,51 @@ mod reg {
     }
 }
 
-/// Exe браузера по умолчанию в Windows: `UserChoice` (https, затем http) →
-/// ProgId → `HKCR\{ProgId}\shell\open\command`. Ключ `UserChoice` есть и на Win7.
-#[cfg(windows)]
-pub(crate) fn system_default_browser() -> Option<String> {
-    for scheme in ["https", "http"] {
+/// Раздел реестра для `system_default_from`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Hive { CurrentUser, ClassesRoot }
+
+/// Чтение строки реестра: раздел, ключ, имя значения (`None` — по умолчанию).
+pub(crate) type RegRead<'a> = &'a dyn Fn(Hive, &str, Option<&str>) -> Option<String>;
+
+/// Exe браузера по умолчанию в Windows. Порядок:
+/// 1. `UserChoice` (https, затем http) → ProgId → `HKCR\{ProgId}\shell\open\command`;
+/// 2. `HKCR\{https,http}\shell\open\command` — сам класс протокола.
+///
+/// Второй шаг — ради Win7: там `UserChoice` появляется, только если браузер
+/// выбирали через «Программы по умолчанию». В госте (19.10.2026) ключа
+/// `UrlAssociations` не было вовсе, а Opera прописала себя в
+/// `HKCU\Software\Classes\http(s)` — HKCR отдаёт именно её; без этого шага
+/// «браузер Windows не определён». ProgId из `UserChoice` без команды
+/// (браузер удалён) — тоже повод идти дальше. Там может оказаться IE — его
+/// отдаём как есть, «не умеет снимать» решает `choose`.
+///
+/// `AssocQueryStringW` не берём: для протоколов на Win10 ему нужен
+/// `ASSOCF_IS_PROTOCOL`, а его нет до Windows 8.
+pub(crate) fn system_default_from(read: RegRead) -> Option<String> {
+    const SCHEMES: [&str; 2] = ["https", "http"];
+    let command = |class: &str| {
+        read(Hive::ClassesRoot, &format!(r"{class}\shell\open\command"), None)
+            .as_deref().and_then(exe_from_command)
+    };
+    let user_choice = SCHEMES.iter().filter_map(|scheme| {
         let key = format!(
             r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\{scheme}\UserChoice");
-        let Some(progid) = reg::read_sz(reg::HKEY_CURRENT_USER, &key, Some("ProgId")) else { continue };
-        let cmd = reg::read_sz(reg::HKEY_CLASSES_ROOT, &format!(r"{progid}\shell\open\command"), None);
-        if let Some(exe) = cmd.as_deref().and_then(exe_from_command) { return Some(exe); }
-    }
-    None
+        read(Hive::CurrentUser, &key, Some("ProgId"))
+    });
+    user_choice.chain(SCHEMES.iter().map(|s| s.to_string()))
+        .find_map(|class| command(&class))
+}
+
+#[cfg(windows)]
+pub(crate) fn system_default_browser() -> Option<String> {
+    system_default_from(&|hive, key, value| {
+        let root = match hive {
+            Hive::CurrentUser => reg::HKEY_CURRENT_USER,
+            Hive::ClassesRoot => reg::HKEY_CLASSES_ROOT,
+        };
+        reg::read_sz(root, key, value)
+    })
 }
 
 #[cfg(not(windows))]
@@ -582,6 +615,70 @@ mod tests {
         assert_eq!(exe_from_command(r#"  "C:\x\chrome.EXE" --single-argument %1"#).as_deref(), Some(r"C:\x\chrome.EXE"));
         assert_eq!(exe_from_command(""), None);
         assert_eq!(exe_from_command(r#""""#), None);
+    }
+
+    // ── Браузер Windows ─────────────────────────────────────────────────────
+
+    const UC_HTTPS: &str = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice";
+    const UC_HTTP:  &str = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice";
+    const OPERA_CMD: &str = r#""C:\Users\admin\AppData\Local\Programs\Opera\launcher.exe" -noautoupdate -- "%1""#;
+    const OPERA_LAUNCHER: &str = r"C:\Users\admin\AppData\Local\Programs\Opera\launcher.exe";
+    const IE_CMD: &str = r#""C:\Program Files\Internet Explorer\iexplore.exe" %1"#;
+    const EDGE_CMD: &str = r#""C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --single-argument %1"#;
+
+    /// Реестр теста: (раздел, ключ, значение) → строка; регистр ключей не важен, как в Windows.
+    fn registry(entries: &[(Hive, &str, Option<&str>, &str)]) -> impl Fn(Hive, &str, Option<&str>) -> Option<String> {
+        let v: Vec<(Hive, String, Option<String>, String)> = entries.iter()
+            .map(|(h, k, n, d)| (*h, k.to_lowercase(), n.map(str::to_lowercase), d.to_string())).collect();
+        move |h: Hive, k: &str, n: Option<&str>| {
+            let (k, n) = (k.to_lowercase(), n.map(str::to_lowercase));
+            v.iter().find(|e| e.0 == h && e.1 == k && e.2 == n).map(|e| e.3.clone())
+        }
+    }
+
+    #[test]
+    fn default_browser_from_hkcr_when_no_userchoice() {
+        // Гость Win7, 19.10.2026: `UrlAssociations` нет вовсе, Opera прописала
+        // себя в классах http(s); HKLM-классы — IE, но HKCR отдаёт HKCU-копию.
+        let reg = registry(&[
+            (Hive::ClassesRoot, r"https\shell\open\command", None, OPERA_CMD),
+            (Hive::ClassesRoot, r"http\shell\open\command",  None, OPERA_CMD),
+        ]);
+        assert_eq!(system_default_from(&reg).as_deref(), Some(OPERA_LAUNCHER));
+    }
+
+    #[test]
+    fn default_browser_hkcr_http_only() {
+        let reg = registry(&[(Hive::ClassesRoot, r"http\shell\open\command", None, IE_CMD)]);
+        assert_eq!(system_default_from(&reg).as_deref(), Some(r"C:\Program Files\Internet Explorer\iexplore.exe"),
+                   "IE — отдаём как есть, «не умеет снимать» решит choose");
+    }
+
+    #[test]
+    fn default_browser_userchoice_wins() {
+        let reg = registry(&[
+            (Hive::CurrentUser, UC_HTTPS, Some("ProgId"), "MSEdgeHTM"),
+            (Hive::ClassesRoot, r"MSEdgeHTM\shell\open\command", None, EDGE_CMD),
+            (Hive::ClassesRoot, r"https\shell\open\command", None, IE_CMD),
+        ]);
+        assert_eq!(system_default_from(&reg).as_deref(),
+                   Some(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"));
+    }
+
+    #[test]
+    fn default_browser_progid_without_command_falls_through() {
+        // UserChoice указывает на ProgId, у которого нет команды (браузер удалён).
+        let reg = registry(&[
+            (Hive::CurrentUser, UC_HTTPS, Some("ProgId"), "GoneHTML"),
+            (Hive::CurrentUser, UC_HTTP,  Some("ProgId"), "GoneHTML"),
+            (Hive::ClassesRoot, r"https\shell\open\command", None, OPERA_CMD),
+        ]);
+        assert_eq!(system_default_from(&reg).as_deref(), Some(OPERA_LAUNCHER));
+    }
+
+    #[test]
+    fn default_browser_none() {
+        assert_eq!(system_default_from(&registry(&[])), None);
     }
 
     #[test]
