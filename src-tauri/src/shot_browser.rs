@@ -385,6 +385,189 @@ pub(crate) fn kill_process_tree(pid: u32) {
     let _ = pid;
 }
 
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicLimit {
+        per_process_user_time: i64,
+        per_job_user_time: i64,
+        limit_flags: u32,
+        min_working_set: usize,
+        max_working_set: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    /// JOBOBJECT_EXTENDED_LIMIT_INFORMATION; IO_COUNTERS — шесть u64.
+    #[repr(C)]
+    #[derive(Default)]
+    struct ExtendedLimit {
+        basic: BasicLimit,
+        io: [u64; 6],
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory: usize,
+        peak_job_memory: usize,
+    }
+
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+
+    // Комментарий обычный, не `///`: к `extern`-блоку doc-комментарий не крепится.
+    // Всё — с Windows XP, на Win7 есть.
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateJobObjectW(attrs: *const c_void, name: *const u16) -> isize;
+        fn SetInformationJobObject(job: isize, class: i32, info: *const c_void, len: u32) -> i32;
+        fn AssignProcessToJobObject(job: isize, process: isize) -> i32;
+        fn TerminateJobObject(job: isize, exit_code: u32) -> i32;
+        fn CloseHandle(h: isize) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    /// Job с «убить всех при закрытии»; процесс привязан. `Err` — код ошибки.
+    pub fn create_for(process: isize) -> Result<isize, u32> {
+        // SAFETY: хэндл job закрывается при любой неудаче ниже и в `close`;
+        // структура лимитов живёт до конца вызова.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job == 0 { return Err(GetLastError()); }
+            let mut info = ExtendedLimit::default();
+            info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                (&info as *const ExtendedLimit).cast(), std::mem::size_of::<ExtendedLimit>() as u32) != 0
+                && AssignProcessToJobObject(job, process) != 0;
+            if !ok {
+                let err = GetLastError();
+                CloseHandle(job);
+                return Err(err);
+            }
+            Ok(job)
+        }
+    }
+
+    pub fn terminate(job: isize) {
+        // SAFETY: хэндл наш и ещё не закрыт (закрывает только `close`).
+        unsafe { TerminateJobObject(job, 1); }
+    }
+
+    pub fn close(job: isize) {
+        // SAFETY: зовётся ровно один раз, из `Drop`.
+        unsafe { CloseHandle(job); }
+    }
+}
+
+/// Журнал об отказе job — один раз за запуск программы, а не на каждый снимок.
+static JOB_FAIL_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Дерево процессов одного снимка.
+///
+/// Браузер привязывается к job object с `KILL_ON_JOB_CLOSE`: всё, что он
+/// запустит, попадает туда же, и снимается одним вызовом — в том числе дети
+/// уже вышедшего родителя. `taskkill /T` строит дерево по живым родителям, и
+/// таких сирот не находит: Opera 95 оставляла в госте Win7 рендерер на 140 МБ
+/// и профиль на 51 минуту. Плюс даром: если программу закроют или убьют
+/// посреди снимка, ОС закроет хэндл job, и браузер умрёт вместе с ней.
+///
+/// Привязка идёт сразу после `spawn`: `std::process::Command` не умеет
+/// запускать процесс приостановленным, и миллисекунды до привязки остаются.
+/// Chromium заводит детей позже, но это оценка, а не проверка.
+///
+/// Не вышло (на Win7 нет вложенных job: программа может уже сидеть в чужом,
+/// например помощника совместимости) — `taskkill /F /T`, как раньше.
+pub(crate) struct ProcTree {
+    pid: u32,
+    job: Option<isize>,
+}
+
+impl ProcTree {
+    pub(crate) fn attach(child: &std::process::Child) -> Self {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            match job::create_for(child.as_raw_handle() as isize) {
+                Ok(j) => return Self { pid: child.id(), job: Some(j) },
+                Err(code) => {
+                    if !JOB_FAIL_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        crate::logger::log(&format!(
+                            "снимки: job object недоступен (код {code}) — браузер снимается через taskkill"));
+                    }
+                }
+            }
+        }
+        Self { pid: child.id(), job: None }
+    }
+
+    /// Снять всё дерево. Процессы умирают не мгновенно — профиль удалять
+    /// через `remove_profile`, с повторами.
+    pub(crate) fn stop(&self) {
+        match self.job {
+            #[cfg(windows)]
+            Some(j) => job::terminate(j),
+            _ => kill_process_tree(self.pid),
+        }
+    }
+}
+
+impl Drop for ProcTree {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if let Some(j) = self.job.take() { job::close(j); }
+    }
+}
+
+/// Удалить профиль снимка. Сразу после снятия браузера его файлы ещё заняты
+/// умирающими процессами — поэтому до 10 попыток через 200 мс (~2 с). Раньше
+/// была одна попытка с `let _`, и занятый профиль молча оставался в %TEMP%.
+/// Папки уже нет — не ошибка.
+pub(crate) fn remove_profile(dir: &Path) -> Result<(), String> {
+    const TRIES: u32 = 10;
+    let mut last = String::new();
+    for i in 0..TRIES {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => last = e.to_string(),
+        }
+        if i + 1 < TRIES { std::thread::sleep(std::time::Duration::from_millis(200)); }
+    }
+    Err(last)
+}
+
+/// Начало имени профиля снимка в %TEMP% (`do_screenshot`).
+pub(crate) const PROFILE_PREFIX: &str = "ua_screenshot_";
+
+/// Убрать из `dir` профили снимков старше `max_age` — остатки прошлых
+/// запусков (упавший снимок, убитая программа, занятый профиль). Только
+/// папки с `PROFILE_PREFIX`; возраст — по времени изменения самой папки:
+/// живой браузер переписывает файлы в корне профиля, и папка идущего снимка
+/// старой не бывает. Одна попытка на папку: занятая сейчас — уйдёт в
+/// следующий запуск. Отдаёт (удалено, не удалось).
+pub(crate) fn cleanup_stale_profiles(dir: &Path, max_age: std::time::Duration) -> (usize, usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return (0, 0) };
+    let now = std::time::SystemTime::now();
+    let (mut removed, mut failed) = (0, 0);
+    for e in entries.filter_map(|e| e.ok()) {
+        if !e.file_name().to_string_lossy().starts_with(PROFILE_PREFIX) { continue; }
+        let Ok(meta) = e.metadata() else { continue };
+        if !meta.is_dir() { continue; }
+        let old = meta.modified().ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age > max_age);
+        if !old { continue; }
+        match std::fs::remove_dir_all(e.path()) {
+            Ok(())  => removed += 1,
+            Err(_)  => failed += 1,
+        }
+    }
+    (removed, failed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,5 +916,144 @@ mod tests {
         let builtin = vec![EDGE.to_string()];
         let inp = Inputs { opener: Some(TOR), cfg: Some(&c), builtin: &builtin };
         assert_eq!(choose(&inp, &|| Some(FIREFOX.to_string()), &world(&[FIREFOX, TOR])), None);
+    }
+
+    // ── Процессы и профили снимка ───────────────────────────────────────────
+
+    /// Список процессов (pid, родитель, имя exe) — Toolhelp, без WMI.
+    #[cfg(windows)]
+    mod procs {
+        #[repr(C)]
+        struct ProcessEntry32W {
+            size: u32, usage: u32, pid: u32, heap_id: usize, module_id: u32,
+            threads: u32, parent: u32, pri_class: i32, flags: u32, exe: [u16; 260],
+        }
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
+            fn Process32FirstW(snap: isize, e: *mut ProcessEntry32W) -> i32;
+            fn Process32NextW(snap: isize, e: *mut ProcessEntry32W) -> i32;
+            fn CloseHandle(h: isize) -> i32;
+        }
+
+        pub fn list() -> Vec<(u32, u32, String)> {
+            const TH32CS_SNAPPROCESS: u32 = 2;
+            let mut out = Vec::new();
+            // SAFETY: снимок закрывается в конце; `size` заполнен, как требует API.
+            unsafe {
+                let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                if snap == -1 { return out; }
+                let mut e: ProcessEntry32W = std::mem::zeroed();
+                e.size = std::mem::size_of::<ProcessEntry32W>() as u32;
+                let mut ok = Process32FirstW(snap, &mut e);
+                while ok != 0 {
+                    let end = e.exe.iter().position(|&c| c == 0).unwrap_or(e.exe.len());
+                    out.push((e.pid, e.parent, String::from_utf16_lossy(&e.exe[..end])));
+                    ok = Process32NextW(snap, &mut e);
+                }
+                CloseHandle(snap);
+            }
+            out
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tree_stopped_after_parent_exits() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        // Модель сирот Opera (id=198 в госте Win7): родитель вышел сам, дети
+        // остались, и `taskkill /T` по мёртвому PID их уже не находит. Ребёнок
+        // появляется через ~1 с — заведомо после привязки к дереву, без гонки.
+        let mut child = Command::new("cmd.exe")
+            .raw_arg("/c ping -n 2 127.0.0.1 >nul & start /b ping -n 30 127.0.0.1 >nul")
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn().unwrap();
+        let tree = ProcTree::attach(&child);
+        let parent = child.id();
+        child.wait().unwrap(); // родитель вышел сам
+
+        let orphans = || -> Vec<u32> {
+            procs::list().into_iter()
+                .filter(|(_, pp, exe)| *pp == parent && exe.eq_ignore_ascii_case("ping.exe"))
+                .map(|(pid, _, _)| pid).collect()
+        };
+        /// Красный прогон не должен оставлять ping на 30 с.
+        struct Reap(Vec<u32>);
+        impl Drop for Reap {
+            fn drop(&mut self) { for &pid in &self.0 { kill_process_tree(pid); } }
+        }
+        let before = orphans();
+        let _reap = Reap(before.clone());
+        assert!(!before.is_empty(), "сирота не появился — проверять нечего");
+
+        tree.stop();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut left = orphans();
+        while !left.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            left = orphans();
+        }
+        assert!(left.is_empty(), "после остановки живы дети вышедшего родителя: {left:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn profile_removed_after_lock_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = tmp_dir("profile_lock");
+        let prof = d.join("ua_screenshot_1_2_3");
+        let locked = prof.join("Default").join("Cookies");
+        touch(&locked);
+        // Файл занят без общего доступа — как профиль, который ещё держит
+        // умирающий процесс браузера; отпускаем через полсекунды.
+        let f = std::fs::OpenOptions::new().read(true).share_mode(0).open(&locked).unwrap();
+        let h = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            drop(f);
+        });
+        let r = remove_profile(&prof);
+        h.join().unwrap();
+        assert_eq!(r, Ok(()), "профиль удаляется, когда его отпустили");
+        assert!(!prof.exists());
+        assert_eq!(remove_profile(&prof), Ok(()), "уже нет — не ошибка");
+    }
+
+    /// Состарить файл или папку: время изменения на `by` назад.
+    #[cfg(windows)]
+    fn age(p: &Path, by: std::time::Duration) {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000; // иначе папку не открыть
+        let f = std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - by).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stale_profiles_cleaned() {
+        let d = tmp_dir("stale");
+        let hour = std::time::Duration::from_secs(3600);
+        let old   = d.join("ua_screenshot_193_4064_1792415235156");
+        let fresh = d.join("ua_screenshot_200_4064_1792415999999");
+        let other = d.join("uatest");
+        let file  = d.join("ua_screenshot_note.txt");
+        touch(&old.join("Default").join("History"));
+        touch(&fresh.join("Default").join("History"));
+        touch(&other.join("x"));
+        touch(&file);
+        // Возраст — после наполнения: запись внутрь папки освежает её время.
+        for p in [&old, &other, &file] { age(p, 2 * hour); }
+
+        assert_eq!(cleanup_stale_profiles(&d, hour), (1, 0));
+        assert!(!old.exists(), "старый профиль снимка удалён");
+        assert!(fresh.exists(), "свежий — может принадлежать идущему снимку");
+        assert!(other.exists(), "чужая папка не трогается");
+        assert!(file.exists(), "файл с тем же началом имени — не профиль");
     }
 }

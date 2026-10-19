@@ -924,6 +924,8 @@ fn shoot_once(
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    // Сразу после запуска, пока браузер не завёл детей (см. `ProcTree`).
+    let tree = shot_browser::ProcTree::attach(&child);
     // Запас 8с на холодный старт браузера + teardown под нагрузкой пакета (browser --timeout = t).
     // Дедлайн на ОДНУ попытку (см. `headless_flags`).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs((t + 8) as u64);
@@ -932,7 +934,7 @@ fn shoot_once(
     // Снимаем всё дерево процессов, а не родителя: иначе рендереры остаются
     // висеть и держат профиль. `wait` — чтобы не оставить зомби-хэндл.
     let stop = |child: &mut std::process::Child| {
-        shot_browser::kill_process_tree(child.id());
+        tree.stop();
         child.wait().ok();
     };
     loop {
@@ -951,8 +953,9 @@ fn shoot_once(
             }
         }
         match child.try_wait().map_err(|e| e.to_string())? {
-            // Родитель вышел сам, но дети могли остаться — снять и их.
-            Some(_) => { shot_browser::kill_process_tree(child.id()); return Ok(false); }
+            // Родитель вышел сам, но дети могли остаться — снять и их. По
+            // мёртвому PID `taskkill /T` их не находит, job — находит.
+            Some(_) => { tree.stop(); return Ok(false); }
             None => {
                 if std::time::Instant::now() >= deadline {
                     stop(&mut child);
@@ -1024,11 +1027,15 @@ async fn do_screenshot(
             // файлы блокировки, о которые споткнулась бы следующая попытка.
             let stamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-            let profile = std::env::temp_dir()
-                .join(format!("ua_screenshot_{id}_{}_{stamp}", std::process::id()));
+            let profile = std::env::temp_dir().join(format!(
+                "{}{id}_{}_{stamp}", shot_browser::PROFILE_PREFIX, std::process::id()));
             let r = shoot_once(&exe, flag, &profile, &path_str2, w, h, t,
                                proxy_arg.as_deref(), &url_run);
-            let _ = std::fs::remove_dir_all(&profile);
+            // Процессы уже сняты (`shoot_once`), но могут ещё держать файлы.
+            // Не удалилось — останется до чистки при следующем запуске.
+            if let Err(e) = shot_browser::remove_profile(&profile) {
+                logger::log(&format!("скриншот id={id}: профиль {} не удалён: {e}", profile.display()));
+            }
             killed = r?;
             if std::path::Path::new(&path_str2).exists() { break; }
         }
@@ -3624,6 +3631,18 @@ fn main() {
                 Ok(v)  => logger::log(&format!("WebView2: {v}")),
                 Err(e) => logger::log(&format!("WebView2: не определён ({e})")),
             }
+
+            // Профили прошлых снимков, оставшиеся в %TEMP% (упавший снимок,
+            // убитая программа). В своём потоке: окно ждать не должно. Час —
+            // с запасом: снимок длится не дольше t+8 с.
+            let _ = std::thread::Builder::new().name("ua-profile-cleanup".into()).spawn(|| {
+                let (removed, failed) = shot_browser::cleanup_stale_profiles(
+                    &std::env::temp_dir(), std::time::Duration::from_secs(3600));
+                if removed + failed > 0 {
+                    logger::log(&format!(
+                        "старые профили снимков в %TEMP%: удалено {removed}, не удалось {failed}"));
+                }
+            });
 
             // Portable mode: all files live next to the executable.
             let exe_dir = std::env::current_exe()?
