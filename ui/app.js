@@ -526,6 +526,7 @@ function showThumbPanel(total) {
   _thumbTotal = total;
   _thumbDone  = 0;
   _thumbFailed  = 0;
+  _thumbSkipped = 0;
   _thumbStarted = Date.now();
   _thumbBrowsers = new Map();
   _thumbFallback = null;
@@ -551,11 +552,13 @@ function hideThumbPanel() {
 function _finishThumbBatch() {
   document.getElementById('tp-label').textContent = 'Готово';
   const browsersUsed = [..._thumbBrowsers].map(([b, n]) => `${b} ${n}`).join(', ');
-  // _thumbDone — пройдено ссылок, вместе с неудачами; итог — как в журнале.
-  setStatus(`Рисунки: удалось ${_thumbDone - _thumbFailed}, не удалось ${_thumbFailed}`
+  // _thumbDone — пройдено ссылок, вместе с неудачами и пропущенными; итог — как в журнале.
+  const ok = _thumbDone - _thumbFailed - _thumbSkipped;
+  const skipped = _thumbSkipped ? `, пропущено ${_thumbSkipped}` : '';
+  setStatus(`Рисунки: удалось ${ok}, не удалось ${_thumbFailed}${skipped}`
       + (_thumbFallback ? ` — снято в ${[..._thumbBrowsers.keys()].join(', ')}: ${_thumbFallback}` : ''));
-  logUi(`скриншоты, итог пакета: всего ${_thumbTotal}, удалось ${_thumbDone - _thumbFailed}, `
-      + `не удалось ${_thumbFailed}, ${Math.round((Date.now() - _thumbStarted) / 1000)}с`
+  logUi(`скриншоты, итог пакета: всего ${_thumbTotal}, удалось ${ok}, `
+      + `не удалось ${_thumbFailed}${skipped}, ${Math.round((Date.now() - _thumbStarted) / 1000)}с`
       + (browsersUsed ? `; снято: ${browsersUsed}` : '')
       + (_thumbFallback ? `; запасной: ${_thumbFallback}` : ''));
   setTimeout(hideThumbPanel, 2000);
@@ -4138,7 +4141,11 @@ let _thumbCancelled = false;
 let _thumbTotal     = 0;
 let _thumbDone      = 0;
 let _thumbFailed    = 0;     // для сводки пакета
+let _thumbSkipped   = 0;     // уже снимались другим путём (SHOT_BUSY) — не неудача
 let _thumbStarted   = 0;
+// Отказ refresh_thumb, когда эта ссылка уже снимается (пакет, «Обновить
+// рисунок», новая ссылка, расширение). Тот же текст — SHOT_BUSY в main.rs.
+const SHOT_BUSY = 'Рисунок этой ссылки уже снимается';
 let _thumbBrowsers  = new Map();  // браузер → снято им, для сводки пакета
 let _thumbFallback  = null;       // причина запасного браузера, если был
 
@@ -6724,6 +6731,8 @@ function _runThumbWorker() {
       if (shot.fallback) _thumbFallback = shot.fallback;
     })
     .catch(err => {
+      // Ссылку уже снимает кто-то другой — её рисунок будет, это не неудача.
+      if (err === SHOT_BUSY) { _thumbSkipped++; return; }
       _thumbFailed++;
       setStatus('Ошибка рисунка: ' + (err?.message ?? String(err)));
     })

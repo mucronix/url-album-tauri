@@ -871,6 +871,44 @@ pub(crate) struct Shot {
     pub fallback: Option<String>,
 }
 
+/// Ответ на второй снимок той же ссылки. Тот же текст — `SHOT_BUSY` в app.js:
+/// по нему пакет считает ссылку «пропущено», а не «не удалось».
+pub(crate) const SHOT_BUSY: &str = "Рисунок этой ссылки уже снимается";
+
+/// Файлы снимков, которые сейчас снимаются. Вектор, а не `HashSet`: снимков
+/// разом единицы, а `Vec::new` годится для `static` без ленивой инициализации.
+static SHOTS_RUNNING: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Право снимать в `Data\{id}.png`; отпускается в `Drop`.
+///
+/// Без него два снимка одной ссылки (пакет, «Обновить рисунок», окно «Новая
+/// ссылка», расширение в режиме «быстро» — последнее мимо JS) делили один
+/// файл: каждый делает `remove_file` и ждёт появления того же пути, так что
+/// мог стереть чужой результат или принять чужой файл за свой (id=193 в госте
+/// Win7 «снят за 11053мс (--headless=new)», хотя Opera 95 так не снимает).
+/// Ключ — путь к файлу, а не id: две базы в одной папке делят `Data`, а
+/// одинаковые id в разных `Data` друг другу не мешают.
+struct ShotLock(std::path::PathBuf);
+
+impl ShotLock {
+    /// `None` — этот файл уже снимается.
+    fn try_acquire(out: &std::path::Path) -> Option<Self> {
+        // Отравленный замок (паника под ним) — берём данные как есть: список
+        // путей от паники не портится, а отказ снимать навсегда хуже.
+        let mut running = SHOTS_RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        if running.iter().any(|p| p == out) { return None; }
+        running.push(out.to_path_buf());
+        Some(Self(out.to_path_buf()))
+    }
+}
+
+impl Drop for ShotLock {
+    fn drop(&mut self) {
+        let mut running = SHOTS_RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        running.retain(|p| p != &self.0);
+    }
+}
+
 /// Браузер для снимка ссылки (порядок — в `shot_browser`). `browsers.json`
 /// читается на каждый снимок, как прокси: выбор в «Браузерах» действует
 /// без перезапуска.
@@ -981,6 +1019,13 @@ async fn do_screenshot(
 
     let filename = format!("{id}.png");
     let path = data_dir.join(&filename);
+
+    // Первым делом, до `remove_file` и запуска: второй снимок того же файла
+    // отказывается сразу, не тронув первый. Держится до конца функции.
+    let Some(_shot_lock) = ShotLock::try_acquire(&path) else {
+        logger::log(&format!("скриншот id={id}: уже снимается, второй запуск отклонён"));
+        return Err(SHOT_BUSY.to_string());
+    };
 
     // `None` = «размер не задан явно, взять из настроек». Файл читаем ТОЛЬКО
     // когда чего-то не хватает: из `refresh_thumb` приходят все три значения,
@@ -3905,6 +3950,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shot_lock_rejects_second() {
+        // Пути только этого теста: список идущих снимков — общий на процесс.
+        let a = std::path::Path::new(r"C:\ua_shot_lock_test\Data\1.png");
+        let b = std::path::Path::new(r"C:\ua_shot_lock_test\Data\2.png");
+        let first = ShotLock::try_acquire(a).expect("первый снимок пускается");
+        assert!(ShotLock::try_acquire(a).is_none(), "второй снимок в тот же файл — отказ");
+        let other = ShotLock::try_acquire(b).expect("другая ссылка не мешает");
+        drop(first);
+        assert!(ShotLock::try_acquire(a).is_some(), "первый закончился — снова можно");
+        drop(other);
+    }
 
     #[test]
     fn thumb_file_name_rejects_paths() {
