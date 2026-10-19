@@ -497,7 +497,8 @@ function hideFaviconPanel() {
 
 function _finishFaviconBatch() {
   document.getElementById('fv-domain').textContent = 'Готово';
-  setStatus(`Загружено ${_faviconDone} favicon`);
+  // _faviconDone — пройдено доменов, вместе с неудачами; итог — как в журнале.
+  setStatus(`Favicon: удалось ${_faviconDone - _faviconFailed}, не удалось ${_faviconFailed}`);
   // Одна строка на весь пакет: для «у меня половина иконок не грузится»
   // сводка полезнее, чем сотня отдельных записей.
   logUi(`favicon, итог пакета: всего ${_faviconTotal}, удалось ${_faviconDone - _faviconFailed}, `
@@ -6615,7 +6616,10 @@ function _runFaviconWorker() {
 
   invoke('fetch_favicon', { id: item.id, url: item.url })
     .then(filename => {
+      // «Не нашли» приходит не ошибкой, а null (все стратегии мимо, общий
+      // лимит 12 с, нет домена) — это тоже неудача, иначе сводка врёт.
       if (filename) applyFaviconToDOM(item, filename);
+      else _faviconFailed++;
     })
     .catch(() => { _faviconFailed++; })
     .finally(() => {
