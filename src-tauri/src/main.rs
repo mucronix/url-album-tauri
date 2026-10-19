@@ -5,6 +5,7 @@ mod db;
 mod importer;
 mod logger;
 mod relay;
+mod shot_browser;
 
 use std::sync::Mutex;
 use rusqlite::Connection;
@@ -860,14 +861,119 @@ fn thumb_u32(v: Option<&serde_json::Value>, default: u32) -> u32 {
     if n == 0 || n > u32::MAX as u64 { default } else { n as u32 }
 }
 
+/// Итог снимка: имя файла и чем снято. `fallback` — Some, если снял не
+/// назначенный браузер (папки или по умолчанию), а запасной; там причина.
+/// Уходит в JS как есть (`refresh_thumb`): поля snake_case, `fallback` — `null`.
+#[derive(serde::Serialize)]
+pub(crate) struct Shot {
+    pub filename: String,
+    pub browser:  String,
+    pub fallback: Option<String>,
+}
+
+/// Браузер для снимка ссылки (порядок — в `shot_browser`). `browsers.json`
+/// читается на каждый снимок, как прокси: выбор в «Браузерах» действует
+/// без перезапуска.
+fn pick_shot_browser(id: i64, opener: Option<&str>) -> Result<shot_browser::Choice, String> {
+    let cfg     = shot_browser::parse_browsers_json(&read_config_raw("browsers.json"));
+    let local   = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let pf      = std::env::var("PROGRAMFILES").unwrap_or_default();
+    let pf86    = std::env::var("PROGRAMFILES(X86)").unwrap_or_else(|_| pf.clone());
+    let builtin = shot_browser::builtin_candidates(&local, &pf, &pf86);
+    let inp = shot_browser::Inputs { opener, cfg: cfg.as_ref(), builtin: &builtin };
+    shot_browser::choose(&inp, &shot_browser::system_default_browser, &shot_browser::runnable)
+        .ok_or_else(|| {
+            logger::log(&format!(
+                "скриншот id={id}: нет браузера для снимков — папка: {}, по умолчанию: {}, Windows: {}, в списке {}, встроенных путей {}",
+                opener.unwrap_or("—"),
+                cfg.as_ref().map_or("нет browsers.json", |c| c.default.as_str()),
+                shot_browser::system_default_browser().unwrap_or_else(|| "не определён".into()),
+                cfg.as_ref().map_or(0, |c| c.list.len()),
+                builtin.len()));
+            "Нет браузера для снимков (нужен Chrome, Edge, Opera или Яндекс)".to_string()
+        })
+}
+
+/// Один запуск браузера с одним флагом headless. `Ok` не значит «снимок
+/// есть» — решает наличие файла (см. «Готовность скриншота» в CLAUDE.md).
+/// `Ok(true)` — браузер не уложился в срок и снят нами: файла после этого
+/// уже не будет, ждать его «запоздалой видимости» незачем.
+#[allow(clippy::too_many_arguments)]
+fn shoot_once(
+    exe: &str, headless: &str, profile: &std::path::Path, out: &str,
+    w: u32, h: u32, t: u32, proxy_arg: Option<&str>, url: &str,
+) -> Result<bool, String> {
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args([
+        headless,
+        "--disable-gpu",
+        "--no-sandbox",
+        "--hide-scrollbars",
+        &format!("--window-size={w},{h}"),
+        &format!("--timeout={}", t * 1000),
+        &format!("--user-data-dir={}", profile.to_string_lossy()),
+        &format!("--screenshot={out}"),
+    ]);
+    // Прокси и URL — отдельно: флаг обязан идти ДО позиционного аргумента с адресом.
+    if let Some(p) = proxy_arg {
+        cmd.arg(format!("--proxy-server={p}"));
+    }
+    cmd.arg(url);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    // Запас 8с на холодный старт браузера + teardown под нагрузкой пакета (browser --timeout = t).
+    // Дедлайн на ОДНУ попытку; у Opera их может быть две.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs((t + 8) as u64);
+    let mut last_size: u64 = 0;
+    let mut stable = 0;
+    // Снимаем всё дерево процессов, а не родителя: иначе рендереры остаются
+    // висеть и держат профиль. `wait` — чтобы не оставить зомби-хэндл.
+    let stop = |child: &mut std::process::Child| {
+        shot_browser::kill_process_tree(child.id());
+        child.wait().ok();
+    };
+    loop {
+        // Файл готов? размер >0 и стабилен 2 замера (~500мс) → сразу забрать, не ждать выхода/дедлайна
+        if let Ok(meta) = std::fs::metadata(out) {
+            let sz = meta.len();
+            if sz > 0 && sz == last_size {
+                stable += 1;
+                if stable >= 2 {
+                    stop(&mut child);
+                    return Ok(false);
+                }
+            } else {
+                stable = 0;
+                last_size = sz;
+            }
+        }
+        match child.try_wait().map_err(|e| e.to_string())? {
+            // Родитель вышел сам, но дети могли остаться — снять и их.
+            Some(_) => { shot_browser::kill_process_tree(child.id()); return Ok(false); }
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    stop(&mut child);
+                    std::thread::sleep(std::time::Duration::from_millis(300)); // дать дописать PNG
+                    return Ok(true);                  // НЕ Err — решаем по наличию файла
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        }
+    }
+}
+
 async fn do_screenshot(
     data_dir: std::path::PathBuf,
     id: i64,
     url: String,
+    opener: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
     timeout: Option<u32>,
-) -> Result<String, String> {
+) -> Result<Shot, String> {
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
 
     let filename = format!("{id}.png");
@@ -884,27 +990,15 @@ async fn do_screenshot(
         }
     };
 
-    // Try Edge, then Chrome (headless --screenshot mode)
-    let candidates = [
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    ];
-    // Самая частая жалоба про скриншоты. Раньше возврат происходил ДО строки
-    // журнала о запуске браузера, и в журнале не оставалось ничего.
-    let browser = candidates.iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .ok_or_else(|| {
-            logger::log(&format!("скриншот id={id}: Edge или Chrome не найден ни по одному из {} путей", candidates.len()));
-            "Edge или Chrome не найден".to_string()
-        })?
-        .to_string();
+    // Самая частая жалоба про скриншоты. Отказ выбора пишется в журнал внутри,
+    // ДО запуска — иначе в журнале не осталось бы ничего.
+    let choice = pick_shot_browser(id, opener.as_deref())?;
+    let flags  = shot_browser::headless_flags(shot_browser::engine_of(&choice.exe));
 
-    let tmp_dir = std::env::temp_dir().join(format!("ua_screenshot_{id}"));
-    let tmp_dir_str = tmp_dir.to_string_lossy().into_owned();
     let path_str2 = path.to_string_lossy().into_owned();
 
-    // Удалить старый {id}.png ДО запуска — иначе поллинг увидит прошлую картинку как «готовую»
+    // Удалить старый {id}.png ДО запуска — иначе поллинг увидит прошлую картинку как «готовую».
+    // Между попытками Opera не удаляем: поздно проявившийся файл первой попытки — тоже снимок.
     let _ = std::fs::remove_file(&path);
 
     // Прокси для браузера: читаем ДО spawn_blocking — значение нужно и в
@@ -913,76 +1007,42 @@ async fn do_screenshot(
     let proxy_used = proxy_arg.is_some();
 
     let t_start = std::time::Instant::now();
-    // Копия для строки отказа: сам `browser` уезжает в замыкание по `move`.
-    let browser_name = browser.clone();
+    let exe = choice.exe.clone();
+    let url_run = url.clone();
 
     // Run blocking browser process on a dedicated thread so the UI stays responsive.
-    // kill по дедлайну/готовности НЕ считаем провалом — итоговое решение по факту наличия файла ниже.
-    let run: Result<(), String> = tauri::async_runtime::spawn_blocking(move || {
-        #[cfg(windows)]
-        use std::os::windows::process::CommandExt;
-        let mut cmd = std::process::Command::new(&browser);
-        cmd.args([
-            "--headless=new",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--hide-scrollbars",
-            &format!("--window-size={w},{h}"),
-            &format!("--timeout={}", t * 1000),
-            &format!("--user-data-dir={tmp_dir_str}"),
-            &format!("--screenshot={path_str2}"),
-        ]);
-        // Прокси и URL — отдельно: массив выше фиксированной длины, а флаг
-        // обязан идти ДО позиционного аргумента с адресом.
-        if let Some(p) = proxy_arg {
-            cmd.arg(format!("--proxy-server={p}"));
+    // Повтор с другим флагом — только у Opera (`headless_flags`) и только если
+    // после первой попытки файла нет.
+    // Ok((попытки, последняя снята по сроку)).
+    let run: Result<(Vec<&'static str>, bool), String> = tauri::async_runtime::spawn_blocking(move || {
+        let mut tried = Vec::new();
+        let mut killed = false;
+        for &flag in flags {
+            tried.push(flag);
+            // Профиль свой на каждую попытку: одна ссылка может сниматься дважды
+            // разом (пакет и расширение), а убитый браузер оставляет в профиле
+            // файлы блокировки, о которые споткнулась бы следующая попытка.
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+            let profile = std::env::temp_dir()
+                .join(format!("ua_screenshot_{id}_{}_{stamp}", std::process::id()));
+            let r = shoot_once(&exe, flag, &profile, &path_str2, w, h, t,
+                               proxy_arg.as_deref(), &url_run);
+            let _ = std::fs::remove_dir_all(&profile);
+            killed = r?;
+            if std::path::Path::new(&path_str2).exists() { break; }
         }
-        cmd.arg(&url);
-        #[cfg(windows)]
-        cmd.creation_flags(0x0800_0000);
-        let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-        // Запас 8с на холодный старт браузера + teardown под нагрузкой пакета (browser --timeout = t)
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs((t + 8) as u64);
-        let mut last_size: u64 = 0;
-        let mut stable = 0;
-        loop {
-            // Файл готов? размер >0 и стабилен 2 замера (~500мс) → сразу забрать, не ждать выхода/дедлайна
-            if let Ok(meta) = std::fs::metadata(&path_str2) {
-                let sz = meta.len();
-                if sz > 0 && sz == last_size {
-                    stable += 1;
-                    if stable >= 2 {
-                        child.kill().ok();
-                        child.wait().ok();
-                        return Ok(());
-                    }
-                } else {
-                    stable = 0;
-                    last_size = sz;
-                }
-            }
-            match child.try_wait().map_err(|e| e.to_string())? {
-                Some(_) => return Ok(()),                 // браузер завершился сам
-                None => {
-                    if std::time::Instant::now() >= deadline {
-                        child.kill().ok();
-                        child.wait().ok();
-                        std::thread::sleep(std::time::Duration::from_millis(300)); // дать дописать PNG
-                        return Ok(());                    // НЕ Err — решаем по path.exists() ниже
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                }
-            }
-        }
+        Ok((tried, killed))
     }).await.map_err(|e| e.to_string())?;
-
-    let _ = std::fs::remove_dir_all(&tmp_dir);
 
     // Гонка видимости файла: только что записанный браузером PNG может быть не виден метаданным
     // сразу после выхода браузера (Windows Defender задерживает видимость на незнакомых путях).
     // Ждём появления файла до t секунд (настройка), прежде чем признать неудачу.
+    // Только если браузер вышел сам: снятый по сроку уже ничего не допишет, а
+    // лишние t секунд превращали зависание в 33 с вместо 20 (Vivaldi, 19.10.2026).
+    let killed = matches!(run, Ok((_, true)));
     let mut visible = path.exists();
-    if !visible {
+    if !visible && !killed {
         let max_iters = (t as u64) * 10;                   // потолок = t секунд (шаг 100мс)
         for _ in 0..max_iters {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -990,26 +1050,34 @@ async fn do_screenshot(
         }
     }
 
-    // Пишем ТОЛЬКО неудачи, по строке на ссылку. Раньше на каждый снимок шли
-    // две записи — параметры перед запуском и итог, — и пакет на пятьсот
-    // ссылок давал тысячу строк, где успехи хоронили под собой список тех,
-    // что не получились. Сводка «получилось N из M» есть отдельно, а здесь
-    // нужен именно перечень неудач; настройки запуска для них дописаны сюда же.
-    //
-    // Строка перед запуском не нужна: у ожидания есть жёсткий предел (t+8),
-    // поэтому зависший снимок всё равно доходит до этой записи.
-    if !visible {
+    // Одна строка на снимок — и на удачный тоже (решение пользователя,
+    // 19.10.2026): по журналу видно, каким браузером и за сколько снята каждая
+    // ссылка и был ли браузер запасным. Строки перед запуском нет: у ожидания
+    // жёсткий предел (t+8 на попытку), зависший снимок всё равно дойдёт сюда.
+    let fallback_note = choice.fallback.as_deref().map(|r| format!("; запасной: {r}")).unwrap_or_default();
+    if visible {
+        let flag = run.as_ref().ok().and_then(|(v, _)| v.last().copied()).unwrap_or("");
         logger::log(&format!(
-            "скриншот id={id}: файла нет за {}мс ({browser_name}, {w}x{h}, ожидание {t}с, прокси: {})",
+            "скриншот id={id}: снят за {}мс ({}, {flag}{fallback_note})",
+            t_start.elapsed().as_millis(), choice.name));
+    } else {
+        let tried = run.as_ref().map(|(v, _)| v.join(", ")).unwrap_or_else(|e| format!("отказ запуска: {e}"));
+        logger::log(&format!(
+            "скриншот id={id}: файла нет за {}мс ({}, {}; попытки: {tried}{}; {w}x{h}, ожидание {t}с, прокси: {}{fallback_note})",
             t_start.elapsed().as_millis(),
-            if proxy_used { "да" } else { "нет" }
+            choice.name, choice.exe,
+            if killed { " — снят по сроку" } else { "" },
+            if proxy_used { "да" } else { "нет" },
         ));
     }
 
     if visible {
-        Ok(filename)
+        Ok(Shot { filename, browser: choice.name, fallback: choice.fallback })
     } else {
-        let base = run.err().unwrap_or_else(|| "Не удалось создать скриншот".to_string());
+        // Выбранный браузер снимать умеет, но файла нет — честная ошибка,
+        // запасной не пробуем (решение пользователя): иначе каждая мёртвая
+        // ссылка в пакете снималась бы всеми браузерами по очереди.
+        let base = run.err().unwrap_or_else(|| format!("Не удалось создать скриншот ({})", choice.name));
         if proxy_used {
             // Приписка только когда флаг реально передан: при прокси с логином
             // мы идём напрямую, и упоминание прокси было бы ложным следом.
@@ -1099,7 +1167,7 @@ async fn refresh_thumb(
     width: Option<u32>,
     height: Option<u32>,
     timeout: Option<u32>,
-) -> Result<String, String> {
+) -> Result<Shot, String> {
     let url = normalize_url(&url);
     // Путь к базе запоминаем вместе с папкой данных: по нему `store_thumb`
     // сверит, что за время съёмки не открыли другую базу.
@@ -1107,13 +1175,14 @@ async fn refresh_thumb(
         let p = state.db_path.lock().map_err(|e| e.to_string())?;
         (p.clone(), p.parent().ok_or("no parent dir")?.to_path_buf().join("Data"))
     };
-    let old_thumb: Option<String> = {
+    let (old_thumb, opener): (Option<String>, Option<String>) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT thumb FROM nodes WHERE id=?1", rusqlite::params![id], |r| r.get(0)).ok().flatten()
+        (conn.query_row("SELECT thumb FROM nodes WHERE id=?1", rusqlite::params![id], |r| r.get(0)).ok().flatten(),
+         db::root_opener(&conn, id).ok().flatten())
     };
-    let filename = do_screenshot(data_dir.clone(), id, url, width, height, timeout).await?;
+    let shot = do_screenshot(data_dir.clone(), id, url, opener, width, height, timeout).await?;
     if let Some(old) = old_thumb {
-        if old != filename {
+        if old != shot.filename {
             let _ = std::fs::remove_file(data_dir.join(&old));
         }
     }
@@ -1121,8 +1190,8 @@ async fn refresh_thumb(
     // закладку стёр сам человек. Иначе такие случаи попали бы в сводку пакета как
     // неудачи, а её смотрят, чтобы отличить сетевые отказы от нормальной работы.
     // Отказ самой базы по-прежнему уходит наверх.
-    store_thumb(&state, &db_path, &data_dir, id, &filename)?;
-    Ok(filename)
+    store_thumb(&state, &db_path, &data_dir, id, &shot.filename)?;
+    Ok(shot)
 }
 
 #[tauri::command]
@@ -3407,13 +3476,15 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                 let p  = st.db_path.lock().unwrap();
                 (p.clone(), p.parent().unwrap().join("Data"))
             };
-            let old_thumb: Option<String> = {
+            let (old_thumb, opener): (Option<String>, Option<String>) = {
                 if let Ok(conn) = h2.state::<AppState>().db.lock() {
-                    conn.query_row("SELECT thumb FROM nodes WHERE id=?1", rusqlite::params![bookmark_id], |r| r.get(0)).ok().flatten()
-                } else { None }
+                    (conn.query_row("SELECT thumb FROM nodes WHERE id=?1", rusqlite::params![bookmark_id], |r| r.get(0)).ok().flatten(),
+                     db::root_opener(&conn, bookmark_id).ok().flatten())
+                } else { (None, None) }
             };
-            match do_screenshot(data_dir.clone(), bookmark_id, url2, None, None, None).await {
-                Ok(path) => {
+            match do_screenshot(data_dir.clone(), bookmark_id, url2, opener, None, None, None).await {
+                Ok(shot) => {
+                    let path = shot.filename;
                     if let Some(old) = old_thumb {
                         if old != path {
                             let _ = std::fs::remove_file(data_dir.join(&old));

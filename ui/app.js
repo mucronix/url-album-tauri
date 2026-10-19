@@ -287,7 +287,7 @@ function _refreshBreadcrumbIfOnPath(id) {
   if (activeBookmarkNode) {
     const p = (allNodes.find(n => n.id === activeBookmarkNode.id) ?? activeBookmarkNode).parent;
     if (activeBookmarkNode.id === id || onPath(p)) {
-      breadcrumb.textContent = buildBreadcrumbText(p) + "  /  " + activeBookmarkNode.title;
+      breadcrumb.textContent = _bookmarkBreadcrumb(p, activeBookmarkNode.title);
     }
   } else if (onPath(activeFolderId)) {
     breadcrumb.textContent = buildBreadcrumbText(activeFolderId);
@@ -497,7 +497,8 @@ function hideFaviconPanel() {
 
 function _finishFaviconBatch() {
   document.getElementById('fv-domain').textContent = 'Готово';
-  setStatus(`Загружено ${_faviconDone} favicon`);
+  // _faviconDone — пройдено доменов, вместе с неудачами; итог — как в журнале.
+  setStatus(`Favicon: удалось ${_faviconDone - _faviconFailed}, не удалось ${_faviconFailed}`);
   // Одна строка на весь пакет: для «у меня половина иконок не грузится»
   // сводка полезнее, чем сотня отдельных записей.
   logUi(`favicon, итог пакета: всего ${_faviconTotal}, удалось ${_faviconDone - _faviconFailed}, `
@@ -526,6 +527,8 @@ function showThumbPanel(total) {
   _thumbDone  = 0;
   _thumbFailed  = 0;
   _thumbStarted = Date.now();
+  _thumbBrowsers = new Map();
+  _thumbFallback = null;
   document.getElementById('tp-done').textContent  = '0';
   document.getElementById('tp-total').textContent = total;
   document.getElementById('tp-bar-fill').style.width = '0%';
@@ -547,9 +550,14 @@ function hideThumbPanel() {
 
 function _finishThumbBatch() {
   document.getElementById('tp-label').textContent = 'Готово';
-  setStatus(`Обновлено ${_thumbDone} ${plural(_thumbDone, 'рисунок', 'рисунка', 'рисунков')}`);
+  const browsersUsed = [..._thumbBrowsers].map(([b, n]) => `${b} ${n}`).join(', ');
+  // _thumbDone — пройдено ссылок, вместе с неудачами; итог — как в журнале.
+  setStatus(`Рисунки: удалось ${_thumbDone - _thumbFailed}, не удалось ${_thumbFailed}`
+      + (_thumbFallback ? ` — снято в ${[..._thumbBrowsers.keys()].join(', ')}: ${_thumbFallback}` : ''));
   logUi(`скриншоты, итог пакета: всего ${_thumbTotal}, удалось ${_thumbDone - _thumbFailed}, `
-      + `не удалось ${_thumbFailed}, ${Math.round((Date.now() - _thumbStarted) / 1000)}с`);
+      + `не удалось ${_thumbFailed}, ${Math.round((Date.now() - _thumbStarted) / 1000)}с`
+      + (browsersUsed ? `; снято: ${browsersUsed}` : '')
+      + (_thumbFallback ? `; запасной: ${_thumbFallback}` : ''));
   setTimeout(hideThumbPanel, 2000);
   if (activeFolderId != null) loadFolderContents(activeFolderId);
   if (activeBookmarkNode) {
@@ -1516,13 +1524,15 @@ async function refreshThumb(node) {
   detailLoadingOverlay.classList.add("visible");
 
   try {
-    const newPath = await invoke("refresh_thumb", {
+    const shot = await invoke("refresh_thumb", {
       id: node.id,
       url: node.url,
       width:   appSettings.thumbWidth   || 1280,
       height:  appSettings.thumbHeight  || 800,
       timeout: appSettings.thumbTimeout || 12,
     });
+    const newPath = shot.filename;
+    _noteShotFallback(shot);
 
     if (activeBookmarkNode?.id === node.id) activeBookmarkNode.thumb = newPath;
     _applyThumbToCard(node.id, node.title, newPath);
@@ -1865,8 +1875,7 @@ async function savePropsDialog() {
     // Immediately refresh detail panel — no restart or re-select needed
     detailUrlEl.textContent = url;
     detailUrlEl.title = url;
-    breadcrumb.textContent = (propsNode.parent != null
-      ? buildBreadcrumbText(propsNode.parent) + "  /  " : "") + title;
+    breadcrumb.textContent = _bookmarkBreadcrumb(propsNode.parent, title);
   }
   _applyNoteToUI(propsNode.id, _storedNote(note));  // info-bar, карточка, подсказка в гриде
   return true;
@@ -3372,7 +3381,10 @@ function tbMoveItem(dir) {
           width:   appSettings.thumbWidth   || 1280,
           height:  appSettings.thumbHeight  || 800,
           timeout: appSettings.thumbTimeout || 12,
-        }).then(newPath => { _applyThumbToCard(newId, name, newPath); }).catch(() => {});
+        }).then(shot => {
+          _applyThumbToCard(newId, name, shot.filename);
+          _noteShotFallback(shot);
+        }).catch(() => {});
       }
     } catch(e) { console.error(e); }
   }
@@ -4127,6 +4139,15 @@ let _thumbTotal     = 0;
 let _thumbDone      = 0;
 let _thumbFailed    = 0;     // для сводки пакета
 let _thumbStarted   = 0;
+let _thumbBrowsers  = new Map();  // браузер → снято им, для сводки пакета
+let _thumbFallback  = null;       // причина запасного браузера, если был
+
+// Запасной браузер (не браузер папки и не браузер по умолчанию) — сказать
+// человеку, чем снято и почему. Обычный снимок молчит: так решено, чтобы
+// строка состояния не говорила очевидного на каждую ссылку.
+function _noteShotFallback(shot) {
+  if (shot?.fallback) setStatus(`Рисунок снят в ${shot.browser}: ${shot.fallback}`);
+}
 
 // ── App settings ──────────────────────────────────────────────────────────────
 
@@ -5959,9 +5980,7 @@ function _activateTreeItem(node) {
   treeEl.querySelectorAll(".tree-item.active").forEach(el => el.classList.remove("active"));
   const treeItem = treeEl.querySelector(`.tree-item[data-id="${node.id}"]`);
   if (treeItem) { treeItem.classList.add("active"); treeItem.focus(); }
-  breadcrumb.textContent = node.parent != null
-    ? buildBreadcrumbText(node.parent) + "  /  " + node.title
-    : node.title;
+  breadcrumb.textContent = _bookmarkBreadcrumb(node.parent, node.title);
 }
 
 // Tree panel click on a bookmark → open full detail viewer (grid hides)
@@ -6236,6 +6255,14 @@ function buildBreadcrumbText(id) {
     current = node.parent;
   }
   return parts.join("  /  ");
+}
+
+// Путь к ссылке: папки + название. Ссылка прямо в единственной корневой папке
+// даёт пустой путь папок (обёртку прячет buildBreadcrumbText) — тогда только
+// название, без висящего «  /  » в начале.
+function _bookmarkBreadcrumb(parentId, title) {
+  const path = parentId != null ? buildBreadcrumbText(parentId) : "";
+  return path ? path + "  /  " + title : title;
 }
 
 // ── Folder contents (subfolders + bookmarks) ──────────────────────────────
@@ -6589,7 +6616,10 @@ function _runFaviconWorker() {
 
   invoke('fetch_favicon', { id: item.id, url: item.url })
     .then(filename => {
+      // «Не нашли» приходит не ошибкой, а null (все стратегии мимо, общий
+      // лимит 12 с, нет домена) — это тоже неудача, иначе сводка врёт.
       if (filename) applyFaviconToDOM(item, filename);
+      else _faviconFailed++;
     })
     .catch(() => { _faviconFailed++; })
     .finally(() => {
@@ -6685,9 +6715,13 @@ function _runThumbWorker() {
     height:  appSettings.thumbHeight  || 800,
     timeout: appSettings.thumbTimeout || 12,
   })
-    .then(newPath => {
-      if (!newPath) return;
-      _applyThumbToCard(item.id, item.title, newPath);
+    .then(shot => {
+      if (!shot?.filename) return;
+      _applyThumbToCard(item.id, item.title, shot.filename);
+      // В пакете строка состояния занята прогрессом — браузер и причину
+      // запасного копим для итога, а не показываем на каждую ссылку.
+      _thumbBrowsers.set(shot.browser, (_thumbBrowsers.get(shot.browser) || 0) + 1);
+      if (shot.fallback) _thumbFallback = shot.fallback;
     })
     .catch(err => {
       _thumbFailed++;
