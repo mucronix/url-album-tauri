@@ -8,8 +8,9 @@
 //! Шаги 3–4 — запасные: о них человеку сообщается (`Choice::fallback`).
 //!
 //! Снимать умеют только браузеры на Chromium (`--headless --screenshot`), и
-//! то не все: Brave и Vivaldi не умеют (см. `engine_of`). Firefox умеет, но с
-//! другими флагами — отдельная задача.
+//! то не все: Brave, Vivaldi (см. `engine_of`) и Opera новее 95 (см.
+//! `opera_engine_can_shoot`) не умеют. Firefox умеет, но с другими флагами —
+//! отдельная задача.
 //!
 //! Всё, что трогает диск и реестр, приходит сюда замыканиями: так порядок
 //! выбора проверяется тестами без установленных браузеров.
@@ -21,7 +22,7 @@ use std::path::{Path, PathBuf};
 pub(crate) enum Engine {
     /// Chrome, Edge, Яндекс: один флаг `--headless=new`.
     Chromium,
-    /// Opera / Opera GX: снимает только движок из папки версии, флаги по очереди.
+    /// Opera / Opera GX: снимает только движок из папки версии, и только до 95.
     Opera,
     /// Firefox, IE, Brave, Vivaldi и всё незнакомое.
     None,
@@ -65,13 +66,18 @@ pub(crate) fn engine_of(exe: &str) -> Engine {
     }
 }
 
-/// Флаги headless в порядке попыток. Opera 95 (Chromium 109, последняя для
-/// Win7) снимает только старым `--headless` — проверено в url-album-3; новые
-/// Opera — новым. Остальным одна попытка: повтор удвоил бы время на мёртвой
-/// ссылке (решение пользователя).
+/// Флаги headless в порядке попыток; у всех одна попытка — повтор удвоил бы
+/// время на мёртвой ссылке (решение пользователя).
+///
+/// Opera 95 (Chromium 109, последняя для Win7) снимает только старым
+/// `--headless`; с `--headless=new` она перезапускает себя чужим процессом,
+/// снимка не делает и оставляет сирот (проверено в госте Win7, 19.10.2026).
+/// Opera 137 не снимает ни с `--headless=new`, ни с `--headless`, ни с
+/// `--headless=old` — висит до снятия (Win10, 19.10.2026), поэтому новые Opera
+/// сюда не доходят: см. `opera_engine_can_shoot`.
 pub(crate) fn headless_flags(engine: Engine) -> &'static [&'static str] {
     match engine {
-        Engine::Opera    => &["--headless", "--headless=new"],
+        Engine::Opera    => &["--headless"],
         Engine::Chromium => &["--headless=new"],
         Engine::None     => &[],
     }
@@ -135,6 +141,21 @@ pub(crate) fn find_opera_engine(exe: &Path) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// Последняя версия движка Opera, которая снимает (`--headless --screenshot`).
+const OPERA_LAST_SHOOTING: u32 = 95;
+
+/// Снимает ли движок Opera: версия из имени папки над ним не новее 95.
+/// Проверены две точки — 95 снимает, 137 нет (см. `headless_flags`); где
+/// между ними граница, неизвестно, поэтому «умеет» — только проверенное.
+/// Папка не версия — не умеет.
+pub(crate) fn opera_engine_can_shoot(engine: &Path) -> bool {
+    engine.parent()
+        .and_then(|d| d.file_name())
+        .and_then(|d| parse_version(&d.to_string_lossy()))
+        .and_then(|v| v.first().copied())
+        .is_some_and(|major| major <= OPERA_LAST_SHOOTING)
+}
+
 /// Разобранный `browsers.json`: `{ browsers: [{name, path}], default }`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BrowsersCfg {
@@ -196,7 +217,8 @@ pub(crate) struct Inputs<'a> {
 
 /// Выбрать браузер.
 /// `system_default` — exe браузера по умолчанию в Windows;
-/// `runnable(path)` — что запускать, если файл есть и браузер умеет снимать.
+/// `runnable(path)` — что запускать, или почему нечего (`Err` — окончание
+/// фразы о браузере: «не найден», «не умеет снимать (…)»).
 ///
 /// `fallback` — причина первой неудачи среди «назначенных» браузеров (папки и
 /// по умолчанию), если снимет кто-то после них. Браузер Windows при `"default"`
@@ -204,7 +226,7 @@ pub(crate) struct Inputs<'a> {
 pub(crate) fn choose(
     inp: &Inputs,
     system_default: &dyn Fn() -> Option<String>,
-    runnable: &dyn Fn(&str) -> Option<String>,
+    runnable: &dyn Fn(&str) -> Result<String, String>,
 ) -> Option<Choice> {
     let mut miss: Option<String> = None;
 
@@ -222,7 +244,7 @@ pub(crate) fn choose(
         }
         runnable(&path)
             .map(|exe| Choice { exe, name: name.clone(), fallback: None })
-            .ok_or_else(|| format!("{who} ({name}) не найден"))
+            .map_err(|why| format!("{who} ({name}) {why}"))
     };
 
     // 1–2. Назначенные: браузер корневой папки, затем браузер по умолчанию.
@@ -329,14 +351,21 @@ pub(crate) fn system_default_browser() -> Option<String> {
 pub(crate) fn system_default_browser() -> Option<String> { None }
 
 /// Что запускать для снимка: файл на месте и браузер умеет снимать. У Opera —
-/// движок из папки версии; нет движка — `None` (лаунчер снимок не сделает).
-pub(crate) fn runnable(path: &str) -> Option<String> {
+/// движок из папки версии; нет движка — «не найден» (лаунчер снимок не
+/// сделает), движок новее 95 — «не умеет снимать».
+/// `Err` — окончание фразы для причины в `choose`.
+pub(crate) fn runnable(path: &str) -> Result<String, String> {
+    const MISSING: &str = "не найден";
     let p = Path::new(path);
-    if !p.is_file() { return None; }
+    if !p.is_file() { return Err(MISSING.into()); }
     match engine_of(path) {
-        Engine::Chromium => Some(path.to_string()),
-        Engine::Opera    => find_opera_engine(p).map(|e| e.to_string_lossy().into_owned()),
-        Engine::None     => None,
+        Engine::Chromium => Ok(path.to_string()),
+        Engine::Opera    => match find_opera_engine(p) {
+            None => Err(MISSING.into()),
+            Some(e) if opera_engine_can_shoot(&e) => Ok(e.to_string_lossy().into_owned()),
+            Some(_) => Err(format!("не умеет снимать (Opera новее {OPERA_LAST_SHOOTING})")),
+        },
+        Engine::None     => Err("не умеет снимать".into()),
     }
 }
 
@@ -384,10 +413,29 @@ mod tests {
         touch(&op.join("95.0.4635.90").join("opera.exe"));
         let s = |p: &Path| p.to_string_lossy().into_owned();
 
-        assert_eq!(runnable(&s(&chrome)), Some(s(&chrome)));
-        assert_eq!(runnable(&s(&ff)), None, "есть, но снимать не умеет");
-        assert_eq!(runnable(&s(&d.join("msedge.exe"))), None, "файла нет");
-        assert_eq!(runnable(&s(&op.join("launcher.exe"))), Some(s(&op.join("95.0.4635.90").join("opera.exe"))));
+        assert_eq!(runnable(&s(&chrome)), Ok(s(&chrome)));
+        assert_eq!(runnable(&s(&ff)), Err("не умеет снимать".into()), "есть, но снимать не умеет");
+        assert_eq!(runnable(&s(&d.join("msedge.exe"))), Err("не найден".into()), "файла нет");
+        assert_eq!(runnable(&s(&op.join("launcher.exe"))), Ok(s(&op.join("95.0.4635.90").join("opera.exe"))));
+
+        let new = d.join("Opera New");
+        touch(&new.join("launcher.exe"));
+        touch(&new.join("137.0.6036.63").join("opera.exe"));
+        assert!(runnable(&s(&new.join("launcher.exe"))).is_err_and(|e| e.starts_with("не умеет снимать")),
+                "Opera 137 есть, но не снимает");
+        let bare = d.join("Opera Bare");
+        touch(&bare.join("launcher.exe"));
+        assert_eq!(runnable(&s(&bare.join("launcher.exe"))), Err("не найден".into()), "лаунчер без движка");
+    }
+
+    #[test]
+    fn opera_version_boundary() {
+        let e = |ver: &str| PathBuf::from(format!(r"C:\Opera\{ver}\opera.exe"));
+        assert!(opera_engine_can_shoot(&e("95.0.4635.90")));
+        assert!(opera_engine_can_shoot(&e("94.0.4606.76")));
+        assert!(!opera_engine_can_shoot(&e("96.0.1.1")));
+        assert!(!opera_engine_can_shoot(&e("137.0.6036.63")));
+        assert!(!opera_engine_can_shoot(&PathBuf::from(r"C:\Opera\opera.exe")), "папка не версия");
     }
 
     #[test]
@@ -418,10 +466,43 @@ mod tests {
     }
 
     #[test]
-    fn headless_flags_retry_only_for_opera() {
-        assert_eq!(headless_flags(Engine::Opera), &["--headless", "--headless=new"]);
+    fn headless_flags_one_attempt() {
+        assert_eq!(headless_flags(Engine::Opera), &["--headless"], "Opera 95 снимает только старым headless");
         assert_eq!(headless_flags(Engine::Chromium), &["--headless=new"]);
         assert!(headless_flags(Engine::None).is_empty());
+    }
+
+    #[test]
+    fn choose_new_opera_is_skipped() {
+        // Настоящий `runnable` на временных папках: решает версия движка.
+        let d = tmp_dir("opera_ver");
+        let chrome = d.join("chrome.exe");
+        touch(&chrome);
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let opera = |ver: &str| {
+            let dir = d.join(format!("Opera_{ver}"));
+            touch(&dir.join("launcher.exe"));
+            touch(&dir.join(ver).join("opera.exe"));
+            (s(&dir.join("launcher.exe")), s(&dir.join(ver).join("opera.exe")))
+        };
+        let pick = |default: &str| {
+            let c = cfg(default, &[default, &s(&chrome)]);
+            let inp = Inputs { opener: None, cfg: Some(&c), builtin: &[] };
+            choose(&inp, &|| None, &runnable).unwrap()
+        };
+
+        let (l95, e95) = opera("95.0.4635.90");
+        let got = pick(&l95);
+        assert_eq!(got.exe, e95, "Opera 95 снимает сама");
+        assert_eq!(got.fallback, None);
+
+        for ver in ["96.0.1.1", "137.0.6036.63"] {
+            let (l, _) = opera(ver);
+            let got = pick(&l);
+            assert_eq!(got.exe, s(&chrome), "Opera {ver}: снимает следующий по порядку");
+            assert!(got.fallback.as_deref().is_some_and(|r| r.contains("Opera") && r.contains("не умеет")),
+                    "Opera {ver}: {:?}", got.fallback);
+        }
     }
 
     #[test]
@@ -540,14 +621,14 @@ mod tests {
     const TOR:     &str = r"D:\Tor Browser\Browser\firefox.exe";
 
     /// Мир теста: какие файлы есть и чем их запускать.
-    fn world(present: &[&str]) -> impl Fn(&str) -> Option<String> {
+    fn world(present: &[&str]) -> impl Fn(&str) -> Result<String, String> {
         let mut m: HashMap<String, String> = HashMap::new();
         for p in present {
             if engine_of(p) == Engine::None { continue; } // есть, но снимать не умеет
             let run = if *p == OPERA { OPERA_E } else { p };
             m.insert(p.to_string(), run.to_string());
         }
-        move |p: &str| m.get(p).cloned()
+        move |p: &str| m.get(p).cloned().ok_or_else(|| "не найден".to_string())
     }
 
     fn cfg(default: &str, list: &[&str]) -> BrowsersCfg {

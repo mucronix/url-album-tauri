@@ -925,7 +925,7 @@ fn shoot_once(
     cmd.creation_flags(0x0800_0000);
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     // Запас 8с на холодный старт браузера + teardown под нагрузкой пакета (browser --timeout = t).
-    // Дедлайн на ОДНУ попытку; у Opera их может быть две.
+    // Дедлайн на ОДНУ попытку (см. `headless_flags`).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs((t + 8) as u64);
     let mut last_size: u64 = 0;
     let mut stable = 0;
@@ -998,7 +998,7 @@ async fn do_screenshot(
     let path_str2 = path.to_string_lossy().into_owned();
 
     // Удалить старый {id}.png ДО запуска — иначе поллинг увидит прошлую картинку как «готовую».
-    // Между попытками Opera не удаляем: поздно проявившийся файл первой попытки — тоже снимок.
+    // Между попытками не удаляем: поздно проявившийся файл первой попытки — тоже снимок.
     let _ = std::fs::remove_file(&path);
 
     // Прокси для браузера: читаем ДО spawn_blocking — значение нужно и в
@@ -1011,8 +1011,8 @@ async fn do_screenshot(
     let url_run = url.clone();
 
     // Run blocking browser process on a dedicated thread so the UI stays responsive.
-    // Повтор с другим флагом — только у Opera (`headless_flags`) и только если
-    // после первой попытки файла нет.
+    // Попытки — по `headless_flags`; сейчас у всех браузеров одна. Следующая —
+    // только если после предыдущей файла нет.
     // Ok((попытки, последняя снята по сроку)).
     let run: Result<(Vec<&'static str>, bool), String> = tauri::async_runtime::spawn_blocking(move || {
         let mut tried = Vec::new();
