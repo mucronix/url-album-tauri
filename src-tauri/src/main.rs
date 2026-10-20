@@ -1425,10 +1425,9 @@ fn clear_screenshots(state: tauri::State<AppState>) -> Result<usize, String> {
     Ok(deleted)
 }
 
-#[tauri::command]
-fn clear_db(state: tauri::State<AppState>) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-
+/// Тело очистки базы, одной транзакцией; служебная «Новые ссылки» заводится
+/// заново в той же транзакции — очищенная база не остаётся без папок.
+fn clear_nodes(conn: &Connection) -> Result<(), String> {
     // Раньше здесь были ещё DELETE из entries и folders — таблиц старой схемы,
     // которых db::init не создаёт. execute_batch падал на них уже ПОСЛЕ удаления
     // nodes: данные стёрты, команда вернула ошибку, VACUUM не выполнился, и
@@ -1437,15 +1436,21 @@ fn clear_db(state: tauri::State<AppState>) -> Result<(), String> {
     if let Err(e) = conn.execute_batch(
         "DELETE FROM nodes;
          DELETE FROM sqlite_sequence WHERE name = 'nodes';"
-    ) {
+    ).map_err(|e| e.to_string()).and_then(|_| find_or_create_inbox_folder(conn)) {
         conn.execute_batch("ROLLBACK").ok();
         logger::log(&format!("очистка базы отменена, данные на месте: {e}"));
-        return Err(e.to_string());
+        return Err(e);
     }
     conn.execute_batch("COMMIT").map_err(|e| {
         logger::log(&format!("очистка базы: COMMIT не прошёл: {e}"));
         e.to_string()
-    })?;
+    })
+}
+
+#[tauri::command]
+fn clear_db(state: tauri::State<AppState>) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    clear_nodes(&conn)?;
 
     // VACUUM сжимает файл, и только ПОСЛЕ COMMIT — внутри транзакции он не работает.
     if let Err(e) = conn.execute_batch("VACUUM") {
@@ -1488,6 +1493,29 @@ async fn open_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> R
     switch_db(state, src)
 }
 
+/// Схема новой базы и служебная «Новые ссылки» в ней: окну «Новая ссылка»
+/// нужна хотя бы одна папка.
+fn init_new_db(conn: &Connection) -> Result<(), String> {
+    db::init(conn).map_err(|e| e.to_string())?;
+    find_or_create_inbox_folder(conn).map(|_| ())
+}
+
+/// База при старте программы. Файла не было (первый запуск) — новая база,
+/// с «Новые ссылки»; в существующую, даже пустую, ничего не добавляется.
+/// Ошибка — готовая строка для журнала.
+fn open_startup_db(path: &std::path::Path) -> Result<Connection, String> {
+    let is_new = !path.exists();
+    let conn = Connection::open(path)
+        .map_err(|e| format!("не удалось открыть базу {}: {e}", path.display()))?;
+    if is_new {
+        init_new_db(&conn)
+    } else {
+        db::init(&conn).map_err(|e| e.to_string())
+    }
+    .map_err(|e| format!("не удалось подготовить базу {}: {e}", path.display()))?;
+    Ok(conn)
+}
+
 /// Create a new empty database at a user-chosen path, then open it.
 #[tauri::command]
 async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> Result<(), String> {
@@ -1508,7 +1536,7 @@ async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window
 
     // Create and initialise the new empty file
     let new_conn = Connection::open(&path).map_err(|e| e.to_string())?;
-    db::init(&new_conn).map_err(|e| e.to_string())?;
+    init_new_db(&new_conn)?;
     // Close it so switch_db can reopen cleanly
     drop(new_conn);
 
@@ -2227,13 +2255,23 @@ fn create_folder(state: tauri::State<AppState>, parent_id: Option<i64>, title: S
 fn find_or_create_inbox_folder(conn: &Connection) -> Result<i64, String> {
     use rusqlite::OptionalExtension;
     if let Some(id) = conn.query_row(
-        "SELECT id FROM nodes WHERE kind='folder' AND title=?1 AND parent IS NULL LIMIT 1",
+        // deleted: папка в корзине тоже с parent = NULL — с виду корневая.
+        "SELECT id FROM nodes WHERE kind='folder' AND title=?1 AND parent IS NULL \
+         AND COALESCE(deleted, 0) = 0 ORDER BY id LIMIT 1",
         rusqlite::params![INBOX_FOLDER_NAME],
         |r| r.get::<_, i64>(0),
     ).optional().map_err(|e| e.to_string())? {
         return Ok(id);
     }
     db::insert_folder(conn, None, INBOX_FOLDER_NAME).map_err(|e| e.to_string())
+}
+
+/// Папка для окна «Новая ссылка», когда в нём не выбрано ни одной (в базе нет
+/// папок): служебная «Новые ссылки», при необходимости заводится.
+#[tauri::command]
+fn inbox_folder(state: tauri::State<AppState>) -> Result<i64, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    find_or_create_inbox_folder(&conn)
 }
 
 #[tauri::command]
@@ -3726,15 +3764,10 @@ fn main() {
             // Отказ здесь = окна не будет вообще. Раньше причина не сохранялась
             // нигде: повреждённая база, носитель только для чтения, файл занят —
             // всё выглядело как «программа не запускается».
-            let conn = Connection::open(&db_path)
+            let conn = open_startup_db(&db_path)
                 .map_err(|e| {
-                    logger::log(&format!("не удалось открыть базу {}: {e}", db_path.display()));
-                    Box::new(e) as Box<dyn std::error::Error>
-                })?;
-            db::init(&conn)
-                .map_err(|e| {
-                    logger::log(&format!("не удалось подготовить базу {}: {e}", db_path.display()));
-                    Box::new(e) as Box<dyn std::error::Error>
+                    logger::log(&e);
+                    Box::<dyn std::error::Error>::from(e)
                 })?;
             migrate_thumb_to_filename(&conn, &db_path.parent().unwrap_or(&db_path).join("Data"));
 
@@ -3913,6 +3946,7 @@ fn main() {
             save_toolbar_config,
             create_folder,
             create_bookmark,
+            inbox_folder,
             create_new_db,
             get_db_path,
             set_window_title,
@@ -3983,6 +4017,88 @@ mod tests {
         drop(first);
         assert!(ShotLock::try_acquire(a).is_some(), "первый закончился — снова можно");
         drop(other);
+    }
+
+    fn inbox_ids(conn: &Connection) -> Vec<i64> {
+        let mut st = conn.prepare(
+            "SELECT id FROM nodes WHERE kind='folder' AND title=?1 AND parent IS NULL \
+             AND COALESCE(deleted, 0) = 0"
+        ).unwrap();
+        st.query_map([INBOX_FOLDER_NAME], |r| r.get(0)).unwrap()
+            .map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn new_db_has_inbox() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        assert_eq!(inbox_ids(&conn).len(), 1, "в новой базе — одна «{INBOX_FOLDER_NAME}»");
+    }
+
+    #[test]
+    fn cleared_db_has_inbox() {
+        let conn = Connection::open_in_memory().unwrap();
+        db::init(&conn).unwrap();
+        let f = db::insert_folder(&conn, None, "Папка").unwrap();
+        db::insert_bookmark(&conn, Some(f), "x", "https://example.com", None).unwrap();
+        clear_nodes(&conn).unwrap();
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0)).unwrap();
+        assert_eq!(total, 1, "после очистки остаётся только служебная папка");
+        assert_eq!(inbox_ids(&conn).len(), 1, "в очищенной базе — одна «{INBOX_FOLDER_NAME}»");
+    }
+
+    #[test]
+    fn inbox_folder_reused_not_duplicated() {
+        let conn = Connection::open_in_memory().unwrap();
+        db::init(&conn).unwrap();
+        let first = find_or_create_inbox_folder(&conn).unwrap();
+        let second = find_or_create_inbox_folder(&conn).unwrap();
+        assert_eq!(first, second, "вторая просьба отдаёт ту же папку");
+        assert_eq!(inbox_ids(&conn), vec![first], "второй «{INBOX_FOLDER_NAME}» не появилось");
+    }
+
+    #[test]
+    fn inbox_folder_in_trash_not_used() {
+        // Удалённая папка лежит в корзине с parent = NULL — с виду корневая.
+        let conn = Connection::open_in_memory().unwrap();
+        db::init(&conn).unwrap();
+        let old = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute(
+            "UPDATE nodes SET deleted = 1, deleted_parent = parent, parent = NULL WHERE id = ?1",
+            [old],
+        ).unwrap();
+        let id = find_or_create_inbox_folder(&conn).unwrap();
+        assert_ne!(id, old, "ссылка не должна уходить в папку из корзины");
+        assert_eq!(inbox_ids(&conn), vec![id]);
+    }
+
+    /// Путь к ещё не созданному файлу базы во временной папке, свой на тест.
+    fn startup_db_path(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("ua_startup_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("album.db")
+    }
+
+    #[test]
+    fn startup_creates_inbox_in_new_db() {
+        let path = startup_db_path("new");
+        let conn = open_startup_db(&path).unwrap();
+        assert_eq!(inbox_ids(&conn).len(), 1, "впервые созданная при старте база — с «{INBOX_FOLDER_NAME}»");
+        drop(conn);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn startup_leaves_existing_empty_db() {
+        let path = startup_db_path("existing");
+        drop(Connection::open(&path).map(|c| db::init(&c).map(|_| c)).unwrap().unwrap());
+        let conn = open_startup_db(&path).unwrap();
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0)).unwrap();
+        assert_eq!(total, 0, "в существующую базу без папок ничего не добавляется");
+        drop(conn);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

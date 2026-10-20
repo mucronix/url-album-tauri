@@ -3328,21 +3328,49 @@ function tbMoveItem(dir) {
 
   const warnEl = document.getElementById('new-item-warn');
 
+  let _inboxPending = false;
+
+  function _warn(text) {
+    warnEl.textContent = text;
+    warnEl.classList.remove('hidden');
+  }
+
   async function submit() {
-    const pid = Number(folderSelect.value) || activeFolderId;
-    if (pid == null) return;
     const url = urlInput.value.trim();
-    if (!url) return;
+    if (!url) {
+      _warn('Введите адрес');
+      urlInput.focus();
+      return;
+    }
 
     // Duplicate URL check
     if (appSettings.noDuplicateUrls) {
       const dup = allNodes.find(n => n.kind === 'bookmark' && n.url === url);
       if (dup) {
-        warnEl.textContent = `Уже существует: «${dup.title}»`;
-        warnEl.classList.remove('hidden');
+        _warn(`Уже существует: «${dup.title}»`);
         urlInput.focus();
         return;
       }
+    }
+
+    // Список пуст только когда в базе нет папок — тогда в служебную
+    // «Новые ссылки», заведя её при необходимости (как расширение в режиме
+    // «быстро»). Окно до ответа открыто — повторный Enter не должен создать вторую.
+    let pid = Number(folderSelect.value) || null;
+    let inboxIsNew = false;
+    if (pid == null) {
+      if (_inboxPending) return;
+      _inboxPending = true;
+      try {
+        pid = await invoke('inbox_folder');
+      } catch (e) {
+        logUi(`Новая ссылка: папка «Новые ссылки» не заведена: ${e}`);
+        _warn(`Не удалось завести папку «Новые ссылки»: ${e}`);
+        return;
+      } finally {
+        _inboxPending = false;
+      }
+      inboxIsNew = !allNodes.some(n => n.id === pid);
     }
     warnEl.classList.add('hidden');
 
@@ -3357,6 +3385,8 @@ function tbMoveItem(dir) {
       // Точечно: новая ссылка и её папка (count для бейджа) — из базы
       const rows = _applyNodeRows(await invoke('get_nodes', { ids: [newId, pid] }));
       const added = rows.find(n => n.id === newId);
+      const inbox = rows.find(n => n.id === pid);
+      if (inboxIsNew && inbox) _attachTreeChild(null, inbox);
       if (added) {
         _attachTreeChild(pid, added);
         _updateFolderBadge(pid);
@@ -3915,7 +3945,9 @@ function handleMenuAction(action) {
       deleteConfirm('Очистить базу данных?\nВсе закладки, папки и скриншоты будут удалены.', async () => {
         await flushNoteEdit();
         await Promise.all([invoke('clear_db'), invoke('clear_screenshots')]).catch(console.error);
-        allNodes = []; allFolders = [];
+        // В очищенной базе Rust заводит «Новые ссылки» — дерево перечитать.
+        allNodes = await invoke('get_tree').catch(e => { console.error(e); return []; });
+        allFolders = allNodes.filter(n => n.kind === 'folder');
         activeFolderId = null;
         exitSearchMode();          // clear search state + UI
         hideDetailView();          // hide detail panel, reset activeBookmarkNode
