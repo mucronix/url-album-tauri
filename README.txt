@@ -184,6 +184,8 @@ Edge WebView2 Runtime (Evergreen Bootstrapper) с сайта Microsoft:
 https://developer.microsoft.com/microsoft-edge/webview2/
 Это бесплатно и около 2 МБ.
 
+Для Windows 7 — см. ПРОЧТИ-WINDOWS7.txt в архиве для Windows 7.
+
 УСТАНОВКА РАСШИРЕНИЯ (Chrome / Edge)
 ------------------------------------
 1. Откройте страницу расширений:
