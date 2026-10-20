@@ -4798,8 +4798,6 @@ function setStatus(text, { sticky = false, ms } = {}) {
   const el = document.getElementById('sb-right');
   clearTimeout(_sbTimer); _sbTimer = null;
   el.textContent = text;
-  // Полный текст во всплывающей подсказке: длинное обрезается многоточием.
-  el.title       = text;
   el.className   = sticky ? 'sb-sticky' : 'sb-temp';
   if (!sticky && text) _armStatusTimer(ms ?? _statusMs(text));
 }
@@ -4816,10 +4814,19 @@ function _armStatusTimer(ms) {
 function clearStatus() {
   clearTimeout(_sbTimer); _sbTimer = null;
   const el = document.getElementById('sb-right');
-  el.textContent = ''; el.className = ''; el.title = '';
+  el.textContent = ''; el.className = '';
 }
 
 {
+  // Полный текст — во всплывающей подсказке, и только когда он обрезан
+  // многоточием: подсказка всплывает под курсором у нижнего края окна и
+  // закрывает саму строку, поэтому на видимом целиком тексте она лишняя.
+  // Решается при наведении — так верно и после изменения ширины окна.
+  const right = document.getElementById('sb-right');
+  right.addEventListener('mouseenter', () => {
+    right.title = right.scrollWidth > right.clientWidth ? right.textContent : '';
+  });
+
   const bar = document.getElementById('statusbar');
   bar.addEventListener('mouseenter', () => {
     _sbHover = true;
