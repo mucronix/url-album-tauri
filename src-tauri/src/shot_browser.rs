@@ -572,6 +572,87 @@ pub(crate) fn remove_profile(dir: &Path) -> Result<(), String> {
     Err(last)
 }
 
+/// Хост и порт адреса для проверки до запуска браузера: http → 80, https →
+/// 443, явный порт, IPv6 в скобках, логин в адресе отбрасывается. Другая
+/// схема, пустой хост, кривой порт — `None`: не проверяем, решает браузер.
+pub(crate) fn host_port(url: &str) -> Option<(String, u16)> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let default = match scheme.to_ascii_lowercase().as_str() {
+        "http"  => 80,
+        "https" => 443,
+        _ => return None,
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let (host, port) = if let Some(v6) = hostport.strip_prefix('[') {
+        let (h, tail) = v6.split_once(']')?;
+        (h, tail.strip_prefix(':'))
+    } else {
+        match hostport.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (hostport, None),
+        }
+    };
+    if host.is_empty() { return None; }
+    let port = match port {
+        None | Some("") => default,
+        Some(p) => p.parse().ok()?,
+    };
+    Some((host.to_ascii_lowercase(), port))
+}
+
+/// Доступен ли адрес: DNS, затем TCP-соединение, всё вместе не дольше
+/// `budget`. `Err` — причина для человека: «адрес не найден», «соединение
+/// отклонено», «нет ответа».
+///
+/// Зачем: Opera 95 на мёртвом адресе (`--headless`) пишет белый лист, и он
+/// засчитывается удачей (гость Win7, 19.10.2026); остальные браузеры тратят
+/// на мёртвую ссылку до t+8 с. Не ловит 404/500 (там законный снимок), ошибки
+/// TLS, подмену DNS провайдером и медленный сайт — TCP соединяется, а
+/// страница не приходит (см. очередь, «Медленный сайт — белый лист»).
+pub(crate) fn probe_host(host: &str, port: u16, budget: std::time::Duration) -> Result<(), String> {
+    use std::net::ToSocketAddrs;
+    use std::time::Instant;
+    let deadline = Instant::now() + budget;
+
+    // У `ToSocketAddrs` своего срока нет, а системный резолвер может думать
+    // дольше бюджета — поэтому в отдельном потоке с `recv_timeout`. Не
+    // дождались — поток остаётся висеть до ответа резолвера: прервать его
+    // нельзя, но он ничего не держит, а результат уйдёт в закрытый канал.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let name = host.to_string();
+    std::thread::Builder::new().name("ua-dns".into()).spawn(move || {
+        let _ = tx.send((name.as_str(), port).to_socket_addrs().map(|a| a.collect::<Vec<_>>()));
+    }).map_err(|e| format!("проверка адреса не запустилась: {e}"))?;
+    let addrs = match rx.recv_timeout(budget) {
+        Ok(Ok(a)) if !a.is_empty() => a,
+        Ok(_)  => return Err(format!("адрес не найден: {host}")),
+        Err(_) => return Err(format!("нет ответа: {host} (имя не разрешилось за {} с)", budget.as_secs())),
+    };
+
+    // Все адреса по очереди: на машине без IPv6 первым может прийти v6.
+    let (mut refused, mut timed_out, mut other) = (false, false, None);
+    for addr in addrs {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() { timed_out = true; break; }
+        match std::net::TcpStream::connect_timeout(&addr, left) {
+            Ok(_) => return Ok(()),
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::ConnectionRefused => refused = true,
+                std::io::ErrorKind::TimedOut => timed_out = true,
+                _ => other = Some(e.to_string()),
+            },
+        }
+    }
+    Err(if timed_out {
+        format!("нет ответа: {host}:{port}")
+    } else if refused {
+        format!("соединение отклонено: {host}:{port}")
+    } else {
+        format!("не удалось соединиться с {host}:{port}: {}", other.unwrap_or_default())
+    })
+}
+
 /// Начало имени профиля снимка в %TEMP% (`do_screenshot`).
 pub(crate) const PROFILE_PREFIX: &str = "ua_screenshot_";
 
@@ -1013,6 +1094,54 @@ mod tests {
         let builtin = vec![EDGE.to_string()];
         let inp = Inputs { opener: Some(TOR), cfg: Some(&c), builtin: &builtin };
         assert_eq!(choose(&inp, &|| Some(FIREFOX.to_string()), &world(&[FIREFOX, TOR])), None);
+    }
+
+    // ── Проверка адреса до запуска браузера ─────────────────────────────────
+
+    #[test]
+    fn host_port_parsing() {
+        let hp = |u: &str| host_port(u);
+        let some = |h: &str, p: u16| Some((h.to_string(), p));
+        assert_eq!(hp("https://example.com"), some("example.com", 443));
+        assert_eq!(hp("http://Example.COM/path?q=1#x"), some("example.com", 80), "регистр хоста не важен");
+        assert_eq!(hp("HTTPS://example.com:8443/"), some("example.com", 8443));
+        assert_eq!(hp("http://user:pass@host.ru:81/x"), some("host.ru", 81), "логин в адресе — не хост");
+        assert_eq!(hp("http://[::1]:8080/"), some("::1", 8080), "IPv6 в скобках");
+        assert_eq!(hp("https://[2001:db8::1]/"), some("2001:db8::1", 443));
+        assert_eq!(hp("http://127.0.0.1:64449/"), some("127.0.0.1", 64449));
+        assert_eq!(hp("https://example.com?q"), some("example.com", 443), "запрос сразу после хоста");
+        // normalize_url приклеивает https:// к незнакомой схеме — хостом
+        // становится имя схемы; DNS его не найдёт, браузер не запустится.
+        assert_eq!(hp("https://content://org.telegram/x"), some("content", 443));
+        for skip in ["file:///C:/x.html", "ftp://host/", "mailto:a@b.ru", "edge://settings",
+                     "https://", "https:///path", "http://host:99999/", "http://host:x/"] {
+            assert_eq!(hp(skip), None, "{skip}: не проверяем — решает браузер");
+        }
+    }
+
+    const BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+    #[test]
+    fn probe_unknown_host() {
+        // .invalid не разрешается никогда (RFC 6761).
+        let r = probe_host("nonexistent.invalid", 443, BUDGET);
+        assert!(r.as_ref().is_err_and(|e| e.contains("адрес не найден")), "{r:?}");
+    }
+
+    #[test]
+    fn probe_refused() {
+        // Занять свободный порт и отпустить: на нём никто не слушает.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let r = probe_host("127.0.0.1", port, BUDGET);
+        assert!(r.as_ref().is_err_and(|e| e.contains("соединение отклонено")), "{r:?}");
+    }
+
+    #[test]
+    fn probe_ok() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        assert_eq!(probe_host("127.0.0.1", port, BUDGET), Ok(()));
+        assert_eq!(probe_host("localhost", port, BUDGET), Ok(()), "имя, а не адрес: через DNS");
     }
 
     // ── Процессы и профили снимка ───────────────────────────────────────────

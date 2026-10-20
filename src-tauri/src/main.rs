@@ -871,6 +871,9 @@ pub(crate) struct Shot {
     pub fallback: Option<String>,
 }
 
+/// Срок проверки адреса до запуска браузера (DNS + TCP вместе).
+const PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Ответ на второй снимок той же ссылки. Тот же текст — `SHOT_BUSY` в app.js:
 /// по нему пакет считает ссылку «пропущено», а не «не удалось».
 pub(crate) const SHOT_BUSY: &str = "Рисунок этой ссылки уже снимается";
@@ -1045,14 +1048,32 @@ async fn do_screenshot(
 
     let path_str2 = path.to_string_lossy().into_owned();
 
+    // Прокси для браузера: читаем ДО spawn_blocking — значение нужно и в
+    // командной строке, и в тексте ошибки ниже, и для проверки адреса.
+    let proxy_arg  = proxy_server_arg();
+    let proxy_used = proxy_arg.is_some();
+
+    // Адрес доступен? — до запуска браузера и до удаления прежнего рисунка:
+    // мёртвая ссылка не стирает старую картинку и не тратит t+8 с (а у Opera 95
+    // не даёт белого листа вместо ошибки). Через прокси не проверяем: трафик
+    // браузера идёт туда, и прямая проверка солгала бы в обе стороны. Если
+    // прокси включён, но релей не поднялся, `proxy_arg` пуст и браузер идёт
+    // напрямую — тогда проверка честная.
+    if !proxy_used {
+        if let Some((host, port)) = shot_browser::host_port(&url) {
+            let probe = tauri::async_runtime::spawn_blocking(move || {
+                shot_browser::probe_host(&host, port, PROBE_BUDGET)
+            }).await.map_err(|e| e.to_string())?;
+            if let Err(why) = probe {
+                logger::log(&format!("скриншот id={id}: адрес недоступен ({why}) — браузер не запускался"));
+                return Err(format!("Адрес недоступен: {why}"));
+            }
+        }
+    }
+
     // Удалить старый {id}.png ДО запуска — иначе поллинг увидит прошлую картинку как «готовую».
     // Между попытками не удаляем: поздно проявившийся файл первой попытки — тоже снимок.
     let _ = std::fs::remove_file(&path);
-
-    // Прокси для браузера: читаем ДО spawn_blocking — значение нужно и в
-    // командной строке, и в тексте ошибки ниже.
-    let proxy_arg  = proxy_server_arg();
-    let proxy_used = proxy_arg.is_some();
 
     let t_start = std::time::Instant::now();
     let exe = choice.exe.clone();
