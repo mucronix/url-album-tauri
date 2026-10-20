@@ -871,6 +871,47 @@ pub(crate) struct Shot {
     pub fallback: Option<String>,
 }
 
+/// Срок проверки адреса до запуска браузера (DNS + TCP вместе).
+const PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ответ на второй снимок той же ссылки. Тот же текст — `SHOT_BUSY` в app.js:
+/// по нему пакет считает ссылку «пропущено», а не «не удалось».
+pub(crate) const SHOT_BUSY: &str = "Рисунок этой ссылки уже снимается";
+
+/// Файлы снимков, которые сейчас снимаются. Вектор, а не `HashSet`: снимков
+/// разом единицы, а `Vec::new` годится для `static` без ленивой инициализации.
+static SHOTS_RUNNING: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Право снимать в `Data\{id}.png`; отпускается в `Drop`.
+///
+/// Без него два снимка одной ссылки (пакет, «Обновить рисунок», окно «Новая
+/// ссылка», расширение в режиме «быстро» — последнее мимо JS) делили один
+/// файл: каждый делает `remove_file` и ждёт появления того же пути, так что
+/// мог стереть чужой результат или принять чужой файл за свой (id=193 в госте
+/// Win7 «снят за 11053мс (--headless=new)», хотя Opera 95 так не снимает).
+/// Ключ — путь к файлу, а не id: две базы в одной папке делят `Data`, а
+/// одинаковые id в разных `Data` друг другу не мешают.
+struct ShotLock(std::path::PathBuf);
+
+impl ShotLock {
+    /// `None` — этот файл уже снимается.
+    fn try_acquire(out: &std::path::Path) -> Option<Self> {
+        // Отравленный замок (паника под ним) — берём данные как есть: список
+        // путей от паники не портится, а отказ снимать навсегда хуже.
+        let mut running = SHOTS_RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        if running.iter().any(|p| p == out) { return None; }
+        running.push(out.to_path_buf());
+        Some(Self(out.to_path_buf()))
+    }
+}
+
+impl Drop for ShotLock {
+    fn drop(&mut self) {
+        let mut running = SHOTS_RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        running.retain(|p| p != &self.0);
+    }
+}
+
 /// Браузер для снимка ссылки (порядок — в `shot_browser`). `browsers.json`
 /// читается на каждый снимок, как прокси: выбор в «Браузерах» действует
 /// без перезапуска.
@@ -924,15 +965,17 @@ fn shoot_once(
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    // Сразу после запуска, пока браузер не завёл детей (см. `ProcTree`).
+    let tree = shot_browser::ProcTree::attach(&child);
     // Запас 8с на холодный старт браузера + teardown под нагрузкой пакета (browser --timeout = t).
-    // Дедлайн на ОДНУ попытку; у Opera их может быть две.
+    // Дедлайн на ОДНУ попытку (см. `headless_flags`).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs((t + 8) as u64);
     let mut last_size: u64 = 0;
     let mut stable = 0;
     // Снимаем всё дерево процессов, а не родителя: иначе рендереры остаются
     // висеть и держат профиль. `wait` — чтобы не оставить зомби-хэндл.
     let stop = |child: &mut std::process::Child| {
-        shot_browser::kill_process_tree(child.id());
+        tree.stop();
         child.wait().ok();
     };
     loop {
@@ -951,8 +994,9 @@ fn shoot_once(
             }
         }
         match child.try_wait().map_err(|e| e.to_string())? {
-            // Родитель вышел сам, но дети могли остаться — снять и их.
-            Some(_) => { shot_browser::kill_process_tree(child.id()); return Ok(false); }
+            // Родитель вышел сам, но дети могли остаться — снять и их. По
+            // мёртвому PID `taskkill /T` их не находит, job — находит.
+            Some(_) => { tree.stop(); return Ok(false); }
             None => {
                 if std::time::Instant::now() >= deadline {
                     stop(&mut child);
@@ -979,6 +1023,13 @@ async fn do_screenshot(
     let filename = format!("{id}.png");
     let path = data_dir.join(&filename);
 
+    // Первым делом, до `remove_file` и запуска: второй снимок того же файла
+    // отказывается сразу, не тронув первый. Держится до конца функции.
+    let Some(_shot_lock) = ShotLock::try_acquire(&path) else {
+        logger::log(&format!("скриншот id={id}: уже снимается, второй запуск отклонён"));
+        return Err(SHOT_BUSY.to_string());
+    };
+
     // `None` = «размер не задан явно, взять из настроек». Файл читаем ТОЛЬКО
     // когда чего-то не хватает: из `refresh_thumb` приходят все три значения,
     // и пакет на сотни ссылок не должен лишний раз трогать диск.
@@ -997,22 +1048,40 @@ async fn do_screenshot(
 
     let path_str2 = path.to_string_lossy().into_owned();
 
-    // Удалить старый {id}.png ДО запуска — иначе поллинг увидит прошлую картинку как «готовую».
-    // Между попытками Opera не удаляем: поздно проявившийся файл первой попытки — тоже снимок.
-    let _ = std::fs::remove_file(&path);
-
     // Прокси для браузера: читаем ДО spawn_blocking — значение нужно и в
-    // командной строке, и в тексте ошибки ниже.
+    // командной строке, и в тексте ошибки ниже, и для проверки адреса.
     let proxy_arg  = proxy_server_arg();
     let proxy_used = proxy_arg.is_some();
+
+    // Адрес доступен? — до запуска браузера и до удаления прежнего рисунка:
+    // мёртвая ссылка не стирает старую картинку и не тратит t+8 с (а у Opera 95
+    // не даёт белого листа вместо ошибки). Через прокси не проверяем: трафик
+    // браузера идёт туда, и прямая проверка солгала бы в обе стороны. Если
+    // прокси включён, но релей не поднялся, `proxy_arg` пуст и браузер идёт
+    // напрямую — тогда проверка честная.
+    if !proxy_used {
+        if let Some((host, port)) = shot_browser::host_port(&url) {
+            let probe = tauri::async_runtime::spawn_blocking(move || {
+                shot_browser::probe_host(&host, port, PROBE_BUDGET)
+            }).await.map_err(|e| e.to_string())?;
+            if let Err(why) = probe {
+                logger::log(&format!("скриншот id={id}: адрес недоступен ({why}) — браузер не запускался"));
+                return Err(format!("Адрес недоступен: {why}"));
+            }
+        }
+    }
+
+    // Удалить старый {id}.png ДО запуска — иначе поллинг увидит прошлую картинку как «готовую».
+    // Между попытками не удаляем: поздно проявившийся файл первой попытки — тоже снимок.
+    let _ = std::fs::remove_file(&path);
 
     let t_start = std::time::Instant::now();
     let exe = choice.exe.clone();
     let url_run = url.clone();
 
     // Run blocking browser process on a dedicated thread so the UI stays responsive.
-    // Повтор с другим флагом — только у Opera (`headless_flags`) и только если
-    // после первой попытки файла нет.
+    // Попытки — по `headless_flags`; сейчас у всех браузеров одна. Следующая —
+    // только если после предыдущей файла нет.
     // Ok((попытки, последняя снята по сроку)).
     let run: Result<(Vec<&'static str>, bool), String> = tauri::async_runtime::spawn_blocking(move || {
         let mut tried = Vec::new();
@@ -1024,11 +1093,15 @@ async fn do_screenshot(
             // файлы блокировки, о которые споткнулась бы следующая попытка.
             let stamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-            let profile = std::env::temp_dir()
-                .join(format!("ua_screenshot_{id}_{}_{stamp}", std::process::id()));
+            let profile = std::env::temp_dir().join(format!(
+                "{}{id}_{}_{stamp}", shot_browser::PROFILE_PREFIX, std::process::id()));
             let r = shoot_once(&exe, flag, &profile, &path_str2, w, h, t,
                                proxy_arg.as_deref(), &url_run);
-            let _ = std::fs::remove_dir_all(&profile);
+            // Процессы уже сняты (`shoot_once`), но могут ещё держать файлы.
+            // Не удалилось — останется до чистки при следующем запуске.
+            if let Err(e) = shot_browser::remove_profile(&profile) {
+                logger::log(&format!("скриншот id={id}: профиль {} не удалён: {e}", profile.display()));
+            }
             killed = r?;
             if std::path::Path::new(&path_str2).exists() { break; }
         }
@@ -3625,6 +3698,18 @@ fn main() {
                 Err(e) => logger::log(&format!("WebView2: не определён ({e})")),
             }
 
+            // Профили прошлых снимков, оставшиеся в %TEMP% (упавший снимок,
+            // убитая программа). В своём потоке: окно ждать не должно. Час —
+            // с запасом: снимок длится не дольше t+8 с.
+            let _ = std::thread::Builder::new().name("ua-profile-cleanup".into()).spawn(|| {
+                let (removed, failed) = shot_browser::cleanup_stale_profiles(
+                    &std::env::temp_dir(), std::time::Duration::from_secs(3600));
+                if removed + failed > 0 {
+                    logger::log(&format!(
+                        "старые профили снимков в %TEMP%: удалено {removed}, не удалось {failed}"));
+                }
+            });
+
             // Portable mode: all files live next to the executable.
             let exe_dir = std::env::current_exe()?
                 .parent()
@@ -3886,6 +3971,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shot_lock_rejects_second() {
+        // Пути только этого теста: список идущих снимков — общий на процесс.
+        let a = std::path::Path::new(r"C:\ua_shot_lock_test\Data\1.png");
+        let b = std::path::Path::new(r"C:\ua_shot_lock_test\Data\2.png");
+        let first = ShotLock::try_acquire(a).expect("первый снимок пускается");
+        assert!(ShotLock::try_acquire(a).is_none(), "второй снимок в тот же файл — отказ");
+        let other = ShotLock::try_acquire(b).expect("другая ссылка не мешает");
+        drop(first);
+        assert!(ShotLock::try_acquire(a).is_some(), "первый закончился — снова можно");
+        drop(other);
+    }
 
     #[test]
     fn thumb_file_name_rejects_paths() {

@@ -8,8 +8,9 @@
 //! Шаги 3–4 — запасные: о них человеку сообщается (`Choice::fallback`).
 //!
 //! Снимать умеют только браузеры на Chromium (`--headless --screenshot`), и
-//! то не все: Brave и Vivaldi не умеют (см. `engine_of`). Firefox умеет, но с
-//! другими флагами — отдельная задача.
+//! то не все: Brave, Vivaldi (см. `engine_of`) и Opera новее 95 (см.
+//! `opera_engine_can_shoot`) не умеют. Firefox умеет, но с другими флагами —
+//! отдельная задача.
 //!
 //! Всё, что трогает диск и реестр, приходит сюда замыканиями: так порядок
 //! выбора проверяется тестами без установленных браузеров.
@@ -21,7 +22,7 @@ use std::path::{Path, PathBuf};
 pub(crate) enum Engine {
     /// Chrome, Edge, Яндекс: один флаг `--headless=new`.
     Chromium,
-    /// Opera / Opera GX: снимает только движок из папки версии, флаги по очереди.
+    /// Opera / Opera GX: снимает только движок из папки версии, и только до 95.
     Opera,
     /// Firefox, IE, Brave, Vivaldi и всё незнакомое.
     None,
@@ -65,13 +66,18 @@ pub(crate) fn engine_of(exe: &str) -> Engine {
     }
 }
 
-/// Флаги headless в порядке попыток. Opera 95 (Chromium 109, последняя для
-/// Win7) снимает только старым `--headless` — проверено в url-album-3; новые
-/// Opera — новым. Остальным одна попытка: повтор удвоил бы время на мёртвой
-/// ссылке (решение пользователя).
+/// Флаги headless в порядке попыток; у всех одна попытка — повтор удвоил бы
+/// время на мёртвой ссылке (решение пользователя).
+///
+/// Opera 95 (Chromium 109, последняя для Win7) снимает только старым
+/// `--headless`; с `--headless=new` она перезапускает себя чужим процессом,
+/// снимка не делает и оставляет сирот (проверено в госте Win7, 19.10.2026).
+/// Opera 137 не снимает ни с `--headless=new`, ни с `--headless`, ни с
+/// `--headless=old` — висит до снятия (Win10, 19.10.2026), поэтому новые Opera
+/// сюда не доходят: см. `opera_engine_can_shoot`.
 pub(crate) fn headless_flags(engine: Engine) -> &'static [&'static str] {
     match engine {
-        Engine::Opera    => &["--headless", "--headless=new"],
+        Engine::Opera    => &["--headless"],
         Engine::Chromium => &["--headless=new"],
         Engine::None     => &[],
     }
@@ -135,6 +141,21 @@ pub(crate) fn find_opera_engine(exe: &Path) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// Последняя версия движка Opera, которая снимает (`--headless --screenshot`).
+const OPERA_LAST_SHOOTING: u32 = 95;
+
+/// Снимает ли движок Opera: версия из имени папки над ним не новее 95.
+/// Проверены две точки — 95 снимает, 137 нет (см. `headless_flags`); где
+/// между ними граница, неизвестно, поэтому «умеет» — только проверенное.
+/// Папка не версия — не умеет.
+pub(crate) fn opera_engine_can_shoot(engine: &Path) -> bool {
+    engine.parent()
+        .and_then(|d| d.file_name())
+        .and_then(|d| parse_version(&d.to_string_lossy()))
+        .and_then(|v| v.first().copied())
+        .is_some_and(|major| major <= OPERA_LAST_SHOOTING)
+}
+
 /// Разобранный `browsers.json`: `{ browsers: [{name, path}], default }`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BrowsersCfg {
@@ -196,7 +217,8 @@ pub(crate) struct Inputs<'a> {
 
 /// Выбрать браузер.
 /// `system_default` — exe браузера по умолчанию в Windows;
-/// `runnable(path)` — что запускать, если файл есть и браузер умеет снимать.
+/// `runnable(path)` — что запускать, или почему нечего (`Err` — окончание
+/// фразы о браузере: «не найден», «не умеет снимать (…)»).
 ///
 /// `fallback` — причина первой неудачи среди «назначенных» браузеров (папки и
 /// по умолчанию), если снимет кто-то после них. Браузер Windows при `"default"`
@@ -204,7 +226,7 @@ pub(crate) struct Inputs<'a> {
 pub(crate) fn choose(
     inp: &Inputs,
     system_default: &dyn Fn() -> Option<String>,
-    runnable: &dyn Fn(&str) -> Option<String>,
+    runnable: &dyn Fn(&str) -> Result<String, String>,
 ) -> Option<Choice> {
     let mut miss: Option<String> = None;
 
@@ -222,7 +244,7 @@ pub(crate) fn choose(
         }
         runnable(&path)
             .map(|exe| Choice { exe, name: name.clone(), fallback: None })
-            .ok_or_else(|| format!("{who} ({name}) не найден"))
+            .map_err(|why| format!("{who} ({name}) {why}"))
     };
 
     // 1–2. Назначенные: браузер корневой папки, затем браузер по умолчанию.
@@ -311,32 +333,72 @@ mod reg {
     }
 }
 
-/// Exe браузера по умолчанию в Windows: `UserChoice` (https, затем http) →
-/// ProgId → `HKCR\{ProgId}\shell\open\command`. Ключ `UserChoice` есть и на Win7.
-#[cfg(windows)]
-pub(crate) fn system_default_browser() -> Option<String> {
-    for scheme in ["https", "http"] {
+/// Раздел реестра для `system_default_from`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Hive { CurrentUser, ClassesRoot }
+
+/// Чтение строки реестра: раздел, ключ, имя значения (`None` — по умолчанию).
+pub(crate) type RegRead<'a> = &'a dyn Fn(Hive, &str, Option<&str>) -> Option<String>;
+
+/// Exe браузера по умолчанию в Windows. Порядок:
+/// 1. `UserChoice` (https, затем http) → ProgId → `HKCR\{ProgId}\shell\open\command`;
+/// 2. `HKCR\{https,http}\shell\open\command` — сам класс протокола.
+///
+/// Второй шаг — ради Win7: там `UserChoice` появляется, только если браузер
+/// выбирали через «Программы по умолчанию». В госте (19.10.2026) ключа
+/// `UrlAssociations` не было вовсе, а Opera прописала себя в
+/// `HKCU\Software\Classes\http(s)` — HKCR отдаёт именно её; без этого шага
+/// «браузер Windows не определён». ProgId из `UserChoice` без команды
+/// (браузер удалён) — тоже повод идти дальше. Там может оказаться IE — его
+/// отдаём как есть, «не умеет снимать» решает `choose`.
+///
+/// `AssocQueryStringW` не берём: для протоколов на Win10 ему нужен
+/// `ASSOCF_IS_PROTOCOL`, а его нет до Windows 8.
+pub(crate) fn system_default_from(read: RegRead) -> Option<String> {
+    const SCHEMES: [&str; 2] = ["https", "http"];
+    let command = |class: &str| {
+        read(Hive::ClassesRoot, &format!(r"{class}\shell\open\command"), None)
+            .as_deref().and_then(exe_from_command)
+    };
+    let user_choice = SCHEMES.iter().filter_map(|scheme| {
         let key = format!(
             r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\{scheme}\UserChoice");
-        let Some(progid) = reg::read_sz(reg::HKEY_CURRENT_USER, &key, Some("ProgId")) else { continue };
-        let cmd = reg::read_sz(reg::HKEY_CLASSES_ROOT, &format!(r"{progid}\shell\open\command"), None);
-        if let Some(exe) = cmd.as_deref().and_then(exe_from_command) { return Some(exe); }
-    }
-    None
+        read(Hive::CurrentUser, &key, Some("ProgId"))
+    });
+    user_choice.chain(SCHEMES.iter().map(|s| s.to_string()))
+        .find_map(|class| command(&class))
+}
+
+#[cfg(windows)]
+pub(crate) fn system_default_browser() -> Option<String> {
+    system_default_from(&|hive, key, value| {
+        let root = match hive {
+            Hive::CurrentUser => reg::HKEY_CURRENT_USER,
+            Hive::ClassesRoot => reg::HKEY_CLASSES_ROOT,
+        };
+        reg::read_sz(root, key, value)
+    })
 }
 
 #[cfg(not(windows))]
 pub(crate) fn system_default_browser() -> Option<String> { None }
 
 /// Что запускать для снимка: файл на месте и браузер умеет снимать. У Opera —
-/// движок из папки версии; нет движка — `None` (лаунчер снимок не сделает).
-pub(crate) fn runnable(path: &str) -> Option<String> {
+/// движок из папки версии; нет движка — «не найден» (лаунчер снимок не
+/// сделает), движок новее 95 — «не умеет снимать».
+/// `Err` — окончание фразы для причины в `choose`.
+pub(crate) fn runnable(path: &str) -> Result<String, String> {
+    const MISSING: &str = "не найден";
     let p = Path::new(path);
-    if !p.is_file() { return None; }
+    if !p.is_file() { return Err(MISSING.into()); }
     match engine_of(path) {
-        Engine::Chromium => Some(path.to_string()),
-        Engine::Opera    => find_opera_engine(p).map(|e| e.to_string_lossy().into_owned()),
-        Engine::None     => None,
+        Engine::Chromium => Ok(path.to_string()),
+        Engine::Opera    => match find_opera_engine(p) {
+            None => Err(MISSING.into()),
+            Some(e) if opera_engine_can_shoot(&e) => Ok(e.to_string_lossy().into_owned()),
+            Some(_) => Err(format!("не умеет снимать (Opera новее {OPERA_LAST_SHOOTING})")),
+        },
+        Engine::None     => Err("не умеет снимать".into()),
     }
 }
 
@@ -356,6 +418,270 @@ pub(crate) fn kill_process_tree(pid: u32) {
     let _ = pid;
 }
 
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicLimit {
+        per_process_user_time: i64,
+        per_job_user_time: i64,
+        limit_flags: u32,
+        min_working_set: usize,
+        max_working_set: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    /// JOBOBJECT_EXTENDED_LIMIT_INFORMATION; IO_COUNTERS — шесть u64.
+    #[repr(C)]
+    #[derive(Default)]
+    struct ExtendedLimit {
+        basic: BasicLimit,
+        io: [u64; 6],
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory: usize,
+        peak_job_memory: usize,
+    }
+
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+
+    // Комментарий обычный, не `///`: к `extern`-блоку doc-комментарий не крепится.
+    // Всё — с Windows XP, на Win7 есть.
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateJobObjectW(attrs: *const c_void, name: *const u16) -> isize;
+        fn SetInformationJobObject(job: isize, class: i32, info: *const c_void, len: u32) -> i32;
+        fn AssignProcessToJobObject(job: isize, process: isize) -> i32;
+        fn TerminateJobObject(job: isize, exit_code: u32) -> i32;
+        fn CloseHandle(h: isize) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    /// Job с «убить всех при закрытии»; процесс привязан. `Err` — код ошибки.
+    pub fn create_for(process: isize) -> Result<isize, u32> {
+        // SAFETY: хэндл job закрывается при любой неудаче ниже и в `close`;
+        // структура лимитов живёт до конца вызова.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job == 0 { return Err(GetLastError()); }
+            let mut info = ExtendedLimit::default();
+            info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                (&info as *const ExtendedLimit).cast(), std::mem::size_of::<ExtendedLimit>() as u32) != 0
+                && AssignProcessToJobObject(job, process) != 0;
+            if !ok {
+                let err = GetLastError();
+                CloseHandle(job);
+                return Err(err);
+            }
+            Ok(job)
+        }
+    }
+
+    pub fn terminate(job: isize) {
+        // SAFETY: хэндл наш и ещё не закрыт (закрывает только `close`).
+        unsafe { TerminateJobObject(job, 1); }
+    }
+
+    pub fn close(job: isize) {
+        // SAFETY: зовётся ровно один раз, из `Drop`.
+        unsafe { CloseHandle(job); }
+    }
+}
+
+/// Журнал об отказе job — один раз за запуск программы, а не на каждый снимок.
+static JOB_FAIL_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Дерево процессов одного снимка.
+///
+/// Браузер привязывается к job object с `KILL_ON_JOB_CLOSE`: всё, что он
+/// запустит, попадает туда же, и снимается одним вызовом — в том числе дети
+/// уже вышедшего родителя. `taskkill /T` строит дерево по живым родителям, и
+/// таких сирот не находит: Opera 95 оставляла в госте Win7 рендерер на 140 МБ
+/// и профиль на 51 минуту. Плюс даром: если программу закроют или убьют
+/// посреди снимка, ОС закроет хэндл job, и браузер умрёт вместе с ней.
+///
+/// Привязка идёт сразу после `spawn`: `std::process::Command` не умеет
+/// запускать процесс приостановленным, и миллисекунды до привязки остаются.
+/// Chromium заводит детей позже, но это оценка, а не проверка.
+///
+/// Не вышло (на Win7 нет вложенных job: программа может уже сидеть в чужом,
+/// например помощника совместимости) — `taskkill /F /T`, как раньше.
+pub(crate) struct ProcTree {
+    pid: u32,
+    job: Option<isize>,
+}
+
+impl ProcTree {
+    pub(crate) fn attach(child: &std::process::Child) -> Self {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            match job::create_for(child.as_raw_handle() as isize) {
+                Ok(j) => return Self { pid: child.id(), job: Some(j) },
+                Err(code) => {
+                    if !JOB_FAIL_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        crate::logger::log(&format!(
+                            "снимки: job object недоступен (код {code}) — браузер снимается через taskkill"));
+                    }
+                }
+            }
+        }
+        Self { pid: child.id(), job: None }
+    }
+
+    /// Снять всё дерево. Процессы умирают не мгновенно — профиль удалять
+    /// через `remove_profile`, с повторами.
+    pub(crate) fn stop(&self) {
+        match self.job {
+            #[cfg(windows)]
+            Some(j) => job::terminate(j),
+            _ => kill_process_tree(self.pid),
+        }
+    }
+}
+
+impl Drop for ProcTree {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if let Some(j) = self.job.take() { job::close(j); }
+    }
+}
+
+/// Удалить профиль снимка. Сразу после снятия браузера его файлы ещё заняты
+/// умирающими процессами — поэтому до 10 попыток через 200 мс (~2 с). Раньше
+/// была одна попытка с `let _`, и занятый профиль молча оставался в %TEMP%.
+/// Папки уже нет — не ошибка.
+pub(crate) fn remove_profile(dir: &Path) -> Result<(), String> {
+    const TRIES: u32 = 10;
+    let mut last = String::new();
+    for i in 0..TRIES {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => last = e.to_string(),
+        }
+        if i + 1 < TRIES { std::thread::sleep(std::time::Duration::from_millis(200)); }
+    }
+    Err(last)
+}
+
+/// Хост и порт адреса для проверки до запуска браузера: http → 80, https →
+/// 443, явный порт, IPv6 в скобках, логин в адресе отбрасывается. Другая
+/// схема, пустой хост, кривой порт — `None`: не проверяем, решает браузер.
+pub(crate) fn host_port(url: &str) -> Option<(String, u16)> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let default = match scheme.to_ascii_lowercase().as_str() {
+        "http"  => 80,
+        "https" => 443,
+        _ => return None,
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let (host, port) = if let Some(v6) = hostport.strip_prefix('[') {
+        let (h, tail) = v6.split_once(']')?;
+        (h, tail.strip_prefix(':'))
+    } else {
+        match hostport.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (hostport, None),
+        }
+    };
+    if host.is_empty() { return None; }
+    let port = match port {
+        None | Some("") => default,
+        Some(p) => p.parse().ok()?,
+    };
+    Some((host.to_ascii_lowercase(), port))
+}
+
+/// Доступен ли адрес: DNS, затем TCP-соединение, всё вместе не дольше
+/// `budget`. `Err` — причина для человека: «адрес не найден», «соединение
+/// отклонено», «нет ответа».
+///
+/// Зачем: Opera 95 на мёртвом адресе (`--headless`) пишет белый лист, и он
+/// засчитывается удачей (гость Win7, 19.10.2026); остальные браузеры тратят
+/// на мёртвую ссылку до t+8 с. Не ловит 404/500 (там законный снимок), ошибки
+/// TLS, подмену DNS провайдером и медленный сайт — TCP соединяется, а
+/// страница не приходит (см. очередь, «Медленный сайт — белый лист»).
+pub(crate) fn probe_host(host: &str, port: u16, budget: std::time::Duration) -> Result<(), String> {
+    use std::net::ToSocketAddrs;
+    use std::time::Instant;
+    let deadline = Instant::now() + budget;
+
+    // У `ToSocketAddrs` своего срока нет, а системный резолвер может думать
+    // дольше бюджета — поэтому в отдельном потоке с `recv_timeout`. Не
+    // дождались — поток остаётся висеть до ответа резолвера: прервать его
+    // нельзя, но он ничего не держит, а результат уйдёт в закрытый канал.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let name = host.to_string();
+    std::thread::Builder::new().name("ua-dns".into()).spawn(move || {
+        let _ = tx.send((name.as_str(), port).to_socket_addrs().map(|a| a.collect::<Vec<_>>()));
+    }).map_err(|e| format!("проверка адреса не запустилась: {e}"))?;
+    let addrs = match rx.recv_timeout(budget) {
+        Ok(Ok(a)) if !a.is_empty() => a,
+        Ok(_)  => return Err(format!("адрес не найден: {host}")),
+        Err(_) => return Err(format!("нет ответа: {host} (имя не разрешилось за {} с)", budget.as_secs())),
+    };
+
+    // Все адреса по очереди: на машине без IPv6 первым может прийти v6.
+    let (mut refused, mut timed_out, mut other) = (false, false, None);
+    for addr in addrs {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() { timed_out = true; break; }
+        match std::net::TcpStream::connect_timeout(&addr, left) {
+            Ok(_) => return Ok(()),
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::ConnectionRefused => refused = true,
+                std::io::ErrorKind::TimedOut => timed_out = true,
+                _ => other = Some(e.to_string()),
+            },
+        }
+    }
+    Err(if timed_out {
+        format!("нет ответа: {host}:{port}")
+    } else if refused {
+        format!("соединение отклонено: {host}:{port}")
+    } else {
+        format!("не удалось соединиться с {host}:{port}: {}", other.unwrap_or_default())
+    })
+}
+
+/// Начало имени профиля снимка в %TEMP% (`do_screenshot`).
+pub(crate) const PROFILE_PREFIX: &str = "ua_screenshot_";
+
+/// Убрать из `dir` профили снимков старше `max_age` — остатки прошлых
+/// запусков (упавший снимок, убитая программа, занятый профиль). Только
+/// папки с `PROFILE_PREFIX`; возраст — по времени изменения самой папки:
+/// живой браузер переписывает файлы в корне профиля, и папка идущего снимка
+/// старой не бывает. Одна попытка на папку: занятая сейчас — уйдёт в
+/// следующий запуск. Отдаёт (удалено, не удалось).
+pub(crate) fn cleanup_stale_profiles(dir: &Path, max_age: std::time::Duration) -> (usize, usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return (0, 0) };
+    let now = std::time::SystemTime::now();
+    let (mut removed, mut failed) = (0, 0);
+    for e in entries.filter_map(|e| e.ok()) {
+        if !e.file_name().to_string_lossy().starts_with(PROFILE_PREFIX) { continue; }
+        let Ok(meta) = e.metadata() else { continue };
+        if !meta.is_dir() { continue; }
+        let old = meta.modified().ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age > max_age);
+        if !old { continue; }
+        match std::fs::remove_dir_all(e.path()) {
+            Ok(())  => removed += 1,
+            Err(_)  => failed += 1,
+        }
+    }
+    (removed, failed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,6 +698,70 @@ mod tests {
         assert_eq!(exe_from_command(r#""""#), None);
     }
 
+    // ── Браузер Windows ─────────────────────────────────────────────────────
+
+    const UC_HTTPS: &str = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice";
+    const UC_HTTP:  &str = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice";
+    const OPERA_CMD: &str = r#""C:\Users\admin\AppData\Local\Programs\Opera\launcher.exe" -noautoupdate -- "%1""#;
+    const OPERA_LAUNCHER: &str = r"C:\Users\admin\AppData\Local\Programs\Opera\launcher.exe";
+    const IE_CMD: &str = r#""C:\Program Files\Internet Explorer\iexplore.exe" %1"#;
+    const EDGE_CMD: &str = r#""C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --single-argument %1"#;
+
+    /// Реестр теста: (раздел, ключ, значение) → строка; регистр ключей не важен, как в Windows.
+    fn registry(entries: &[(Hive, &str, Option<&str>, &str)]) -> impl Fn(Hive, &str, Option<&str>) -> Option<String> {
+        let v: Vec<(Hive, String, Option<String>, String)> = entries.iter()
+            .map(|(h, k, n, d)| (*h, k.to_lowercase(), n.map(str::to_lowercase), d.to_string())).collect();
+        move |h: Hive, k: &str, n: Option<&str>| {
+            let (k, n) = (k.to_lowercase(), n.map(str::to_lowercase));
+            v.iter().find(|e| e.0 == h && e.1 == k && e.2 == n).map(|e| e.3.clone())
+        }
+    }
+
+    #[test]
+    fn default_browser_from_hkcr_when_no_userchoice() {
+        // Гость Win7, 19.10.2026: `UrlAssociations` нет вовсе, Opera прописала
+        // себя в классах http(s); HKLM-классы — IE, но HKCR отдаёт HKCU-копию.
+        let reg = registry(&[
+            (Hive::ClassesRoot, r"https\shell\open\command", None, OPERA_CMD),
+            (Hive::ClassesRoot, r"http\shell\open\command",  None, OPERA_CMD),
+        ]);
+        assert_eq!(system_default_from(&reg).as_deref(), Some(OPERA_LAUNCHER));
+    }
+
+    #[test]
+    fn default_browser_hkcr_http_only() {
+        let reg = registry(&[(Hive::ClassesRoot, r"http\shell\open\command", None, IE_CMD)]);
+        assert_eq!(system_default_from(&reg).as_deref(), Some(r"C:\Program Files\Internet Explorer\iexplore.exe"),
+                   "IE — отдаём как есть, «не умеет снимать» решит choose");
+    }
+
+    #[test]
+    fn default_browser_userchoice_wins() {
+        let reg = registry(&[
+            (Hive::CurrentUser, UC_HTTPS, Some("ProgId"), "MSEdgeHTM"),
+            (Hive::ClassesRoot, r"MSEdgeHTM\shell\open\command", None, EDGE_CMD),
+            (Hive::ClassesRoot, r"https\shell\open\command", None, IE_CMD),
+        ]);
+        assert_eq!(system_default_from(&reg).as_deref(),
+                   Some(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"));
+    }
+
+    #[test]
+    fn default_browser_progid_without_command_falls_through() {
+        // UserChoice указывает на ProgId, у которого нет команды (браузер удалён).
+        let reg = registry(&[
+            (Hive::CurrentUser, UC_HTTPS, Some("ProgId"), "GoneHTML"),
+            (Hive::CurrentUser, UC_HTTP,  Some("ProgId"), "GoneHTML"),
+            (Hive::ClassesRoot, r"https\shell\open\command", None, OPERA_CMD),
+        ]);
+        assert_eq!(system_default_from(&reg).as_deref(), Some(OPERA_LAUNCHER));
+    }
+
+    #[test]
+    fn default_browser_none() {
+        assert_eq!(system_default_from(&registry(&[])), None);
+    }
+
     #[test]
     fn runnable_checks_file_and_engine() {
         let d = tmp_dir("runnable");
@@ -384,10 +774,29 @@ mod tests {
         touch(&op.join("95.0.4635.90").join("opera.exe"));
         let s = |p: &Path| p.to_string_lossy().into_owned();
 
-        assert_eq!(runnable(&s(&chrome)), Some(s(&chrome)));
-        assert_eq!(runnable(&s(&ff)), None, "есть, но снимать не умеет");
-        assert_eq!(runnable(&s(&d.join("msedge.exe"))), None, "файла нет");
-        assert_eq!(runnable(&s(&op.join("launcher.exe"))), Some(s(&op.join("95.0.4635.90").join("opera.exe"))));
+        assert_eq!(runnable(&s(&chrome)), Ok(s(&chrome)));
+        assert_eq!(runnable(&s(&ff)), Err("не умеет снимать".into()), "есть, но снимать не умеет");
+        assert_eq!(runnable(&s(&d.join("msedge.exe"))), Err("не найден".into()), "файла нет");
+        assert_eq!(runnable(&s(&op.join("launcher.exe"))), Ok(s(&op.join("95.0.4635.90").join("opera.exe"))));
+
+        let new = d.join("Opera New");
+        touch(&new.join("launcher.exe"));
+        touch(&new.join("137.0.6036.63").join("opera.exe"));
+        assert!(runnable(&s(&new.join("launcher.exe"))).is_err_and(|e| e.starts_with("не умеет снимать")),
+                "Opera 137 есть, но не снимает");
+        let bare = d.join("Opera Bare");
+        touch(&bare.join("launcher.exe"));
+        assert_eq!(runnable(&s(&bare.join("launcher.exe"))), Err("не найден".into()), "лаунчер без движка");
+    }
+
+    #[test]
+    fn opera_version_boundary() {
+        let e = |ver: &str| PathBuf::from(format!(r"C:\Opera\{ver}\opera.exe"));
+        assert!(opera_engine_can_shoot(&e("95.0.4635.90")));
+        assert!(opera_engine_can_shoot(&e("94.0.4606.76")));
+        assert!(!opera_engine_can_shoot(&e("96.0.1.1")));
+        assert!(!opera_engine_can_shoot(&e("137.0.6036.63")));
+        assert!(!opera_engine_can_shoot(&PathBuf::from(r"C:\Opera\opera.exe")), "папка не версия");
     }
 
     #[test]
@@ -418,10 +827,43 @@ mod tests {
     }
 
     #[test]
-    fn headless_flags_retry_only_for_opera() {
-        assert_eq!(headless_flags(Engine::Opera), &["--headless", "--headless=new"]);
+    fn headless_flags_one_attempt() {
+        assert_eq!(headless_flags(Engine::Opera), &["--headless"], "Opera 95 снимает только старым headless");
         assert_eq!(headless_flags(Engine::Chromium), &["--headless=new"]);
         assert!(headless_flags(Engine::None).is_empty());
+    }
+
+    #[test]
+    fn choose_new_opera_is_skipped() {
+        // Настоящий `runnable` на временных папках: решает версия движка.
+        let d = tmp_dir("opera_ver");
+        let chrome = d.join("chrome.exe");
+        touch(&chrome);
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let opera = |ver: &str| {
+            let dir = d.join(format!("Opera_{ver}"));
+            touch(&dir.join("launcher.exe"));
+            touch(&dir.join(ver).join("opera.exe"));
+            (s(&dir.join("launcher.exe")), s(&dir.join(ver).join("opera.exe")))
+        };
+        let pick = |default: &str| {
+            let c = cfg(default, &[default, &s(&chrome)]);
+            let inp = Inputs { opener: None, cfg: Some(&c), builtin: &[] };
+            choose(&inp, &|| None, &runnable).unwrap()
+        };
+
+        let (l95, e95) = opera("95.0.4635.90");
+        let got = pick(&l95);
+        assert_eq!(got.exe, e95, "Opera 95 снимает сама");
+        assert_eq!(got.fallback, None);
+
+        for ver in ["96.0.1.1", "137.0.6036.63"] {
+            let (l, _) = opera(ver);
+            let got = pick(&l);
+            assert_eq!(got.exe, s(&chrome), "Opera {ver}: снимает следующий по порядку");
+            assert!(got.fallback.as_deref().is_some_and(|r| r.contains("Opera") && r.contains("не умеет")),
+                    "Opera {ver}: {:?}", got.fallback);
+        }
     }
 
     #[test]
@@ -540,14 +982,14 @@ mod tests {
     const TOR:     &str = r"D:\Tor Browser\Browser\firefox.exe";
 
     /// Мир теста: какие файлы есть и чем их запускать.
-    fn world(present: &[&str]) -> impl Fn(&str) -> Option<String> {
+    fn world(present: &[&str]) -> impl Fn(&str) -> Result<String, String> {
         let mut m: HashMap<String, String> = HashMap::new();
         for p in present {
             if engine_of(p) == Engine::None { continue; } // есть, но снимать не умеет
             let run = if *p == OPERA { OPERA_E } else { p };
             m.insert(p.to_string(), run.to_string());
         }
-        move |p: &str| m.get(p).cloned()
+        move |p: &str| m.get(p).cloned().ok_or_else(|| "не найден".to_string())
     }
 
     fn cfg(default: &str, list: &[&str]) -> BrowsersCfg {
@@ -652,5 +1094,192 @@ mod tests {
         let builtin = vec![EDGE.to_string()];
         let inp = Inputs { opener: Some(TOR), cfg: Some(&c), builtin: &builtin };
         assert_eq!(choose(&inp, &|| Some(FIREFOX.to_string()), &world(&[FIREFOX, TOR])), None);
+    }
+
+    // ── Проверка адреса до запуска браузера ─────────────────────────────────
+
+    #[test]
+    fn host_port_parsing() {
+        let hp = |u: &str| host_port(u);
+        let some = |h: &str, p: u16| Some((h.to_string(), p));
+        assert_eq!(hp("https://example.com"), some("example.com", 443));
+        assert_eq!(hp("http://Example.COM/path?q=1#x"), some("example.com", 80), "регистр хоста не важен");
+        assert_eq!(hp("HTTPS://example.com:8443/"), some("example.com", 8443));
+        assert_eq!(hp("http://user:pass@host.ru:81/x"), some("host.ru", 81), "логин в адресе — не хост");
+        assert_eq!(hp("http://[::1]:8080/"), some("::1", 8080), "IPv6 в скобках");
+        assert_eq!(hp("https://[2001:db8::1]/"), some("2001:db8::1", 443));
+        assert_eq!(hp("http://127.0.0.1:64449/"), some("127.0.0.1", 64449));
+        assert_eq!(hp("https://example.com?q"), some("example.com", 443), "запрос сразу после хоста");
+        // normalize_url приклеивает https:// к незнакомой схеме — хостом
+        // становится имя схемы; DNS его не найдёт, браузер не запустится.
+        assert_eq!(hp("https://content://org.telegram/x"), some("content", 443));
+        for skip in ["file:///C:/x.html", "ftp://host/", "mailto:a@b.ru", "edge://settings",
+                     "https://", "https:///path", "http://host:99999/", "http://host:x/"] {
+            assert_eq!(hp(skip), None, "{skip}: не проверяем — решает браузер");
+        }
+    }
+
+    const BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+    #[test]
+    fn probe_unknown_host() {
+        // .invalid не разрешается никогда (RFC 6761).
+        let r = probe_host("nonexistent.invalid", 443, BUDGET);
+        assert!(r.as_ref().is_err_and(|e| e.contains("адрес не найден")), "{r:?}");
+    }
+
+    #[test]
+    fn probe_refused() {
+        // Занять свободный порт и отпустить: на нём никто не слушает.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let r = probe_host("127.0.0.1", port, BUDGET);
+        assert!(r.as_ref().is_err_and(|e| e.contains("соединение отклонено")), "{r:?}");
+    }
+
+    #[test]
+    fn probe_ok() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        assert_eq!(probe_host("127.0.0.1", port, BUDGET), Ok(()));
+        assert_eq!(probe_host("localhost", port, BUDGET), Ok(()), "имя, а не адрес: через DNS");
+    }
+
+    // ── Процессы и профили снимка ───────────────────────────────────────────
+
+    /// Список процессов (pid, родитель, имя exe) — Toolhelp, без WMI.
+    #[cfg(windows)]
+    mod procs {
+        #[repr(C)]
+        struct ProcessEntry32W {
+            size: u32, usage: u32, pid: u32, heap_id: usize, module_id: u32,
+            threads: u32, parent: u32, pri_class: i32, flags: u32, exe: [u16; 260],
+        }
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
+            fn Process32FirstW(snap: isize, e: *mut ProcessEntry32W) -> i32;
+            fn Process32NextW(snap: isize, e: *mut ProcessEntry32W) -> i32;
+            fn CloseHandle(h: isize) -> i32;
+        }
+
+        pub fn list() -> Vec<(u32, u32, String)> {
+            const TH32CS_SNAPPROCESS: u32 = 2;
+            let mut out = Vec::new();
+            // SAFETY: снимок закрывается в конце; `size` заполнен, как требует API.
+            unsafe {
+                let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                if snap == -1 { return out; }
+                let mut e: ProcessEntry32W = std::mem::zeroed();
+                e.size = std::mem::size_of::<ProcessEntry32W>() as u32;
+                let mut ok = Process32FirstW(snap, &mut e);
+                while ok != 0 {
+                    let end = e.exe.iter().position(|&c| c == 0).unwrap_or(e.exe.len());
+                    out.push((e.pid, e.parent, String::from_utf16_lossy(&e.exe[..end])));
+                    ok = Process32NextW(snap, &mut e);
+                }
+                CloseHandle(snap);
+            }
+            out
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tree_stopped_after_parent_exits() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        // Модель сирот Opera (id=198 в госте Win7): родитель вышел сам, дети
+        // остались, и `taskkill /T` по мёртвому PID их уже не находит. Ребёнок
+        // появляется через ~1 с — заведомо после привязки к дереву, без гонки.
+        let mut child = Command::new("cmd.exe")
+            .raw_arg("/c ping -n 2 127.0.0.1 >nul & start /b ping -n 30 127.0.0.1 >nul")
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn().unwrap();
+        let tree = ProcTree::attach(&child);
+        let parent = child.id();
+        child.wait().unwrap(); // родитель вышел сам
+
+        let orphans = || -> Vec<u32> {
+            procs::list().into_iter()
+                .filter(|(_, pp, exe)| *pp == parent && exe.eq_ignore_ascii_case("ping.exe"))
+                .map(|(pid, _, _)| pid).collect()
+        };
+        /// Красный прогон не должен оставлять ping на 30 с.
+        struct Reap(Vec<u32>);
+        impl Drop for Reap {
+            fn drop(&mut self) { for &pid in &self.0 { kill_process_tree(pid); } }
+        }
+        let before = orphans();
+        let _reap = Reap(before.clone());
+        assert!(!before.is_empty(), "сирота не появился — проверять нечего");
+
+        tree.stop();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut left = orphans();
+        while !left.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            left = orphans();
+        }
+        assert!(left.is_empty(), "после остановки живы дети вышедшего родителя: {left:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn profile_removed_after_lock_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = tmp_dir("profile_lock");
+        let prof = d.join("ua_screenshot_1_2_3");
+        let locked = prof.join("Default").join("Cookies");
+        touch(&locked);
+        // Файл занят без общего доступа — как профиль, который ещё держит
+        // умирающий процесс браузера; отпускаем через полсекунды.
+        let f = std::fs::OpenOptions::new().read(true).share_mode(0).open(&locked).unwrap();
+        let h = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            drop(f);
+        });
+        let r = remove_profile(&prof);
+        h.join().unwrap();
+        assert_eq!(r, Ok(()), "профиль удаляется, когда его отпустили");
+        assert!(!prof.exists());
+        assert_eq!(remove_profile(&prof), Ok(()), "уже нет — не ошибка");
+    }
+
+    /// Состарить файл или папку: время изменения на `by` назад.
+    #[cfg(windows)]
+    fn age(p: &Path, by: std::time::Duration) {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000; // иначе папку не открыть
+        let f = std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - by).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stale_profiles_cleaned() {
+        let d = tmp_dir("stale");
+        let hour = std::time::Duration::from_secs(3600);
+        let old   = d.join("ua_screenshot_193_4064_1792415235156");
+        let fresh = d.join("ua_screenshot_200_4064_1792415999999");
+        let other = d.join("uatest");
+        let file  = d.join("ua_screenshot_note.txt");
+        touch(&old.join("Default").join("History"));
+        touch(&fresh.join("Default").join("History"));
+        touch(&other.join("x"));
+        touch(&file);
+        // Возраст — после наполнения: запись внутрь папки освежает её время.
+        for p in [&old, &other, &file] { age(p, 2 * hour); }
+
+        assert_eq!(cleanup_stale_profiles(&d, hour), (1, 0));
+        assert!(!old.exists(), "старый профиль снимка удалён");
+        assert!(fresh.exists(), "свежий — может принадлежать идущему снимку");
+        assert!(other.exists(), "чужая папка не трогается");
+        assert!(file.exists(), "файл с тем же началом имени — не профиль");
     }
 }
