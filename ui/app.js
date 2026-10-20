@@ -5,7 +5,7 @@ const { invoke }         = window.__TAURI__.core;
 const { convertFileSrc } = window.__TAURI__.core;
 
 const MAX_FAVICON_CONCURRENCY = 5; // intentional per-domain rate limiting
-const APP_VERSION = '2.3.3-beta';
+const APP_VERSION = '2.3.4-beta';
 
 // Записать строку в журнал программы. console.error в release-сборке
 // недоступен (DevTools отключены), поэтому причины отказов уходят сюда.

@@ -1,6 +1,6 @@
 {
   "name": "url-album",
-  "version": "2.3.3-beta",
+  "version": "2.3.4-beta",
   "license": "GPL-3.0-or-later",
   "scripts": {
     "dev":   "cargo tauri dev",
