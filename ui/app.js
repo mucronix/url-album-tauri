@@ -4427,6 +4427,10 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
     panels.forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('stab-' + tab.dataset.tab)?.classList.add('active');
+    // Высота у вкладок общая (по самой высокой), в узком окне середина
+    // прокручивается — новую вкладку показывать с начала, а не с места,
+    // докуда прокрутили прежнюю.
+    overlay.querySelector('.settings-content').scrollTop = 0;
   }));
 
   // ── Font size slider ──

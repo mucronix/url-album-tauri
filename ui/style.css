@@ -1153,10 +1153,7 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 .win-dlg > * { flex-shrink: 0; }
 .win-dlg > .dlg-body,
 .win-dlg > .settings-content,
-.win-dlg > .tbc-body { flex: 0 1 auto; overflow: auto; }
-/* У .settings-content свой min-height: 190px остаётся — вкладки не прыгают. */
-.win-dlg > .dlg-body,
-.win-dlg > .tbc-body { min-height: 0; }
+.win-dlg > .tbc-body { flex: 0 1 auto; min-height: 0; overflow: auto; }
 .dlg-title {
   background: #0078d4;
   color: #fff;
@@ -1237,10 +1234,16 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
 
 .settings-content {
   padding: 10px 14px 6px;
-  min-height: 190px;
+  display: grid;
+  /* Колонка по ширине окна, а не по самой широкой строке: иначе при крупном
+     шрифте вкладки на пару px шире и появляется горизонтальная прокрутка. */
+  grid-template-columns: minmax(0, 1fr);
 }
-.stab-panel { display: none; flex-direction: column; }
-.stab-panel.active { display: flex; }
+/* Все вкладки в одной ячейке grid, неактивные невидимы, но занимают место:
+   высота окна — по самой высокой вкладке и при переключении не прыгает.
+   visibility: hidden выключает и фокус по Tab в скрытых вкладках. */
+.stab-panel { grid-area: 1 / 1; display: flex; flex-direction: column; visibility: hidden; }
+.stab-panel.active { visibility: visible; }
 
 .settings-group { margin-bottom: 10px; }
 .settings-group:last-child { margin-bottom: 0; }
