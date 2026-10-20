@@ -1133,6 +1133,11 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   z-index: 10000;
   background: rgba(0,0,0,0.15); /* lighter scrim — lets you see parent dialog */
 }
+/* Окно не больше окна программы (8px от краёв): без этого высокое окно
+   (Настройки, Дубликаты) вылезало поровну вверх и вниз, и заголовок с
+   кнопками уходили за край — до них было не добраться (Win7, 19.10.2026).
+   Колонка: заголовок, вкладки, сводка, кнопки не сжимаются, прокручивается
+   только середина (её классы — ниже). max-width сильнее inline width. */
 .win-dlg {
   background: #f0f0f0;
   border: 1px solid #767676;
@@ -1140,7 +1145,18 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   font-family: "Segoe UI", system-ui, sans-serif;
   font-size: calc(var(--ui-font) - 1px);
   color: #000;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 16px);
+  max-width: calc(100vw - 16px);
 }
+.win-dlg > * { flex-shrink: 0; }
+.win-dlg > .dlg-body,
+.win-dlg > .settings-content,
+.win-dlg > .tbc-body { flex: 0 1 auto; overflow: auto; }
+/* У .settings-content свой min-height: 190px остаётся — вкладки не прыгают. */
+.win-dlg > .dlg-body,
+.win-dlg > .tbc-body { min-height: 0; }
 .dlg-title {
   background: #0078d4;
   color: #fff;
@@ -1339,8 +1355,10 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   padding: 5px 12px; font-size: calc(var(--ui-font) - 2px); color: var(--text2, #555);
   background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
+/* 380px — желаемая высота; в невысоком окне сжимается (.win-dlg), списки
+   групп и таблица внутри прокручиваются сами. */
 .dupes-body {
-  display: flex; flex: 1; min-height: 0; height: 380px; overflow: hidden;
+  display: flex; flex: 0 1 380px; min-height: 0; overflow: hidden;
 }
 /* Left panel */
 .dupes-left {
