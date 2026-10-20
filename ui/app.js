@@ -4715,6 +4715,8 @@ document.getElementById("wb-import").addEventListener("click", async () => {
 
 // ── Statusbar state ───────────────────────────────────────────────────────
 let _sbTimer         = null;   // auto-clear timer for temp messages
+let _sbDeadline      = 0;      // когда погаснет обычное сообщение (мс), для паузы под мышью
+let _sbHover         = false;  // мышь над строкой состояния — сообщение не гаснет
 let currentDbName    = '';     // basename of current DB file
 let currentDbPath    = '';     // полный путь — к нему привязана правка заметки
 let _sbInFolderCount = null;   // item count in active folder; null = no folder selected
@@ -4779,20 +4781,52 @@ function reportTxtImport(res) {
   }
 }
 
-function setStatus(text, { sticky = false } = {}) {
+// Сколько висит обычное сообщение: длинное — дольше. 3 с на всё не хватало
+// прочитать даже короткое, а итог пакета с причиной запасного браузера —
+// ~110 знаков (решение пользователя, 20.10.2026).
+function _statusMs(text) {
+  return Math.max(5000, Math.min(12000, 2000 + 80 * text.length));
+}
+
+// ms — своё время показа; без него — по длине (_statusMs). Липкое (ход
+// пакета) не гаснет, пока его не сменят. Новое сообщение затирает прежнее.
+function setStatus(text, { sticky = false, ms } = {}) {
   const el = document.getElementById('sb-right');
   clearTimeout(_sbTimer); _sbTimer = null;
   el.textContent = text;
+  // Полный текст во всплывающей подсказке: длинное обрезается многоточием.
+  el.title       = text;
   el.className   = sticky ? 'sb-sticky' : 'sb-temp';
-  if (!sticky && text) {
-    _sbTimer = setTimeout(() => { el.textContent = ''; el.className = ''; }, 3000);
-  }
+  if (!sticky && text) _armStatusTimer(ms ?? _statusMs(text));
+}
+
+// Пока мышь над строкой состояния, сообщение не гаснет: человек его читает
+// или ждёт подсказку. Отсчёт ставится на паузу и после ухода мыши идёт
+// дальше, но не меньше 2 с.
+function _armStatusTimer(ms) {
+  clearTimeout(_sbTimer);
+  _sbDeadline = Date.now() + ms;
+  _sbTimer = _sbHover ? null : setTimeout(clearStatus, ms);
 }
 
 function clearStatus() {
   clearTimeout(_sbTimer); _sbTimer = null;
   const el = document.getElementById('sb-right');
-  el.textContent = ''; el.className = '';
+  el.textContent = ''; el.className = ''; el.title = '';
+}
+
+{
+  const bar = document.getElementById('statusbar');
+  bar.addEventListener('mouseenter', () => {
+    _sbHover = true;
+    clearTimeout(_sbTimer); _sbTimer = null;
+  });
+  bar.addEventListener('mouseleave', () => {
+    _sbHover = false;
+    if (document.getElementById('sb-right').className === 'sb-temp') {
+      _armStatusTimer(Math.max(2000, _sbDeadline - Date.now()));
+    }
+  });
 }
 
 function updateStatusLeft() {

@@ -1620,7 +1620,9 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   padding: 0 8px;
   background: var(--bg2);
   border-top: 1px solid var(--border);
-  font-size: calc(var(--ui-font) - 1px);
+  /* Размер интерфейса и жирный текст (кроме синего хода пакета) — чтобы
+     читалось за секунды показа; высота та же 22px (решение 20.10.2026). */
+  font-size: var(--ui-font);
   color: var(--text);
   flex-shrink: 0;
   overflow: hidden;
@@ -1634,12 +1636,14 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-weight: 600;
 }
 #sb-item {
   flex-shrink: 0;
   display: flex;
   gap: 16px;
   user-select: text;
+  font-weight: 600;
 }
 #sb-item span:empty { display: none; }
 #sb-right {
@@ -1649,5 +1653,5 @@ body.is-dragging #tree-root-drop { opacity: 1; pointer-events: auto; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#sb-right.sb-temp   { color: var(--text); }
+#sb-right.sb-temp   { color: var(--text); font-weight: 600; }
 #sb-right.sb-sticky { color: var(--accent); }
