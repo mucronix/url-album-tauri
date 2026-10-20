@@ -6767,8 +6767,10 @@ function _runThumbWorker() {
     .catch(err => {
       // Ссылку уже снимает кто-то другой — её рисунок будет, это не неудача.
       if (err === SHOT_BUSY) { _thumbSkipped++; return; }
+      // В строку состояния не пишем: её тут же, в finally, занимает ход
+      // пакета, и ошибку было не увидеть вовсе. Неудача — в итоге пакета,
+      // причина — в журнале (её пишет do_screenshot).
       _thumbFailed++;
-      setStatus('Ошибка рисунка: ' + (err?.message ?? String(err)));
     })
     .finally(() => {
       _thumbDone++;
