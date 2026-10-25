@@ -3693,6 +3693,9 @@ function buildMenubar() {
       const entry = document.createElement('div');
       const hasSub = Array.isArray(item.sub);
       entry.className = 'menu-entry' + (item.todo ? ' disabled' : '') + (hasSub ? ' has-sub' : '');
+      // По действию пункт находят, не по тексту: подпись бывает переведённой
+      // и меняется на ходу (_syncExpandToggleUI).
+      if (item.action) entry.dataset.action = item.action;
 
       const icon = document.createElement('span');
       icon.className = 'entry-icon';
@@ -3722,6 +3725,7 @@ function buildMenubar() {
           }
           const se = document.createElement('div');
           se.className = 'menu-entry' + (si.todo ? ' disabled' : '');
+          if (si.action) se.dataset.action = si.action;
           const ic = document.createElement('span'); ic.className = 'entry-icon';
           ic.innerHTML = ICONS[si.icon] || '';
           const lb = document.createElement('span'); lb.className = 'entry-label';
@@ -3798,12 +3802,11 @@ function _syncExpandToggleUI() {
   const label = anyOpen ? 'Свернуть все папки' : 'Развернуть все папки';
   const icon  = anyOpen ? 'collapse-all' : 'expand-all';
   // Menu label + icon
-  document.querySelectorAll('.menu-entry .entry-label').forEach(el => {
-    if (el.textContent === 'Развернуть все папки' || el.textContent === 'Свернуть все папки') {
-      el.textContent = label;
-      const iconEl = el.closest('.menu-entry')?.querySelector('.entry-icon');
-      if (iconEl) iconEl.innerHTML = ICONS[icon] || '';
-    }
+  document.querySelectorAll('.menu-entry[data-action="toggle-expand-all"]').forEach(entry => {
+    const labelEl = entry.querySelector('.entry-label');
+    if (labelEl) labelEl.textContent = label;
+    const iconEl = entry.querySelector('.entry-icon');
+    if (iconEl) iconEl.innerHTML = ICONS[icon] || '';
   });
   // Toolbar button
   const btn = toolbarEl.querySelector('[data-tb-cmd="toggle-expand-all"]');
