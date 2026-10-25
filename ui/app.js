@@ -1249,7 +1249,7 @@ function buildOpenerSubmenu(folderNode) {
   };
 
   // Браузер по умолчанию (сброс opener в NULL) — галочка, если opener не задан
-  sub.appendChild(ctxItem(cur ? null : "check", "Браузер по умолчанию", null, () => setOpener(null)));
+  sub.appendChild(ctxItem(cur ? null : "check", DEFAULT_BROWSER_LABEL, null, () => setOpener(null)));
   sub.appendChild(ctxSep());
 
   // Браузеры из списка (кроме элемента "default") — галочка у текущего
@@ -2132,6 +2132,11 @@ function reportBrokenConfigs() {
 let browsers        = [{ name: "Браузер по умолчанию", path: "default" }];
 let defaultBrowserPath = "default";
 
+// Подпись записи "default" — по path, не по name из browsers.json: имя в файле
+// могло остаться с другого языка; сам файл не трогаем.
+const DEFAULT_BROWSER_LABEL = "Браузер по умолчанию";
+function browserLabel(b) { return b.path === "default" ? DEFAULT_BROWSER_LABEL : b.name; }
+
 // File-based portable storage for browser list
 async function loadBrowsersConfig() {
   let json;
@@ -2218,7 +2223,7 @@ function resolveOpenerForNode(node) {
     browsers.forEach((b, i) => {
       const el = document.createElement("div");
       el.className = "dlg-browser-entry" + (i === 0 ? " selected" : "");
-      el.textContent = b.name;
+      el.textContent = browserLabel(b);
       el.addEventListener("click", () => {
         list.querySelectorAll(".dlg-browser-entry").forEach(e => e.classList.remove("selected"));
         el.classList.add("selected"); _owPath = b.path;
@@ -2301,7 +2306,7 @@ function openSubFloat(trigger, node) {
   const sub = document.createElement("div");
   sub.className = "ctx-submenu";
   browsers.forEach(b => {
-    const it = ctxItem("openwith", b.name, null,
+    const it = ctxItem("openwith", browserLabel(b), null,
       () => { hideContextMenu(); openWithBrowser(node.url, b.path); });
     sub.appendChild(it);
   });
@@ -2746,7 +2751,7 @@ function renderDlgList() {
   dlgBrowsers.forEach((b, i) => {
     const el = document.createElement("div");
     el.className = "dlg-browser-entry" + (i === dlgSelIdx ? " selected" : "");
-    el.textContent = b.name;
+    el.textContent = browserLabel(b);
     el.addEventListener("click", () => { dlgSelIdx = i; renderDlgList(); updateDlgBtns(); });
     el.addEventListener("dblclick", () => openAddBrowserDialog(i));
     dlgBrowserList.appendChild(el);
@@ -2757,7 +2762,7 @@ function renderDlgDefault() {
   dlgDefaultSel.innerHTML = "";
   dlgBrowsers.forEach(b => {
     const opt = document.createElement("option");
-    opt.value = b.path; opt.textContent = b.name;
+    opt.value = b.path; opt.textContent = browserLabel(b);
     dlgDefaultSel.appendChild(opt);
   });
   dlgDefaultSel.value = getDefaultBrowserPath();
@@ -2841,7 +2846,11 @@ let   editBrowserIdx    = -1;
 
 function openAddBrowserDialog(idx, presetPath = "", presetName = "") {
   editBrowserIdx = idx;
-  addBrowserName.value = idx >= 0 ? dlgBrowsers[idx].name : presetName;
+  // У записи "default" название только для чтения: показывается подпись,
+  // имя в файле при OK не меняется.
+  const isDefault = idx >= 0 && dlgBrowsers[idx].path === "default";
+  addBrowserName.readOnly = isDefault;
+  addBrowserName.value = idx >= 0 ? browserLabel(dlgBrowsers[idx]) : presetName;
   addBrowserPath.value = idx >= 0 ? dlgBrowsers[idx].path : presetPath;
   document.body.appendChild(addBrowserOverlay); // bring to DOM front
   raiseOverlay(addBrowserOverlay);
@@ -2866,8 +2875,8 @@ function closeAddBrowserDialog() { addBrowserOverlay.classList.add("hidden"); }
 document.getElementById("add-browser-x").onclick      = closeAddBrowserDialog;
 document.getElementById("add-browser-cancel").onclick = closeAddBrowserDialog;
 document.getElementById("add-browser-ok").onclick = () => {
-  const name = addBrowserName.value.trim();
   const path = addBrowserPath.value.trim();
+  const name = addBrowserName.readOnly ? dlgBrowsers[editBrowserIdx].name : addBrowserName.value.trim();
   if (!name || !path) return;
   if (editBrowserIdx >= 0) {
     dlgBrowsers[editBrowserIdx] = { name, path };
