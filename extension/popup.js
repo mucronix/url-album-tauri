@@ -62,7 +62,10 @@ async function loadFolders(token) {
     opt.textContent = f.title;
     select.appendChild(opt);
   });
-  const inbox = folders.find(f => f.title === 'Новые ссылки');
+  // Служебная — по признаку `inbox`; по названию — для прежних версий
+  // программы, которые признака не присылают.
+  const inbox = folders.find(f => f.inbox)
+             || folders.find(f => f.inbox === undefined && f.title === 'Новые ссылки');
   select.value = inbox ? inbox.id : folders[0].id;
   row.style.display = '';
   return 'ok';

@@ -2308,6 +2308,25 @@ fn find_or_create_inbox_folder(conn: &Connection) -> Result<i64, String> {
     }
 }
 
+/// Ответ `GET /api/v1/folders`: корневые живые папки в порядке дерева.
+/// `inbox: true` — служебная: расширение выбирает её по признаку, а не по
+/// названию (название переводится и переименовывается).
+fn extension_folders(conn: &Connection) -> rusqlite::Result<serde_json::Value> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, role IS ?1 FROM nodes \
+         WHERE kind='folder' AND parent IS NULL \
+         AND (deleted IS NULL OR deleted=0) ORDER BY sort_idx"
+    )?;
+    let rows = stmt.query_map([db::ROLE_INBOX], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?))
+    })?;
+    Ok(serde_json::Value::Array(
+        rows.filter_map(|r| r.ok())
+            .map(|(id, title, inbox)| serde_json::json!({"id": id, "title": title, "inbox": inbox}))
+            .collect()
+    ))
+}
+
 /// Папка для окна «Новая ссылка», когда в нём не выбрано ни одной (в базе нет
 /// папок): служебная «Новые ссылки», при необходимости заводится.
 #[tauri::command]
@@ -3445,12 +3464,8 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                     continue;
                 }
             };
-            let mut stmt = match conn.prepare(
-                "SELECT id, title FROM nodes \
-                 WHERE kind='folder' AND parent IS NULL \
-                 AND (deleted IS NULL OR deleted=0) ORDER BY sort_idx"
-            ) {
-                Ok(s)  => s,
+            let arr = match extension_folders(&conn) {
+                Ok(a)  => a,
                 Err(e) => {
                     logger::log(&format!("расширение: 500 /folders, ошибка базы: {e}"));
                     respond_json(req, 500,
@@ -3458,22 +3473,6 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                     continue;
                 }
             };
-            let rows = match stmt.query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            }) {
-                Ok(r)  => r,
-                Err(e) => {
-                    logger::log(&format!("расширение: 500 /folders, ошибка базы: {e}"));
-                    respond_json(req, 500,
-                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), Some(ALLOWED_ORIGIN));
-                    continue;
-                }
-            };
-            let arr: serde_json::Value = serde_json::Value::Array(
-                rows.filter_map(|r| r.ok())
-                    .map(|(id, title)| serde_json::json!({"id": id, "title": title}))
-                    .collect()
-            );
             respond_json(req, 200, &arr.to_string(), Some(ALLOWED_ORIGIN));
             continue;
         }
@@ -4236,6 +4235,21 @@ mod tests {
         assert_eq!(folders, 2, "папка источника пришла вместе со ссылкой");
         assert_eq!(role_ids(&dest), vec![own], "признак — только у своей служебной");
         assert_eq!(find_or_create_inbox_folder(&dest).unwrap(), own);
+    }
+
+    #[test]
+    fn extension_folders_mark_inbox() {
+        // Расширение выбирает служебную по признаку, а не по названию.
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        let inbox = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute("UPDATE nodes SET title = 'Входящие' WHERE id = ?1", [inbox]).unwrap();
+        let other = db::insert_folder(&conn, None, INBOX_FOLDER_NAME).unwrap();
+        let arr = extension_folders(&conn).unwrap();
+        let flag = |id: i64| arr.as_array().unwrap().iter()
+            .find(|f| f["id"] == id).map(|f| f["inbox"].clone());
+        assert_eq!(flag(inbox), Some(serde_json::json!(true)), "служебная — inbox: true");
+        assert_eq!(flag(other), Some(serde_json::json!(false)), "папка с тем же названием — inbox: false");
     }
 
     #[test]
