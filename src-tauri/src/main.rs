@@ -1470,18 +1470,20 @@ fn clear_db(state: tauri::State<AppState>) -> Result<(), String> {
 #[tauri::command]
 /// Switch the active connection to a file chosen by the user.
 /// Opens in-place — no copying. The chosen file becomes the active DB.
-async fn open_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> Result<(), String> {
+/// `false` — окно закрыли без выбора: это не ошибка, JS просто ничего не делает.
+async fn open_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> Result<bool, String> {
     let start_dir = state.db_path.lock()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let file = rfd::AsyncFileDialog::new()
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_title("Открыть базу данных")
         .add_filter("База данных URL Album", &["db"])
         .set_directory(&start_dir)
-        .pick_file().await.ok_or("Отменено")?;
+        .pick_file().await
+    else { return Ok(false) };
     let src = file.path().to_path_buf();
 
     // Guard against opening the already-active database
@@ -1490,7 +1492,8 @@ async fn open_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> R
         return Err("Выбранный файл уже является активной базой данных.".into());
     }
 
-    switch_db(state, src)
+    switch_db(state, src)?;
+    Ok(true)
 }
 
 /// Схема новой базы и служебная «Новые ссылки» в ней: окну «Новая ссылка»
@@ -1517,8 +1520,9 @@ fn open_startup_db(path: &std::path::Path) -> Result<Connection, String> {
 }
 
 /// Create a new empty database at a user-chosen path, then open it.
+/// `false` — окно закрыли без выбора.
 #[tauri::command]
-async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> Result<(), String> {
+async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> Result<bool, String> {
     // Default directory: folder of the current active DB, or exe folder as fallback
     let start_dir = state.db_path.lock()
         .ok()
@@ -1526,12 +1530,13 @@ async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window
         .or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let file = rfd::AsyncFileDialog::new()
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_title("Создать новую базу данных")
         .add_filter("База данных URL Album", &["db"])
         .set_file_name("album.db")
         .set_directory(&start_dir)
-        .save_file().await.ok_or("Отменено")?;
+        .save_file().await
+    else { return Ok(false) };
     let path = file.path().to_path_buf();
 
     // Create and initialise the new empty file
@@ -1540,7 +1545,8 @@ async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window
     // Close it so switch_db can reopen cleanly
     drop(new_conn);
 
-    switch_db(state, path)
+    switch_db(state, path)?;
+    Ok(true)
 }
 
 // ── Last-used DB persistence (portable: last_db.txt next to exe) ─────────────
@@ -1637,26 +1643,28 @@ fn backup_result(path: &std::path::Path, wal_warn: Option<String>) -> String {
     s
 }
 
+/// `None` — окно закрыли без выбора.
 #[tauri::command]
-async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<String, String> {
+async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<Option<String>, String> {
     let (src, src_dir, src_name) = {
         let p = state.db_path.lock().map_err(|e| e.to_string())?.clone();
         let dir = p.parent().ok_or("no parent")?.to_path_buf();
         let name = p.file_name().ok_or("no filename")?.to_string_lossy().into_owned();
         (p, dir, name)
     };
-    let file = rfd::AsyncFileDialog::new()
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
         .set_title("Сохранить резервную копию базы")
         .add_filter("База данных", &["db"])
         .set_file_name(&src_name)
         .set_directory(&src_dir)
-        .save_file().await.ok_or("Отменено")?;
+        .save_file().await
+    else { return Ok(None) };
 
     // Диалог уже закрыт — дальше ни одного .await, guard внутри хелпера безопасен.
     let wal_warn = checkpoint_before_copy(&state);
     std::fs::copy(&src, file.path()).map_err(|e| e.to_string())?;
-    Ok(backup_result(file.path(), wal_warn))
+    Ok(Some(backup_result(file.path(), wal_warn)))
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
@@ -1674,19 +1682,21 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     Ok(())
 }
 
+/// `None` — окно закрыли без выбора.
 #[tauri::command]
-async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<String, String> {
+async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<Option<String>, String> {
     let (db_src, db_dir, db_name) = {
         let p = state.db_path.lock().map_err(|e| e.to_string())?.clone();
         let dir = p.parent().ok_or("no parent")?.to_path_buf();
         let name = p.file_name().ok_or("no filename")?.to_string_lossy().into_owned();
         (p, dir, name)
     };
-    let dest_folder = rfd::AsyncFileDialog::new()
+    let Some(dest_folder) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
         .set_title("Выбрать папку для резервной копии")
         .set_directory(&db_dir)
-        .pick_folder().await.ok_or("Отменено")?;
+        .pick_folder().await
+    else { return Ok(None) };
     let dest = dest_folder.path().to_path_buf();
 
     // Bug 2 fix: prevent dest == db_dir which would overwrite the source DB
@@ -1706,7 +1716,7 @@ async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::W
     if data_src.exists() {
         copy_dir_recursive(&data_src, &dest.join("Data"))?;
     }
-    Ok(backup_result(&dest.join(&db_name), wal_warn))
+    Ok(Some(backup_result(&dest.join(&db_name), wal_warn)))
 }
 
 #[tauri::command]
@@ -1738,26 +1748,32 @@ fn sort_folder(
     Ok(ids)
 }
 
+/// `false` — окно закрыли без выбора.
 #[tauri::command]
-async fn export_folder_html(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64) -> Result<(), String> {
-    let file = rfd::AsyncFileDialog::new()
+async fn export_folder_html(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64) -> Result<bool, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
         .set_title("Экспорт в HTML")
         .add_filter("HTML файл", &["html", "htm"])
-        .save_file().await.ok_or("Отменено")?;
+        .save_file().await
+    else { return Ok(false) };
     let content = { let c = state.db.lock().map_err(|e| e.to_string())?; db::export_html(&c, folder_id).map_err(|e| e.to_string())? };
-    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())
+    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
+/// `false` — окно закрыли без выбора.
 #[tauri::command]
-async fn export_folder_txt(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64) -> Result<(), String> {
-    let file = rfd::AsyncFileDialog::new()
+async fn export_folder_txt(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64) -> Result<bool, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
         .set_title("Экспорт в TXT")
         .add_filter("Текстовый файл", &["txt"])
-        .save_file().await.ok_or("Отменено")?;
+        .save_file().await
+    else { return Ok(false) };
     let content = { let c = state.db.lock().map_err(|e| e.to_string())?; db::export_txt(&c, folder_id).map_err(|e| e.to_string())? };
-    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())
+    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -2118,15 +2134,18 @@ async fn open_url_with(url: String, browser: String) -> Result<(), String> {
 
 // ── Generic file save ────────────────────────────────────────────────────────
 
+/// `false` — окно закрыли без выбора.
 #[tauri::command]
-async fn save_text_file(window: tauri::Window, content: String, default_name: Option<String>) -> Result<(), String> {
-    let file = rfd::AsyncFileDialog::new()
+async fn save_text_file(window: tauri::Window, content: String, default_name: Option<String>) -> Result<bool, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
         .set_title("Сохранить файл")
         .add_filter("Текстовый файл", &["txt"])
         .set_file_name(default_name.as_deref().unwrap_or("export.txt"))
-        .save_file().await.ok_or("Отменено")?;
-    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())
+        .save_file().await
+    else { return Ok(false) };
+    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 // ── Settings (portable) ──────────────────────────────────────────────────────
@@ -3121,12 +3140,14 @@ async fn import_txt_file(
     state: tauri::State<'_, AppState>,
     window: tauri::Window,
     parent_id: Option<i64>,
-) -> Result<db::TxtImportResult, String> {
-    let file = rfd::AsyncFileDialog::new()
+) -> Result<Option<db::TxtImportResult>, String> {
+    // `None` — окно закрыли без выбора.
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
         .set_title("Импорт из текстового файла")
         .add_filter("Текстовый файл", &["txt"])
-        .pick_file().await.ok_or("Отменено")?;
+        .pick_file().await
+    else { return Ok(None) };
     let path = file.path().to_path_buf();
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
 
@@ -3136,7 +3157,7 @@ async fn import_txt_file(
     if db::looks_like_our_txt(&content) {
         // Наш экспорт: имя корневой папки записано в самом файле, и дерево
         // воссоздаётся вместе с ним — размещать иначе было бы неверно.
-        return db::import_txt(&conn, &content, parent_id).map_err(|e| e.to_string());
+        return db::import_txt(&conn, &content, parent_id).map(Some).map_err(|e| e.to_string());
     }
 
     // Простой список: имя первой строки папкой быть не должно, поэтому имя
@@ -3153,50 +3174,56 @@ async fn import_txt_file(
                 .ok_or("Слишком много папок с таким именем — переименуйте файл")?,
         ),
     };
-    db::import_txt_urls(&conn, &content, folder.as_deref(), parent_id).map_err(|e| e.to_string())
+    db::import_txt_urls(&conn, &content, folder.as_deref(), parent_id).map(Some).map_err(|e| e.to_string())
 }
 
 // ── Import commands ──────────────────────────────────────────────────────────
 
+/// `None` — окно закрыли без выбора; `Some(0)` — файл выбран, нового нет.
 #[tauri::command]
-async fn import_html(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<usize, String> {
-    let file = rfd::AsyncFileDialog::new()
+async fn import_html(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<Option<usize>, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
         .set_title("Импорт закладок из HTML")
         .add_filter("HTML файл", &["html", "htm"])
-        .pick_file().await.ok_or("Отменено")?;
+        .pick_file().await
+    else { return Ok(None) };
     let content = std::fs::read_to_string(file.path()).map_err(|e| e.to_string())?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::import_html(&conn, &content, parent_id).map_err(|e| e.to_string())
+    db::import_html(&conn, &content, parent_id).map(Some).map_err(|e| e.to_string())
 }
 
+/// `None` — окно закрыли без выбора; `Some(0)` — файл выбран, нового нет.
 #[tauri::command]
-async fn import_uadat_pick(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<usize, String> {
-    let file = rfd::AsyncFileDialog::new()
+async fn import_uadat_pick(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<Option<usize>, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
         .set_title("Открыть файл данных UA")
         .add_filter("Файл данных", &["dat", "bak"])
-        .pick_file().await.ok_or("Отменено")?;
+        .pick_file().await
+    else { return Ok(None) };
     let path = file.path().to_path_buf();
     let raw = std::fs::read(&path).map_err(|e| e.to_string())?;
     let (text, _, _) = encoding_rs::WINDOWS_1251.decode(&raw);
     let nodes = importer::parse(&text);
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::import(&conn, &nodes, parent_id).map_err(|e| e.to_string())
+    db::import(&conn, &nodes, parent_id).map(Some).map_err(|e| e.to_string())
 }
 
 // ── Import from another DB ───────────────────────────────────────────────────
 
+/// `None` — окно закрыли без выбора.
 #[tauri::command]
 async fn analyze_import_db(
     state: tauri::State<'_, AppState>,
     window: tauri::Window,
-) -> Result<db::ImportAnalysis, String> {
-    let file = rfd::AsyncFileDialog::new()
+) -> Result<Option<db::ImportAnalysis>, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
         .set_title("Выбрать базу для импорта")
         .add_filter("База данных", &["db"])
-        .pick_file().await.ok_or("Отменено")?;
+        .pick_file().await
+    else { return Ok(None) };
     let src_path = file.path().to_path_buf();
     let src_path_str = src_path.to_string_lossy().to_string();
 
@@ -3218,7 +3245,7 @@ async fn analyze_import_db(
         db::read_src_nodes(&src).map_err(|e| e.to_string())
     }).await.map_err(|e| e.to_string())??;
 
-    Ok(db::analyze_import_db(&nodes, &current_urls, src_path_str))
+    Ok(Some(db::analyze_import_db(&nodes, &current_urls, src_path_str)))
 }
 
 #[tauri::command]

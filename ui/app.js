@@ -1222,13 +1222,13 @@ function buildExportSubmenu(folderNode) {
   const doExport = (cmd) => {
     hideContextMenu();
     invoke(cmd, { folderId: folderNode.id })
-      .then(() => setStatus('Экспорт завершён'))
-      .catch(err => { if (err !== "Отменено") {
+      .then(saved => { if (saved) setStatus('Экспорт завершён'); })   // false — окно закрыли
+      .catch(err => {
         // console.error в release недоступен — причина (нет прав, диск полон)
         // терялась целиком, пользователь видел только «Ошибка экспорта».
         logUi(`экспорт (${cmd}) не удался: ${err}`);
         setStatus('Ошибка экспорта');
-      } });
+      });
   };
 
   sub.appendChild(ctxItem("import", "HTML файл",       null, () => doExport("export_folder_html")));
@@ -1363,7 +1363,7 @@ async function invokeFolderImport(action, parentId) {
         openBrowserImportDialog();
         return;
       case 'import-html':
-        count = await invoke('import_html', { parentId });
+        count = (await invoke('import_html', { parentId })) ?? 0;   // null — окно закрыли
         break;
       // Один пункт на два формата: что за файл — решает Rust по содержимому.
       // Ошибку ловим здесь, а не общим `catch` ниже: у этой команды есть
@@ -1374,15 +1374,16 @@ async function invokeFolderImport(action, parentId) {
         try {
           res = await invoke('import_txt_file', { parentId });
         } catch (e) {
-          if (e !== 'Отменено') showNotice('Импорт из TXT', String(e));
+          showNotice('Импорт из TXT', String(e));
           return;
         }
+        if (!res) return;   // окно закрыли
         reportTxtImport(res);
         count = res.links + res.folders;
         break;
       }
       case 'import-folder':
-        count = await invoke('import_uadat_pick', { parentId });
+        count = (await invoke('import_uadat_pick', { parentId })) ?? 0;
         break;
     }
     if (count > 0) {
@@ -1392,7 +1393,7 @@ async function invokeFolderImport(action, parentId) {
       selectFolder(parentId);
     }
   } catch(e) {
-    if (e !== 'Отменено') console.error('invokeFolderImport:', e);
+    console.error('invokeFolderImport:', e);
   }
 }
 
@@ -3188,11 +3189,10 @@ function tbMoveItem(dir) {
     if (errEl) errEl.textContent = '';
     try {
       await flushNoteEdit();
-      await invoke('open_db');
+      if (!(await invoke('open_db'))) return;   // окно выбора закрыли — наше остаётся
       close();
       await showApp();
     } catch(e) {
-      if (e === 'Отменено') return;
       if (errEl) errEl.textContent = e;
       else console.error('open_db:', e);
     }
@@ -3245,7 +3245,7 @@ function tbMoveItem(dir) {
         setStatus('Нет новых ссылок для импорта');
       }
     } catch(e) {
-      if (e !== 'Отменено') alert('Ошибка импорта: ' + e);
+      alert('Ошибка импорта: ' + e);
     } finally {
       okBtn.disabled = false;
     }
@@ -3820,27 +3820,27 @@ function handleMenuAction(action) {
     case 'export-html': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
       if (fid != null) invoke("export_folder_html", { folderId: fid })
-        .then(() => setStatus('Экспорт в HTML завершён'))
+        .then(saved => { if (saved) setStatus('Экспорт в HTML завершён'); })   // false — окно закрыли
         .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
       break;
     }
     case 'export-txt': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
       if (fid != null) invoke("export_folder_txt", { folderId: fid })
-        .then(() => setStatus('Экспорт в текст завершён'))
+        .then(saved => { if (saved) setStatus('Экспорт в текст завершён'); })
         .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
       break;
     }
     // ── Backup ──
     case 'backup-without':
       invoke("backup_db")
-        .then(path => showNotice('Резервная копия', 'Резервная копия базы создана:\n' + path))
-        .catch(e => { if (e !== 'Отменено') { console.error(e); showNotice('Ошибка', 'Не удалось создать резервную копию:\n' + e); } });
+        .then(path => { if (path != null) showNotice('Резервная копия', 'Резервная копия базы создана:\n' + path); })
+        .catch(e => { console.error(e); showNotice('Ошибка', 'Не удалось создать резервную копию:\n' + e); });
       break;
     case 'backup-with':
       invoke("backup_db_with_data")
-        .then(path => showNotice('Резервная копия', 'Резервная копия базы с рисунками создана:\n' + path))
-        .catch(e => { if (e !== 'Отменено') { console.error(e); showNotice('Ошибка', e); } });
+        .then(path => { if (path != null) showNotice('Резервная копия', 'Резервная копия базы с рисунками создана:\n' + path); })
+        .catch(e => { console.error(e); showNotice('Ошибка', e); });
       break;
     // ── Sort all ──
     case 'sort-all-title-asc':    invoke("sort_all_bookmarks", { by: "title",   desc: false }).then(refreshTree).catch(console.error); break;
@@ -3866,21 +3866,24 @@ function handleMenuAction(action) {
       break;
     case 'import-txt-lines':
       invoke("import_txt_file")
-        .then(res => { reportTxtImport(res); if (res.links + res.folders > 0) refreshTree(); })
-        .catch(e => { if (e !== 'Отменено') showNotice('Импорт из TXT', String(e)); });
+        .then(res => { if (!res) return; reportTxtImport(res); if (res.links + res.folders > 0) refreshTree(); })
+        .catch(e => showNotice('Импорт из TXT', String(e)));
       break;
     case 'import-html':
       invoke("import_html")
-        .then(n => { if (n > 0) { refreshTree(); } })
-        .catch(e => { if (e !== 'Отменено') console.error('import_html:', e); });
+        .then(n => { if (n > 0) { refreshTree(); } })   // null — окно закрыли
+        .catch(e => console.error('import_html:', e));
       break;
     case 'import-folder':
       invoke("import_uadat_pick")
         .then(n => {
+          // null — окно закрыли: проверка ДО «Нет новых ссылок», иначе отмена
+          // показывала бы это сообщение.
+          if (n == null) return;
           if (n > 0) { refreshTree(); setStatus(`Импортировано ${n} ${plural(n, 'ссылка', 'ссылки', 'ссылок')}`); }
           else setStatus('Нет новых ссылок для импорта');
         })
-        .catch(e => { if (e !== 'Отменено') console.error('import_folder:', e); });
+        .catch(e => console.error('import_folder:', e));
       break;
 
     case 'open-link': {
@@ -3938,8 +3941,8 @@ function handleMenuAction(action) {
     case 'new-db':
       flushNoteEdit()
         .then(() => invoke('create_new_db'))
-        .then(() => showApp())
-        .catch(e => { if (e !== 'Отменено') console.error('create_new_db:', e); });
+        .then(created => { if (created) return showApp(); })   // false — окно закрыли
+        .catch(e => console.error('create_new_db:', e));
       break;
     case 'clear-db':
       deleteConfirm('Очистить базу данных?\nВсе закладки, папки и скриншоты будут удалены.', async () => {
@@ -4000,8 +4003,8 @@ function handleMenuAction(action) {
 
     case 'import-from-db':
       invoke('analyze_import_db')
-        .then(a => openImportDbDialog(a))
-        .catch(e => { if (e !== 'Отменено') alert('Ошибка: ' + e); });
+        .then(a => { if (a) openImportDbDialog(a); })   // null — окно закрыли
+        .catch(e => alert('Ошибка: ' + e));
       break;
 
     case 'refresh-favicons-folder': {
@@ -4720,20 +4723,20 @@ async function showImportScreen() {
 // "Создать новую базу" — save dialog then open empty app
 document.getElementById("wb-new").addEventListener("click", async () => {
   try {
-    await invoke("create_new_db");
+    if (!(await invoke("create_new_db"))) return;   // окно закрыли — остаёмся на стартовом экране
     await showApp();
   } catch(e) {
-    if (e !== "Отменено") console.error("create_new_db:", e);
+    console.error("create_new_db:", e);
   }
 });
 
 // "Открыть существующую базу" — file picker then reload
 document.getElementById("wb-open").addEventListener("click", async () => {
   try {
-    await invoke("open_db");
+    if (!(await invoke("open_db"))) return;
     await showApp();
   } catch(e) {
-    if (e !== "Отменено") console.error("open_db:", e);
+    console.error("open_db:", e);
   }
 });
 
@@ -4741,10 +4744,11 @@ document.getElementById("wb-open").addEventListener("click", async () => {
 document.getElementById("wb-import").addEventListener("click", async () => {
   try {
     const n = await invoke("import_uadat_pick");
+    if (n == null) return;   // окно закрыли
     await showApp();
     setStatus(`Импортировано ${n} ${plural(n, 'ссылка', 'ссылки', 'ссылок')}`);
   } catch(e) {
-    if (e !== "Отменено") console.error("import_uadat_pick:", e);
+    console.error("import_uadat_pick:", e);
   }
 });
 
