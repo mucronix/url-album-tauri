@@ -1551,7 +1551,8 @@ async function refreshThumb(node) {
     // жал «Обновить рисунок», overlay гас, и ничего не происходило.
     // В журнал не пишем: do_screenshot уже записал и команду, и итог
     // («файла нет» с длительностью). Наше дело — показать причину.
-    showNotice('Рисунок', typeof err === 'string' ? err
+    showNotice('Рисунок', err === SHOT_BUSY ? SHOT_BUSY_TEXT
+      : typeof err === 'string' ? err
       : 'Не удалось обновить рисунок: ' + (err?.message ?? String(err)));
   } finally {
     detailLoadingOverlay.classList.remove("visible");
@@ -4179,8 +4180,10 @@ let _thumbFailed    = 0;     // для сводки пакета
 let _thumbSkipped   = 0;     // уже снимались другим путём (SHOT_BUSY) — не неудача
 let _thumbStarted   = 0;
 // Отказ refresh_thumb, когда эта ссылка уже снимается (пакет, «Обновить
-// рисунок», новая ссылка, расширение). Тот же текст — SHOT_BUSY в main.rs.
-const SHOT_BUSY = 'Рисунок этой ссылки уже снимается';
+// рисунок», новая ссылка, расширение). Код, тот же — SHOT_BUSY в main.rs;
+// текст для человека — SHOT_BUSY_TEXT.
+const SHOT_BUSY = 'shot_busy';
+const SHOT_BUSY_TEXT = 'Рисунок этой ссылки уже снимается';
 let _thumbBrowsers  = new Map();  // браузер → снято им, для сводки пакета
 let _thumbFallback  = null;       // причина запасного браузера, если был
 

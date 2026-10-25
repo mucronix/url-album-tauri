@@ -874,9 +874,10 @@ pub(crate) struct Shot {
 /// Срок проверки адреса до запуска браузера (DNS + TCP вместе).
 const PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Ответ на второй снимок той же ссылки. Тот же текст — `SHOT_BUSY` в app.js:
-/// по нему пакет считает ссылку «пропущено», а не «не удалось».
-pub(crate) const SHOT_BUSY: &str = "Рисунок этой ссылки уже снимается";
+/// Ответ на второй снимок той же ссылки — код, не текст: текст для человека
+/// держит app.js. Тот же код — `SHOT_BUSY` в app.js: по нему пакет считает
+/// ссылку «пропущено», а не «не удалось».
+pub(crate) const SHOT_BUSY: &str = "shot_busy";
 
 /// Файлы снимков, которые сейчас снимаются. Вектор, а не `HashSet`: снимков
 /// разом единицы, а `Vec::new` годится для `static` без ленивой инициализации.
@@ -4044,6 +4045,16 @@ mod tests {
         drop(first);
         assert!(ShotLock::try_acquire(a).is_some(), "первый закончился — снова можно");
         drop(other);
+    }
+
+    #[test]
+    fn shot_busy_is_code() {
+        // Код, а не текст для человека: текст переводится, код — нет.
+        assert!(!SHOT_BUSY.is_empty() && SHOT_BUSY.is_ascii(), "SHOT_BUSY — код ASCII: {SHOT_BUSY}");
+        // По этому коду пакет в app.js считает ссылку «пропущено» — строки обязаны совпадать.
+        let js = include_str!("../../ui/app.js");
+        let decl = format!("const SHOT_BUSY = '{SHOT_BUSY}';");
+        assert!(js.contains(&decl), "в app.js нет `{decl}`");
     }
 
     fn inbox_ids(conn: &Connection) -> Vec<i64> {
