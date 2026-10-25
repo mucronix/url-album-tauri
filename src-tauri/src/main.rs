@@ -2272,18 +2272,40 @@ fn create_folder(state: tauri::State<AppState>, parent_id: Option<i64>, title: S
     db::insert_folder(&conn, parent_id, &title).map_err(|e| e.to_string())
 }
 
+/// Служебная папка — по признаку `role`, не по названию: переименованная
+/// остаётся служебной, папка человека с тем же названием ею не становится.
+/// Перенесённая внутрь другой папки или удалённая в корзину служебной быть
+/// перестаёт: заводится новая, признак переходит к ней.
 fn find_or_create_inbox_folder(conn: &Connection) -> Result<i64, String> {
     use rusqlite::OptionalExtension;
     if let Some(id) = conn.query_row(
         // deleted: папка в корзине тоже с parent = NULL — с виду корневая.
-        "SELECT id FROM nodes WHERE kind='folder' AND title=?1 AND parent IS NULL \
-         AND COALESCE(deleted, 0) = 0 ORDER BY id LIMIT 1",
-        rusqlite::params![INBOX_FOLDER_NAME],
+        "SELECT id FROM nodes WHERE role = ?1 AND kind = 'folder' AND parent IS NULL \
+         AND COALESCE(deleted, 0) = 0",
+        rusqlite::params![db::ROLE_INBOX],
         |r| r.get::<_, i64>(0),
     ).optional().map_err(|e| e.to_string())? {
         return Ok(id);
     }
-    db::insert_folder(conn, None, INBOX_FOLDER_NAME).map_err(|e| e.to_string())
+    // SAVEPOINT, а не BEGIN: зовётся и внутри транзакции clear_nodes.
+    // Признак снимается со старой и ставится новой вместе — или никак.
+    conn.execute_batch("SAVEPOINT inbox").map_err(|e| e.to_string())?;
+    let res = (|| -> rusqlite::Result<i64> {
+        conn.execute("UPDATE nodes SET role = NULL WHERE role = ?1", [db::ROLE_INBOX])?;
+        let id = db::insert_folder(conn, None, INBOX_FOLDER_NAME)?;
+        conn.execute("UPDATE nodes SET role = ?1 WHERE id = ?2", rusqlite::params![db::ROLE_INBOX, id])?;
+        Ok(id)
+    })();
+    match res {
+        Ok(id) => {
+            conn.execute_batch("RELEASE inbox").map_err(|e| e.to_string())?;
+            Ok(id)
+        }
+        Err(e) => {
+            conn.execute_batch("ROLLBACK TO inbox; RELEASE inbox").ok();
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Папка для окна «Новая ссылка», когда в нём не выбрано ни одной (в базе нет
@@ -4108,6 +4130,146 @@ mod tests {
         let id = find_or_create_inbox_folder(&conn).unwrap();
         assert_ne!(id, old, "ссылка не должна уходить в папку из корзины");
         assert_eq!(inbox_ids(&conn), vec![id]);
+    }
+
+    /// id узлов с признаком служебной папки.
+    fn role_ids(conn: &Connection) -> Vec<i64> {
+        let mut st = conn.prepare("SELECT id FROM nodes WHERE role = 'inbox' ORDER BY id").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn inbox_has_role() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        assert_eq!(role_ids(&conn), inbox_ids(&conn), "новая база: признак у её «{INBOX_FOLDER_NAME}»");
+        clear_nodes(&conn).unwrap();
+        assert_eq!(role_ids(&conn).len(), 1, "очищенная база: признак у новой папки");
+        assert_eq!(role_ids(&conn), inbox_ids(&conn));
+    }
+
+    #[test]
+    fn inbox_found_by_role_after_rename() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        let id = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute("UPDATE nodes SET title = 'Входящие' WHERE id = ?1", [id]).unwrap();
+        assert_eq!(find_or_create_inbox_folder(&conn).unwrap(), id, "переименованная — та же служебная");
+        let folders: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE kind = 'folder'", [], |r| r.get(0)).unwrap();
+        assert_eq!(folders, 1, "вторая папка не заведена");
+    }
+
+    #[test]
+    fn user_folder_with_inbox_title_not_used() {
+        // Папка человека с тем же названием служебной не становится.
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        let id = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute("UPDATE nodes SET title = 'Входящие' WHERE id = ?1", [id]).unwrap();
+        db::insert_folder(&conn, None, INBOX_FOLDER_NAME).unwrap();
+        assert_eq!(find_or_create_inbox_folder(&conn).unwrap(), id);
+        db::init(&conn).unwrap();   // повторное открытие базы признак не переносит
+        assert_eq!(role_ids(&conn), vec![id]);
+    }
+
+    #[test]
+    fn inbox_moved_inside_loses_role() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        let old = find_or_create_inbox_folder(&conn).unwrap();
+        let p = db::insert_folder(&conn, None, "Папка").unwrap();
+        conn.execute("UPDATE nodes SET parent = ?1 WHERE id = ?2", [p, old]).unwrap();
+        let new = find_or_create_inbox_folder(&conn).unwrap();
+        assert_ne!(new, old, "перенесённая внутрь другой — уже не служебная");
+        assert_eq!(role_ids(&conn), vec![new], "признак перешёл к новой, у старой снят");
+    }
+
+    #[test]
+    fn inbox_restored_from_trash_not_second_role() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        let old = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute(
+            "UPDATE nodes SET deleted = 1, deleted_parent = parent, parent = NULL WHERE id = ?1",
+            [old],
+        ).unwrap();
+        let new = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute("UPDATE nodes SET deleted = 0 WHERE id = ?1", [old]).unwrap();
+        assert_eq!(find_or_create_inbox_folder(&conn).unwrap(), new, "служебная — новая");
+        assert_eq!(role_ids(&conn), vec![new]);
+    }
+
+    #[test]
+    fn inbox_role_is_unique() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        assert_eq!(role_ids(&conn).len(), 1, "признак у служебной есть");
+        let other = db::insert_folder(&conn, None, "Папка").unwrap();
+        assert!(conn.execute("UPDATE nodes SET role = 'inbox' WHERE id = ?1", [other]).is_err(),
+                "второй служебной папки база не допускает");
+    }
+
+    #[test]
+    fn imported_inbox_is_not_service() {
+        // Сторож на будущее, на прежнем коде не краснеет: импорт перечисляет
+        // колонки в INSERT явно, `role` среди них нет. Ловит правку, которая
+        // начнёт копировать узлы целиком, — тогда «Новые ссылки» источника
+        // стала бы второй служебной (или импорт упал бы на уникальном индексе).
+        let src = Connection::open_in_memory().unwrap();
+        init_new_db(&src).unwrap();
+        let src_inbox = find_or_create_inbox_folder(&src).unwrap();
+        db::insert_bookmark(&src, Some(src_inbox), "из источника", "https://example.org/src", None).unwrap();
+        assert_eq!(role_ids(&src), vec![src_inbox], "в источнике у «Новых ссылок» есть признак");
+
+        let dest = Connection::open_in_memory().unwrap();
+        init_new_db(&dest).unwrap();
+        let own = find_or_create_inbox_folder(&dest).unwrap();
+
+        let nodes = db::read_src_nodes(&src).unwrap();
+        let urls = db::collect_urls(&dest).unwrap();
+        let added = db::execute_import_from_nodes(&dest, &nodes, None, &urls).unwrap();
+        assert_eq!(added, 1, "ссылка источника импортирована");
+        let folders: i64 = dest.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE kind = 'folder' AND title = ?1",
+            [INBOX_FOLDER_NAME], |r| r.get(0)).unwrap();
+        assert_eq!(folders, 2, "папка источника пришла вместе со ссылкой");
+        assert_eq!(role_ids(&dest), vec![own], "признак — только у своей служебной");
+        assert_eq!(find_or_create_inbox_folder(&dest).unwrap(), own);
+    }
+
+    #[test]
+    fn legacy_inbox_marked_on_open() {
+        // База от версии без колонки role: таблица старой схемы.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE nodes (id INTEGER PRIMARY KEY AUTOINCREMENT, parent INTEGER,
+                 kind TEXT NOT NULL DEFAULT 'bookmark', title TEXT NOT NULL, url TEXT,
+                 thumb TEXT, note TEXT, created TEXT, visited TEXT, sort_idx INTEGER DEFAULT 0,
+                 favicon TEXT, deleted INTEGER DEFAULT 0, deleted_parent INTEGER, opener TEXT);
+             INSERT INTO nodes (id, parent, kind, title, deleted) VALUES
+                 (1, NULL, 'folder', 'Новые ссылки', 1),
+                 (2, NULL, 'folder', 'Папка', 0),
+                 (3, 2,    'folder', 'Новые ссылки', 0),
+                 (4, NULL, 'bookmark', 'Новые ссылки', 0),
+                 (5, NULL, 'folder', 'Новые ссылки', NULL),
+                 (6, NULL, 'folder', 'Новые ссылки', 0);",
+        ).unwrap();
+        db::init(&conn).unwrap();
+        assert_eq!(role_ids(&conn), vec![5],
+                   "наименьший id среди живых корневых папок «Новые ссылки» (deleted = NULL — живая)");
+        assert_eq!(find_or_create_inbox_folder(&conn).unwrap(), 5);
+        db::init(&conn).unwrap();
+        assert_eq!(role_ids(&conn), vec![5], "повторное открытие ничего не меняет");
+    }
+
+    #[test]
+    fn legacy_db_without_inbox_not_marked() {
+        let conn = Connection::open_in_memory().unwrap();
+        db::init(&conn).unwrap();
+        db::insert_folder(&conn, None, "Папка").unwrap();
+        db::init(&conn).unwrap();
+        assert!(role_ids(&conn).is_empty(), "служебной нет — признак никому не ставится");
     }
 
     /// Путь к ещё не созданному файлу базы во временной папке, свой на тест.

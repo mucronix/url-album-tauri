@@ -67,6 +67,13 @@ pub fn init(conn: &Connection) -> Result<()> {
     )?;
     // Открывать через: обработчик открытия для папки (NULL/ключ браузера/custom:путь)
     conn.execute("ALTER TABLE nodes ADD COLUMN opener TEXT", []).ok();
+    // Служебная папка («Новые ссылки») — по признаку, не по названию: название
+    // переводится и переименовывается. Признак один на базу — уникальный индекс.
+    conn.execute("ALTER TABLE nodes ADD COLUMN role TEXT", []).ok();
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_role ON nodes (role) WHERE role IS NOT NULL", [],
+    )?;
+    mark_legacy_inbox(conn)?;
 
     // Дата создания: единый формат «ГГГГ-ММ-ДД чч:мм:сс»,
     // местное время) — строковый порядок совпадает с порядком дат, на этом
@@ -78,6 +85,30 @@ pub fn init(conn: &Connection) -> Result<()> {
     // тест every_insert_path_sets_created это сторожит. Сборка с триггером
     // успела открыть часть баз — убираем его оттуда.
     conn.execute_batch("DROP TRIGGER IF EXISTS nodes_created_default;")?;
+    Ok(())
+}
+
+/// Значение `role` у служебной папки.
+pub const ROLE_INBOX: &str = "inbox";
+
+/// Название служебной папки в базах до колонки `role` — по нему такие базы
+/// отмечаются (`mark_legacy_inbox`). Не переводится: те базы заводились по-русски.
+const LEGACY_INBOX_TITLE: &str = "Новые ссылки";
+
+/// База до колонки `role`: служебной считалась живая корневая папка «Новые
+/// ссылки», первая по id (так искал find_or_create_inbox_folder). Ей и ставим
+/// признак — только если его нет ни у кого: иначе (служебную переименовали,
+/// перенесли, удалили в корзину) папка человека с тем же названием стала бы
+/// служебной при каждом открытии.
+fn mark_legacy_inbox(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE nodes SET role = ?1
+         WHERE NOT EXISTS (SELECT 1 FROM nodes WHERE role = ?1)
+           AND id = (SELECT MIN(id) FROM nodes
+                     WHERE kind = 'folder' AND title = ?2 AND parent IS NULL
+                       AND COALESCE(deleted, 0) = 0)",
+        params![ROLE_INBOX, LEGACY_INBOX_TITLE],
+    )?;
     Ok(())
 }
 
