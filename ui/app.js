@@ -2039,7 +2039,7 @@ function openMoveToDialog(node) {
       const t3 = performance.now();
       nextPaint().then(() => logTiming('«Переместить в…»', t0, t1, t2, t3));
     } catch(e) {
-      alert('Ошибка перемещения: ' + e);
+      showNotice('Переместить в…', 'Ошибка перемещения: ' + e);
     } finally {
       okBtn.disabled = false;
     }
@@ -3255,7 +3255,7 @@ function tbMoveItem(dir) {
         setStatus('Нет новых ссылок для импорта');
       }
     } catch(e) {
-      alert('Ошибка импорта: ' + e);
+      showNotice('Импорт из другой базы', 'Ошибка импорта: ' + e);
     } finally {
       okBtn.disabled = false;
     }
@@ -4017,7 +4017,7 @@ function handleMenuAction(action) {
     case 'import-from-db':
       invoke('analyze_import_db')
         .then(a => { if (a) openImportDbDialog(a); })   // null — окно закрыли
-        .catch(e => alert('Ошибка: ' + e));
+        .catch(e => showNotice('Импорт из другой базы', 'Ошибка: ' + e));
       break;
 
     case 'refresh-favicons-folder': {
@@ -4701,7 +4701,7 @@ async function init() {
   invoke('get_pending_url').then(pending => {
     if (!pending) return;
     if (activeFolderId == null) {
-      alert('Сначала откройте или создайте базу данных (Файл → Создать базу).');
+      showNotice('Новая ссылка', 'Сначала откройте или создайте базу данных (Файл → Создать базу).');
       return;
     }
     openNewItemDlg('link', { url: pending.url, title: pending.title });
