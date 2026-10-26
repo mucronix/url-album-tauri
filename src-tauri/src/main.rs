@@ -1,5 +1,7 @@
 #![windows_subsystem = "windows"]
 
+#[macro_use]
+mod i18n;
 mod clipboard;
 mod db;
 mod importer;
@@ -3721,6 +3723,10 @@ fn main() {
         prev_hook(info);   // прежнее поведение не теряем
     }));
 
+    // Язык — до Builder: меню трея строится в setup, а словарь для окна
+    // уходит в скрипт инициализации плагином ниже.
+    i18n::init();
+
     tauri::Builder::default()
         // Единственный экземпляр. Плагин ОБЯЗАН идти первым: его setup-хук
         // выполняется раньше остальных и завершает вторую копию до того, как
@@ -3758,6 +3764,9 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Словарь — в window.__UA_I18N__ до загрузки app.js (см. i18n::init_script).
+        .plugin(tauri::plugin::Builder::<tauri::Wry>::new("ua-i18n")
+            .js_init_script(i18n::init_script()).build())
         .setup(|app| {
             // Флаг журнала уже прочитан в main() — здесь только шапка.
             logger::log(&format!("=== запуск URL Album {} ===", env!("CARGO_PKG_VERSION")));
@@ -3784,6 +3793,7 @@ fn main() {
                 Ok(v)  => logger::log(&format!("WebView2: {v}")),
                 Err(e) => logger::log(&format!("WebView2: не определён ({e})")),
             }
+            for note in &i18n::current().notes { logger::log(note); }
 
             // Профили прошлых снимков, оставшиеся в %TEMP% (упавший снимок,
             // убитая программа). В своём потоке: окно ждать не должно. Час —
