@@ -15,6 +15,7 @@
 //! Всё, что трогает диск и реестр, приходит сюда замыканиями: так порядок
 //! выбора проверяется тестами без установленных браузеров.
 
+use crate::i18n::Msg;
 use std::path::{Path, PathBuf};
 
 /// Каким способом браузер снимает.
@@ -88,7 +89,7 @@ pub(crate) fn display_name(exe: &str) -> String {
     if is_opera(exe) {
         return if exe.to_lowercase().contains("opera gx") { "Opera GX" } else { "Opera" }.to_string();
     }
-    if is_yandex(exe) { return "Яндекс".to_string(); }
+    if is_yandex(exe) { return t!("browser.yandex"); }
     let known = match file_and_dir(exe).0.as_str() {
         "msedge.exe"   => Some("Edge"),
         "chrome.exe"   => Some("Chrome"),
@@ -205,7 +206,42 @@ pub(crate) fn builtin_candidates(local: &str, pf: &str, pf86: &str) -> Vec<Strin
 pub(crate) struct Choice {
     pub exe:      String,          // что запускать (у Opera — движок)
     pub name:     String,          // для человека
-    pub fallback: Option<String>,  // Some — сработал запасной, причина
+    pub fallback: Option<Msg>,     // Some — сработал запасной, причина
+}
+
+impl Choice {
+    /// Причина запасного — текстом для интерфейса.
+    #[cfg(test)]
+    fn fallback_ui(&self) -> Option<&str> { self.fallback.as_ref().map(|m| m.ui.as_str()) }
+}
+
+/// Почему браузером не снять (`runnable`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Why {
+    NotFound,
+    CannotShoot,
+    OperaTooNew,
+}
+
+/// Чей браузер не подошёл: фраза о причине целиком, а не «{who} …».
+#[derive(Clone, Copy)]
+enum Who { Folder, Default }
+
+/// Неудача назначенного браузера: браузер Windows не определён или `Why`.
+enum Miss { NoSystem, Browser(String, Why) }
+
+fn miss_text(who: Who, miss: &Miss) -> Msg {
+    let ver = OPERA_LAST_SHOOTING;
+    match (who, miss) {
+        (Who::Folder,  Miss::NoSystem) => t_msg!("shot.miss.folder.no_system"),
+        (Who::Folder,  Miss::Browser(name, Why::NotFound))    => t_msg!("shot.miss.folder.not_found", name),
+        (Who::Folder,  Miss::Browser(name, Why::CannotShoot)) => t_msg!("shot.miss.folder.cannot", name),
+        (Who::Folder,  Miss::Browser(name, Why::OperaTooNew)) => t_msg!("shot.miss.folder.opera_new", name, ver),
+        (Who::Default, Miss::NoSystem) => t_msg!("shot.miss.default.no_system"),
+        (Who::Default, Miss::Browser(name, Why::NotFound))    => t_msg!("shot.miss.default.not_found", name),
+        (Who::Default, Miss::Browser(name, Why::CannotShoot)) => t_msg!("shot.miss.default.cannot", name),
+        (Who::Default, Miss::Browser(name, Why::OperaTooNew)) => t_msg!("shot.miss.default.opera_new", name, ver),
+    }
 }
 
 /// Что известно о ссылке и настройках.
@@ -217,8 +253,7 @@ pub(crate) struct Inputs<'a> {
 
 /// Выбрать браузер.
 /// `system_default` — exe браузера по умолчанию в Windows;
-/// `runnable(path)` — что запускать, или почему нечего (`Err` — окончание
-/// фразы о браузере: «не найден», «не умеет снимать (…)»).
+/// `runnable(path)` — что запускать, или почему нечего (`Why`).
 ///
 /// `fallback` — причина первой неудачи среди «назначенных» браузеров (папки и
 /// по умолчанию), если снимет кто-то после них. Браузер Windows при `"default"`
@@ -226,36 +261,34 @@ pub(crate) struct Inputs<'a> {
 pub(crate) fn choose(
     inp: &Inputs,
     system_default: &dyn Fn() -> Option<String>,
-    runnable: &dyn Fn(&str) -> Result<String, String>,
+    runnable: &dyn Fn(&str) -> Result<String, Why>,
 ) -> Option<Choice> {
-    let mut miss: Option<String> = None;
+    let mut miss: Option<Msg> = None;
 
     // Ok — снимаем им; Err(причина) — нет. `"default"` — браузер Windows.
-    let attempt = |who: &str, path: &str| -> Result<Choice, String> {
+    let attempt = |path: &str| -> Result<Choice, Miss> {
         let path = if path == "default" {
-            match system_default() {
-                Some(p) => p,
-                None => return Err(format!("{who} — браузер Windows не определён")),
-            }
+            system_default().ok_or(Miss::NoSystem)?
         } else { path.to_string() };
         let name = display_name(&path);
         if engine_of(&path) == Engine::None {
-            return Err(format!("{who} ({name}) не умеет снимать"));
+            return Err(Miss::Browser(name, Why::CannotShoot));
         }
-        runnable(&path)
-            .map(|exe| Choice { exe, name: name.clone(), fallback: None })
-            .map_err(|why| format!("{who} ({name}) {why}"))
+        match runnable(&path) {
+            Ok(exe)  => Ok(Choice { exe, name, fallback: None }),
+            Err(why) => Err(Miss::Browser(name, why)),
+        }
     };
 
     // 1–2. Назначенные: браузер корневой папки, затем браузер по умолчанию.
     let default = inp.cfg.map_or("default", |c| c.default.as_str());
     let opener  = inp.opener.map(str::trim).filter(|o| !o.is_empty());
-    let assigned = opener.map(|o| ("браузер папки", o)).into_iter()
-        .chain(std::iter::once(("браузер по умолчанию", default)));
+    let assigned = opener.map(|o| (Who::Folder, o)).into_iter()
+        .chain(std::iter::once((Who::Default, default)));
     for (who, path) in assigned {
-        match attempt(who, path) {
+        match attempt(path) {
             Ok(mut c) => { c.fallback = miss; return Some(c); }
-            Err(why)  => { miss.get_or_insert(why); }
+            Err(m)    => { miss.get_or_insert_with(|| miss_text(who, &m)); }
         }
     }
 
@@ -263,7 +296,7 @@ pub(crate) fn choose(
     let list = inp.cfg.map(|c| c.list.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>())
         .unwrap_or_default();
     for path in list.into_iter().chain(inp.builtin.iter().map(String::as_str)) {
-        if let Ok(mut c) = attempt("", path) {
+        if let Ok(mut c) = attempt(path) {
             c.fallback = miss;
             return Some(c);
         }
@@ -386,19 +419,18 @@ pub(crate) fn system_default_browser() -> Option<String> { None }
 /// Что запускать для снимка: файл на месте и браузер умеет снимать. У Opera —
 /// движок из папки версии; нет движка — «не найден» (лаунчер снимок не
 /// сделает), движок новее 95 — «не умеет снимать».
-/// `Err` — окончание фразы для причины в `choose`.
-pub(crate) fn runnable(path: &str) -> Result<String, String> {
-    const MISSING: &str = "не найден";
+/// `Err` — причина; фразу из неё собирает `choose`.
+pub(crate) fn runnable(path: &str) -> Result<String, Why> {
     let p = Path::new(path);
-    if !p.is_file() { return Err(MISSING.into()); }
+    if !p.is_file() { return Err(Why::NotFound); }
     match engine_of(path) {
         Engine::Chromium => Ok(path.to_string()),
         Engine::Opera    => match find_opera_engine(p) {
-            None => Err(MISSING.into()),
+            None => Err(Why::NotFound),
             Some(e) if opera_engine_can_shoot(&e) => Ok(e.to_string_lossy().into_owned()),
-            Some(_) => Err(format!("не умеет снимать (Opera новее {OPERA_LAST_SHOOTING})")),
+            Some(_) => Err(Why::OperaTooNew),
         },
-        Engine::None     => Err("не умеет снимать".into()),
+        Engine::None     => Err(Why::CannotShoot),
     }
 }
 
@@ -610,7 +642,7 @@ pub(crate) fn host_port(url: &str) -> Option<(String, u16)> {
 /// на мёртвую ссылку до t+8 с. Не ловит 404/500 (там законный снимок), ошибки
 /// TLS, подмену DNS провайдером и медленный сайт — TCP соединяется, а
 /// страница не приходит (см. очередь, «Медленный сайт — белый лист»).
-pub(crate) fn probe_host(host: &str, port: u16, budget: std::time::Duration) -> Result<(), String> {
+pub(crate) fn probe_host(host: &str, port: u16, budget: std::time::Duration) -> Result<(), Msg> {
     use std::net::ToSocketAddrs;
     use std::time::Instant;
     let deadline = Instant::now() + budget;
@@ -623,11 +655,11 @@ pub(crate) fn probe_host(host: &str, port: u16, budget: std::time::Duration) -> 
     let name = host.to_string();
     std::thread::Builder::new().name("ua-dns".into()).spawn(move || {
         let _ = tx.send((name.as_str(), port).to_socket_addrs().map(|a| a.collect::<Vec<_>>()));
-    }).map_err(|e| format!("проверка адреса не запустилась: {e}"))?;
+    }).map_err(|e| t_msg!("shot.probe.spawn_failed", e))?;
     let addrs = match rx.recv_timeout(budget) {
         Ok(Ok(a)) if !a.is_empty() => a,
-        Ok(_)  => return Err(format!("адрес не найден: {host}")),
-        Err(_) => return Err(format!("нет ответа: {host} (имя не разрешилось за {} с)", budget.as_secs())),
+        Ok(_)  => return Err(t_msg!("shot.probe.not_found", host)),
+        Err(_) => return Err(t_msg!("shot.probe.dns_timeout", host, secs = budget.as_secs())),
     };
 
     // Все адреса по очереди: на машине без IPv6 первым может прийти v6.
@@ -645,11 +677,11 @@ pub(crate) fn probe_host(host: &str, port: u16, budget: std::time::Duration) -> 
         }
     }
     Err(if timed_out {
-        format!("нет ответа: {host}:{port}")
+        t_msg!("shot.probe.timeout", host, port)
     } else if refused {
-        format!("соединение отклонено: {host}:{port}")
+        t_msg!("shot.probe.refused", host, port)
     } else {
-        format!("не удалось соединиться с {host}:{port}: {}", other.unwrap_or_default())
+        t_msg!("shot.probe.failed", host, port, e = other.as_deref().unwrap_or_default())
     })
 }
 
@@ -775,18 +807,18 @@ mod tests {
         let s = |p: &Path| p.to_string_lossy().into_owned();
 
         assert_eq!(runnable(&s(&chrome)), Ok(s(&chrome)));
-        assert_eq!(runnable(&s(&ff)), Err("не умеет снимать".into()), "есть, но снимать не умеет");
-        assert_eq!(runnable(&s(&d.join("msedge.exe"))), Err("не найден".into()), "файла нет");
+        assert_eq!(runnable(&s(&ff)), Err(Why::CannotShoot), "есть, но снимать не умеет");
+        assert_eq!(runnable(&s(&d.join("msedge.exe"))), Err(Why::NotFound), "файла нет");
         assert_eq!(runnable(&s(&op.join("launcher.exe"))), Ok(s(&op.join("95.0.4635.90").join("opera.exe"))));
 
         let new = d.join("Opera New");
         touch(&new.join("launcher.exe"));
         touch(&new.join("137.0.6036.63").join("opera.exe"));
-        assert!(runnable(&s(&new.join("launcher.exe"))).is_err_and(|e| e.starts_with("не умеет снимать")),
+        assert!(runnable(&s(&new.join("launcher.exe"))) == Err(Why::OperaTooNew),
                 "Opera 137 есть, но не снимает");
         let bare = d.join("Opera Bare");
         touch(&bare.join("launcher.exe"));
-        assert_eq!(runnable(&s(&bare.join("launcher.exe"))), Err("не найден".into()), "лаунчер без движка");
+        assert_eq!(runnable(&s(&bare.join("launcher.exe"))), Err(Why::NotFound), "лаунчер без движка");
     }
 
     #[test]
@@ -861,7 +893,7 @@ mod tests {
             let (l, _) = opera(ver);
             let got = pick(&l);
             assert_eq!(got.exe, s(&chrome), "Opera {ver}: снимает следующий по порядку");
-            assert!(got.fallback.as_deref().is_some_and(|r| r.contains("Opera") && r.contains("не умеет")),
+            assert!(got.fallback_ui().is_some_and(|r| r.contains("Opera") && r.contains("не умеет")),
                     "Opera {ver}: {:?}", got.fallback);
         }
     }
@@ -982,14 +1014,14 @@ mod tests {
     const TOR:     &str = r"D:\Tor Browser\Browser\firefox.exe";
 
     /// Мир теста: какие файлы есть и чем их запускать.
-    fn world(present: &[&str]) -> impl Fn(&str) -> Result<String, String> {
+    fn world(present: &[&str]) -> impl Fn(&str) -> Result<String, Why> {
         let mut m: HashMap<String, String> = HashMap::new();
         for p in present {
             if engine_of(p) == Engine::None { continue; } // есть, но снимать не умеет
             let run = if *p == OPERA { OPERA_E } else { p };
             m.insert(p.to_string(), run.to_string());
         }
-        move |p: &str| m.get(p).cloned().ok_or_else(|| "не найден".to_string())
+        move |p: &str| m.get(p).cloned().ok_or(Why::NotFound)
     }
 
     fn cfg(default: &str, list: &[&str]) -> BrowsersCfg {
@@ -1016,7 +1048,7 @@ mod tests {
         let inp = Inputs { opener: Some(TOR), cfg: Some(&c), builtin: &[] };
         let got = choose(&inp, &|| None, &world(&[TOR, CHROME])).unwrap();
         assert_eq!(got.exe, CHROME, "дальше по общему правилу — браузер по умолчанию программы");
-        assert!(got.fallback.as_deref().is_some_and(|r| r.contains("Firefox")), "причина называет браузер папки: {:?}", got.fallback);
+        assert!(got.fallback_ui().is_some_and(|r| r.contains("Firefox")), "причина называет браузер папки: {:?}", got.fallback);
     }
 
     #[test]
@@ -1041,7 +1073,7 @@ mod tests {
         // Vivaldi в Windows: снимать не умеет — запасной из списка, с причиной.
         let got = choose(&inp, &|| Some(VIVALDI.to_string()), &world(&[VIVALDI, EDGE, CHROME])).unwrap();
         assert_eq!(got.exe, EDGE);
-        assert!(got.fallback.as_deref().is_some_and(|r| r.contains("Vivaldi") && r.contains("не умеет")),
+        assert!(got.fallback_ui().is_some_and(|r| r.contains("Vivaldi") && r.contains("не умеет")),
                 "{:?}", got.fallback);
     }
 
@@ -1053,7 +1085,7 @@ mod tests {
         let inp = Inputs { opener: None, cfg: Some(&c), builtin: &builtin };
         let got = choose(&inp, &|| Some(FIREFOX.to_string()), &world(&[FIREFOX, VIVALDI, CHROME, EDGE])).unwrap();
         assert_eq!(got.exe, CHROME, "порядок списка, а не встроенный; Vivaldi пропущен");
-        assert!(got.fallback.as_deref().is_some_and(|r| r.contains("Firefox")), "{:?}", got.fallback);
+        assert!(got.fallback_ui().is_some_and(|r| r.contains("Firefox")), "{:?}", got.fallback);
 
         // В списке умеющих нет — встроенный порядок.
         let c = cfg(FIREFOX, &["default", FIREFOX]);
@@ -1071,7 +1103,7 @@ mod tests {
         let inp = Inputs { opener: None, cfg: Some(&c), builtin: &[] };
         let got = choose(&inp, &|| None, &world(&[OPERA])).unwrap();
         assert_eq!(got.exe, OPERA_E);
-        assert!(got.fallback.as_deref().is_some_and(|r| r.contains("Chrome")), "{:?}", got.fallback);
+        assert!(got.fallback_ui().is_some_and(|r| r.contains("Chrome")), "{:?}", got.fallback);
     }
 
     #[test]
@@ -1125,7 +1157,7 @@ mod tests {
     fn probe_unknown_host() {
         // .invalid не разрешается никогда (RFC 6761).
         let r = probe_host("nonexistent.invalid", 443, BUDGET);
-        assert!(r.as_ref().is_err_and(|e| e.contains("адрес не найден")), "{r:?}");
+        assert!(r.as_ref().is_err_and(|e| e.ui.contains("адрес не найден")), "{r:?}");
     }
 
     #[test]
@@ -1133,7 +1165,7 @@ mod tests {
         // Занять свободный порт и отпустить: на нём никто не слушает.
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let r = probe_host("127.0.0.1", port, BUDGET);
-        assert!(r.as_ref().is_err_and(|e| e.contains("соединение отклонено")), "{r:?}");
+        assert!(r.as_ref().is_err_and(|e| e.ui.contains("соединение отклонено")), "{r:?}");
     }
 
     #[test]

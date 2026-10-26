@@ -61,10 +61,27 @@ macro_rules! t_log {
     };
 }
 
+/// Фраза для интерфейса и журнала сразу — `Msg { ui, log }`.
+#[macro_export]
+macro_rules! t_msg {
+    ($($all:tt)*) => {
+        $crate::i18n::Msg { ui: $crate::t!($($all)*), log: $crate::t_log!($($all)*) }
+    };
+}
+
 #[macro_export]
 macro_rules! i18n_arg {
     ($name:ident = $val:expr) => { &$val as &dyn std::fmt::Display };
     ($name:ident)             => { &$name as &dyn std::fmt::Display };
+}
+
+/// Фраза, которая уходит и в интерфейс, и в журнал (причина отказа открытия,
+/// снимка, запасного браузера): `ui` — на языке интерфейса, `log` — по
+/// вшитому русскому. `t_msg!` — как `t!`, аргументы вычисляются дважды.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Msg {
+    pub ui:  String,
+    pub log: String,
 }
 
 static CURRENT: OnceLock<Dict> = OnceLock::new();

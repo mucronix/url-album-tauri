@@ -575,38 +575,38 @@ fn is_proxy_auth_error(e: &reqwest::Error) -> bool {
 async fn test_proxy(host: String, port: u16, user: String, pass: String) -> Result<String, String> {
     let host = host.trim();
     if host.is_empty() {
-        return Err("Укажите адрес прокси".to_string());
+        return Err(t!("settings.proxy.no_host"));
     }
     if port == 0 {
-        return Err("Неверный порт".to_string());
+        return Err(t!("settings.proxy.bad_port"));
     }
     let user = user.trim();
 
     let proxy = build_proxy(host, port, user, &pass)
-        .map_err(|_| "Неверный адрес прокси".to_string())?;
+        .map_err(|_| t!("proxy.bad_address"))?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .user_agent("Mozilla/5.0 URL-Album-Checker/1.0")
         .proxy(proxy)
         .build()
-        .map_err(|_| "Неверный адрес прокси".to_string())?;
+        .map_err(|_| t!("proxy.bad_address"))?;
 
     match client.get(PROXY_TEST_URL).send().await {
         Ok(r) if r.status().as_u16() == 407 =>
-            Err("Прокси требует авторизацию: проверьте логин и пароль".to_string()),
+            Err(t!("proxy.auth")),
         Ok(r) if r.status().is_success() =>
-            Ok(format!("Прокси работает (HTTP {})", r.status().as_u16())),
-        Ok(r) => Err(format!("Ошибка: сервер ответил HTTP {}", r.status().as_u16())),
+            Ok(t!("proxy.works", code = r.status().as_u16())),
+        Ok(r) => Err(t!("proxy.http_error", code = r.status().as_u16())),
         Err(e) if e.is_timeout() =>
-            Err("Превышено время ожидания (8 сек)".to_string()),
+            Err(t!("proxy.timeout")),
         // Обязательно ВЫШЕ is_connect: у отказа авторизации connect=true,
         // и нижняя ветка перехватила бы случай раньше (проверено, сессия 20).
         Err(e) if is_proxy_auth_error(&e) =>
-            Err("Прокси требует авторизацию: проверьте логин и пароль".to_string()),
+            Err(t!("proxy.auth")),
         Err(e) if e.is_connect() =>
-            Err("Прокси не отвечает: проверьте адрес и порт".to_string()),
-        Err(e) => Err(format!("Ошибка: {}", short_err(&e))),
+            Err(t!("proxy.no_answer")),
+        Err(e) => Err(t!("common.error", e = short_err(&e))),
     }
 }
 
@@ -935,7 +935,7 @@ fn pick_shot_browser(id: i64, opener: Option<&str>) -> Result<shot_browser::Choi
                 shot_browser::system_default_browser().unwrap_or_else(|| "не определён".into()),
                 cfg.as_ref().map_or(0, |c| c.list.len()),
                 builtin.len()));
-            "Нет браузера для снимков (нужен Chrome, Edge, Opera или Яндекс)".to_string()
+            t!("shot.no_browser")
         })
 }
 
@@ -1069,8 +1069,8 @@ async fn do_screenshot(
                 shot_browser::probe_host(&host, port, PROBE_BUDGET)
             }).await.map_err(|e| e.to_string())?;
             if let Err(why) = probe {
-                logger::log(&format!("скриншот id={id}: адрес недоступен ({why}) — браузер не запускался"));
-                return Err(format!("Адрес недоступен: {why}"));
+                logger::log(&format!("скриншот id={id}: адрес недоступен ({}) — браузер не запускался", why.log));
+                return Err(t!("shot.unreachable", why = why.ui));
             }
         }
     }
@@ -1131,7 +1131,7 @@ async fn do_screenshot(
     // 19.10.2026): по журналу видно, каким браузером и за сколько снята каждая
     // ссылка и был ли браузер запасным. Строки перед запуском нет: у ожидания
     // жёсткий предел (t+8 на попытку), зависший снимок всё равно дойдёт сюда.
-    let fallback_note = choice.fallback.as_deref().map(|r| format!("; запасной: {r}")).unwrap_or_default();
+    let fallback_note = choice.fallback.as_ref().map(|r| format!("; запасной: {}", r.log)).unwrap_or_default();
     if visible {
         let flag = run.as_ref().ok().and_then(|(v, _)| v.last().copied()).unwrap_or("");
         logger::log(&format!(
@@ -1149,16 +1149,16 @@ async fn do_screenshot(
     }
 
     if visible {
-        Ok(Shot { filename, browser: choice.name, fallback: choice.fallback })
+        Ok(Shot { filename, browser: choice.name, fallback: choice.fallback.map(|m| m.ui) })
     } else {
         // Выбранный браузер снимать умеет, но файла нет — честная ошибка,
         // запасной не пробуем (решение пользователя): иначе каждая мёртвая
         // ссылка в пакете снималась бы всеми браузерами по очереди.
-        let base = run.err().unwrap_or_else(|| format!("Не удалось создать скриншот ({})", choice.name));
+        let base = run.err().unwrap_or_else(|| t!("shot.failed", name = choice.name));
         if proxy_used {
             // Приписка только когда флаг реально передан: при прокси с логином
             // мы идём напрямую, и упоминание прокси было бы ложным следом.
-            Err(format!("{base} (включён прокси — проверьте его доступность)"))
+            Err(t!("shot.failed_proxy", base))
         } else {
             Err(base)
         }
@@ -1493,7 +1493,7 @@ async fn open_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> R
     // Guard against opening the already-active database
     let current = state.db_path.lock().map_err(|e| e.to_string())?.clone();
     if std::fs::canonicalize(&src).ok() == std::fs::canonicalize(&current).ok() {
-        return Err("Выбранный файл уже является активной базой данных.".into());
+        return Err(t!("db.already_open"));
     }
 
     switch_db(state, src)?;
@@ -1627,7 +1627,7 @@ fn switch_db(state: tauri::State<'_, AppState>, new_path: std::path::PathBuf) ->
 fn checkpoint_before_copy(state: &tauri::State<'_, AppState>) -> Option<String> {
     let conn = match state.db.lock() {
         Ok(c)  => c,
-        Err(e) => return Some(format!("база занята ({e})")),
+        Err(e) => return Some(t!("backup.db_busy", e)),
     };
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
         .err()
@@ -1639,10 +1639,7 @@ fn checkpoint_before_copy(state: &tauri::State<'_, AppState>) -> Option<String> 
 fn backup_result(path: &std::path::Path, wal_warn: Option<String>) -> String {
     let mut s = path.to_string_lossy().to_string();
     if let Some(w) = wal_warn {
-        s.push_str(&format!(
-            "\n\n⚠ WAL-checkpoint не выполнен ({w}).\n\
-             Копия создана, но в неё могли не попасть самые последние изменения."
-        ));
+        s.push_str(&t!("backup.wal_warning", w));
     }
     s
 }
@@ -1707,7 +1704,7 @@ async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::W
     let canon_dest = std::fs::canonicalize(&dest).unwrap_or_else(|_| dest.clone());
     let canon_src  = std::fs::canonicalize(&db_dir).unwrap_or_else(|_| db_dir.clone());
     if canon_dest == canon_src {
-        return Err("Выберите папку, отличную от текущей базы".to_string());
+        return Err(t!("backup.same_dir"));
     }
 
     // Copy the DB file itself
@@ -1802,12 +1799,12 @@ fn update_note(state: tauri::State<AppState>, id: i64, note: String, db_path: St
         .unwrap_or(false);
     if !same_db {
         logger::log(&format!("заметка id={id}: база сменилась во время правки, не сохранена"));
-        return Err("Открыта другая база — заметка не сохранена.".into());
+        return Err(t!("note.other_db"));
     }
     match db::update_note(&conn, id, &note) {
         Ok(0) => {
             logger::log(&format!("заметка id={id}: ссылки больше нет, не сохранена"));
-            Err("Ссылка удалена — заметка не сохранена.".into())
+            Err(t!("note.link_deleted"))
         }
         Ok(_) => Ok(()),
         Err(e) => {
@@ -2022,7 +2019,7 @@ fn wide(s: &str) -> Vec<u16> {
 /// доходят целыми — ровно то, ради чего когда-то взяли rundll32 вместо
 /// `cmd /c start`. В этом отношении ничего не потеряно.
 #[cfg(windows)]
-fn shell_open(target: &str) -> Result<(), String> {
+fn shell_open(target: &str) -> Result<(), i18n::Msg> {
     const SW_SHOWNORMAL: i32 = 1;
     let op   = wide("open");
     let file = wide(target);
@@ -2040,14 +2037,14 @@ fn shell_open(target: &str) -> Result<(), String> {
         return Ok(());
     }
     Err(match code {
-        2  => "не найдена программа-обработчик".to_string(),
-        3  => "не найден путь".to_string(),
-        5  => "доступ запрещён".to_string(),
-        8  => "не хватило памяти".to_string(),
-        26 => "файл занят другой программой".to_string(),
-        27 => "связь с программой прописана в системе не до конца".to_string(),
-        31 => "в системе не назначена программа для ссылок этого вида".to_string(),
-        _  => format!("код отказа {code}"),
+        2  => t_msg!("open.reason.no_handler"),
+        3  => t_msg!("open.reason.no_path"),
+        5  => t_msg!("open.reason.access_denied"),
+        8  => t_msg!("open.reason.no_memory"),
+        26 => t_msg!("open.reason.busy"),
+        27 => t_msg!("open.reason.assoc_incomplete"),
+        31 => t_msg!("open.reason.no_assoc"),
+        _  => t_msg!("open.reason.code", code),
     })
 }
 
@@ -2070,8 +2067,8 @@ async fn open_url(url: String) -> Result<(), String> {
             // Отказы пишем всегда: без этого «кликнул, ничего не произошло»
             // не оставляет следов вовсе. Успехи не пишем — иначе журнал
             // раздувается на каждой ссылке (то же правило, что у check_url).
-            logger::log(&format!("не удалось открыть ссылку {url}: {reason}"));
-            return Err(format!("Не удалось открыть ссылку: {reason}."));
+            logger::log(&format!("не удалось открыть ссылку {url}: {}", reason.log));
+            return Err(t!("open.url_failed", reason = reason.ui));
         }
     }
     #[cfg(target_os = "macos")]
@@ -2095,8 +2092,8 @@ async fn open_file(path: String) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())?;
         if let Err(reason) = res {
-            logger::log(&format!("не удалось открыть файл {path}: {reason}"));
-            return Err(format!("Не удалось открыть файл:\n{path}\n\n{reason}."));
+            logger::log(&format!("не удалось открыть файл {path}: {}", reason.log));
+            return Err(t!("open.file_failed", path, reason = reason.ui));
         }
     }
     #[cfg(target_os = "macos")]
@@ -2119,11 +2116,7 @@ async fn open_url_with(url: String, browser: String) -> Result<(), String> {
     // где не сказано ни какой файл, ни при чём тут вообще браузер.
     if !std::path::Path::new(&browser).exists() {
         logger::log(&format!("браузер не найден: {browser}"));
-        return Err(format!(
-            "Браузер не найден:\n{browser}\n\n\
-             Возможно, программа удалена или съёмный диск не подключён. \
-             Проверьте список браузеров или откройте ссылку другим."
-        ));
+        return Err(t!("open.browser_missing", browser));
     }
 
     std::process::Command::new(&browser)
@@ -2131,7 +2124,7 @@ async fn open_url_with(url: String, browser: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| {
             logger::log(&format!("не удалось запустить {browser}: {e}"));
-            format!("Не удалось запустить браузер:\n{browser}\n\n{e}")
+            t!("open.browser_failed", browser, e)
         })?;
     Ok(())
 }
@@ -2704,14 +2697,14 @@ fn set_hotkey(state: tauri::State<AppState>, app: tauri::AppHandle, combo: Optio
 
     // Валидация (тексты для showNotice)
     if new.eq_ignore_ascii_case("F8") {
-        return Err("Клавиша F8 зарезервирована (работает всегда)".into());
+        return Err(t!("hotkey.f8_reserved"));
     }
     let low = new.to_lowercase();
     if !(low.contains("ctrl") || low.contains("shift") || low.contains("alt")) {
-        return Err("Нужен хотя бы один модификатор: Ctrl, Shift или Alt".into());
+        return Err(t!("hotkey.need_mod"));
     }
     if is_blacklisted(&new) {
-        return Err("Эта комбинация занята системой (копирование/вставка и т.п.)".into());
+        return Err(t!("hotkey.system"));
     }
 
     // Атомарно (lock НЕ держим): СНАЧАЛА регистрируем новый — старый трогаем только при успехе
@@ -2721,7 +2714,7 @@ fn set_hotkey(state: tauri::State<AppState>, app: tauri::AppHandle, combo: Optio
         }
     }).map_err(|e| {
         logger::log(&format!("хоткей {new} не зарегистрирован: {e}"));
-        "Не удалось зарегистрировать комбинацию.\nВозможно, она уже используется другой программой.".to_string()
+        t!("hotkey.register_failed")
     })?;
 
     // Успех → снять старый и записать новый (берём lock заново)
@@ -3125,7 +3118,7 @@ fn load_browsers_config() -> String {
 
 #[tauri::command]
 fn save_browsers_config(json: String) -> Result<(), String> {
-    let path = browsers_config_path().ok_or("Не удалось получить путь")?;
+    let path = browsers_config_path().ok_or_else(|| t!("browsers.no_path"))?;
     std::fs::write(path, json.as_bytes()).map_err(|e| e.to_string())
 }
 
@@ -3138,7 +3131,7 @@ fn import_from_browser(state: tauri::State<AppState>, browser_id: String) -> Res
     logger::log(&format!("импорт из браузера: найдено профилей {}, запрошен «{browser_id}»", browsers.len()));
     let b = browsers.iter().find(|b| b.id == browser_id).ok_or_else(|| {
         logger::log(&format!("импорт: профиль «{browser_id}» не найден среди обнаруженных"));
-        "Браузер не найден".to_string()
+        t!("import.browser_not_found")
     })?;
     let kind = b.kind.clone();
     let name = b.name.clone();
@@ -3216,7 +3209,7 @@ async fn import_txt_file(
         Some(id) if db::folder_is_empty(&conn, id) => None,
         _ => Some(
             db::unique_folder_title(&conn, parent_id, &stem)
-                .ok_or("Слишком много папок с таким именем — переименуйте файл")?,
+                .ok_or_else(|| t!("import.too_many_folders"))?,
         ),
     };
     db::import_txt_urls(&conn, &content, folder.as_deref(), parent_id).map(Some).map_err(|e| e.to_string())
@@ -3274,7 +3267,7 @@ async fn analyze_import_db(
 
     let current_path = state.db_path.lock().map_err(|e| e.to_string())?.clone();
     if src_path == current_path {
-        return Err("Выбранный файл является текущей базой данных".to_string());
+        return Err(t!("import.same_db"));
     }
 
     let current_urls = {
@@ -3303,7 +3296,7 @@ async fn execute_import_db(
 
     let current_path = state.db_path.lock().map_err(|e| e.to_string())?.clone();
     if src_path == current_path {
-        return Err("Выбранный файл является текущей базой данных".to_string());
+        return Err(t!("import.same_db"));
     }
 
     let nodes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<db::SrcNode>, String> {

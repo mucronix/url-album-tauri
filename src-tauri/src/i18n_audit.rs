@@ -171,7 +171,7 @@ pub(crate) fn js_keys(src: &str) -> Result<Vec<(usize, String)>, String> {
     Ok(keys)
 }
 
-/// Ключи из Rust: t!("…") и t_log!("…") вне комментариев и тестов.
+/// Ключи из Rust: t!("…"), t_log!("…") и t_msg!("…") вне комментариев и тестов.
 pub(crate) fn rust_keys() -> Vec<(String, String)> {
     let mut out = Vec::new();
     let dir = root().join("src");
@@ -187,7 +187,7 @@ pub(crate) fn rust_keys() -> Vec<(String, String)> {
         let code = text.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         for (n, l) in code.lines().enumerate() {
             if l.trim_start().starts_with("//") { continue; }
-            for m in ["t!(\"", "t_log!(\""] {
+            for m in ["t!(\"", "t_log!(\"", "t_msg!(\""] {
                 let mut rest = l;
                 while let Some(pos) = rest.find(m) {
                     let before = rest[..pos].chars().last();
