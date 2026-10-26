@@ -27,7 +27,6 @@ struct AppState {
     user_hotkey:        Mutex<Option<String>>,           // пользовательский хоткей (помимо встроенного F8)
 }
 
-const INBOX_FOLDER_NAME: &str = "Новые ссылки";
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
@@ -1484,8 +1483,8 @@ async fn open_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> R
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
     let Some(file) = rfd::AsyncFileDialog::new()
-        .set_title("Открыть базу данных")
-        .add_filter("База данных URL Album", &["db"])
+        .set_title(t!("rfd.open_db"))
+        .add_filter(t!("rfd.filter.app_db"), &["db"])
         .set_directory(&start_dir)
         .pick_file().await
     else { return Ok(false) };
@@ -1536,8 +1535,8 @@ async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
     let Some(file) = rfd::AsyncFileDialog::new()
-        .set_title("Создать новую базу данных")
-        .add_filter("База данных URL Album", &["db"])
+        .set_title(t!("rfd.new_db"))
+        .add_filter(t!("rfd.filter.app_db"), &["db"])
         .set_file_name("album.db")
         .set_directory(&start_dir)
         .save_file().await
@@ -1659,8 +1658,8 @@ async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> 
     };
     let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Сохранить резервную копию базы")
-        .add_filter("База данных", &["db"])
+        .set_title(t!("rfd.backup"))
+        .add_filter(t!("rfd.filter.db"), &["db"])
         .set_file_name(&src_name)
         .set_directory(&src_dir)
         .save_file().await
@@ -1698,7 +1697,7 @@ async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::W
     };
     let Some(dest_folder) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Выбрать папку для резервной копии")
+        .set_title(t!("rfd.backup_dir"))
         .set_directory(&db_dir)
         .pick_folder().await
     else { return Ok(None) };
@@ -1758,8 +1757,8 @@ fn sort_folder(
 async fn export_folder_html(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64) -> Result<bool, String> {
     let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Экспорт в HTML")
-        .add_filter("HTML файл", &["html", "htm"])
+        .set_title(t!("rfd.export_html"))
+        .add_filter(t!("rfd.filter.html"), &["html", "htm"])
         .save_file().await
     else { return Ok(false) };
     let content = { let c = state.db.lock().map_err(|e| e.to_string())?; db::export_html(&c, folder_id).map_err(|e| e.to_string())? };
@@ -1772,8 +1771,8 @@ async fn export_folder_html(state: tauri::State<'_, AppState>, window: tauri::Wi
 async fn export_folder_txt(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64) -> Result<bool, String> {
     let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Экспорт в TXT")
-        .add_filter("Текстовый файл", &["txt"])
+        .set_title(t!("rfd.export_txt"))
+        .add_filter(t!("rfd.filter.txt"), &["txt"])
         .save_file().await
     else { return Ok(false) };
     let content = { let c = state.db.lock().map_err(|e| e.to_string())?; db::export_txt(&c, folder_id).map_err(|e| e.to_string())? };
@@ -1785,8 +1784,8 @@ async fn export_folder_txt(state: tauri::State<'_, AppState>, window: tauri::Win
 async fn pick_browser_file(window: tauri::Window) -> Option<String> {
     rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .add_filter("Программы", &["exe"])
-        .set_title("Выберите браузер")
+        .add_filter(t!("rfd.filter.exe"), &["exe"])
+        .set_title(t!("rfd.pick_browser"))
         .pick_file().await
         .map(|f| f.path().to_string_lossy().into_owned())
 }
@@ -2144,8 +2143,8 @@ async fn open_url_with(url: String, browser: String) -> Result<(), String> {
 async fn save_text_file(window: tauri::Window, content: String, default_name: Option<String>) -> Result<bool, String> {
     let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Сохранить файл")
-        .add_filter("Текстовый файл", &["txt"])
+        .set_title(t!("rfd.save_file"))
+        .add_filter(t!("rfd.filter.txt"), &["txt"])
         .set_file_name(default_name.as_deref().unwrap_or("export.txt"))
         .save_file().await
     else { return Ok(false) };
@@ -2296,7 +2295,7 @@ fn find_or_create_inbox_folder(conn: &Connection) -> Result<i64, String> {
     conn.execute_batch("SAVEPOINT inbox").map_err(|e| e.to_string())?;
     let res = (|| -> rusqlite::Result<i64> {
         conn.execute("UPDATE nodes SET role = NULL WHERE role = ?1", [db::ROLE_INBOX])?;
-        let id = db::insert_folder(conn, None, INBOX_FOLDER_NAME)?;
+        let id = db::insert_folder(conn, None, &t!("folder.inbox"))?;
         conn.execute("UPDATE nodes SET role = ?1 WHERE id = ?2", rusqlite::params![db::ROLE_INBOX, id])?;
         Ok(id)
     })();
@@ -2889,8 +2888,8 @@ fn find_gecko_places(browser_base: &str) -> Option<String> {
 async fn pick_bookmarks_file(window: tauri::Window) -> Option<String> {
     rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Выбрать файл закладок")
-        .add_filter("Файлы закладок", &["json", "sqlite"])
+        .set_title(t!("rfd.pick_bookmarks"))
+        .add_filter(t!("rfd.filter.bookmarks"), &["json", "sqlite"])
         .pick_file().await
         .map(|f| f.path().to_string_lossy().into_owned())
 }
@@ -2899,7 +2898,7 @@ async fn pick_bookmarks_file(window: tauri::Window) -> Option<String> {
 async fn pick_profile_folder(window: tauri::Window) -> Option<String> {
     rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Выбрать папку профиля браузера")
+        .set_title(t!("rfd.pick_profile"))
         .pick_folder().await
         .map(|f| f.path().to_string_lossy().into_owned())
 }
@@ -3190,8 +3189,8 @@ async fn import_txt_file(
     // `None` — окно закрыли без выбора.
     let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Импорт из текстового файла")
-        .add_filter("Текстовый файл", &["txt"])
+        .set_title(t!("rfd.import_txt"))
+        .add_filter(t!("rfd.filter.txt"), &["txt"])
         .pick_file().await
     else { return Ok(None) };
     let path = file.path().to_path_buf();
@@ -3209,7 +3208,7 @@ async fn import_txt_file(
     // Простой список: имя первой строки папкой быть не должно, поэтому имя
     // берётся из имени файла.
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Импорт".to_string());
+        .unwrap_or_else(|| t!("folder.import"));
     // Пустая целевая папка — кладём прямо в неё, заворачивать содержимое
     // в подпапку там незачем. Непустая папка или импорт из меню, где папка
     // не выбрана, — создаём свою папку.
@@ -3230,8 +3229,8 @@ async fn import_txt_file(
 async fn import_html(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<Option<usize>, String> {
     let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Импорт закладок из HTML")
-        .add_filter("HTML файл", &["html", "htm"])
+        .set_title(t!("rfd.import_html"))
+        .add_filter(t!("rfd.filter.html"), &["html", "htm"])
         .pick_file().await
     else { return Ok(None) };
     let content = std::fs::read_to_string(file.path()).map_err(|e| e.to_string())?;
@@ -3244,8 +3243,8 @@ async fn import_html(state: tauri::State<'_, AppState>, window: tauri::Window, p
 async fn import_uadat_pick(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<Option<usize>, String> {
     let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Открыть файл данных UA")
-        .add_filter("Файл данных", &["dat", "bak"])
+        .set_title(t!("rfd.import_uadat"))
+        .add_filter(t!("rfd.filter.uadat"), &["dat", "bak"])
         .pick_file().await
     else { return Ok(None) };
     let path = file.path().to_path_buf();
@@ -3266,8 +3265,8 @@ async fn analyze_import_db(
 ) -> Result<Option<db::ImportAnalysis>, String> {
     let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Выбрать базу для импорта")
-        .add_filter("База данных", &["db"])
+        .set_title(t!("rfd.import_db"))
+        .add_filter(t!("rfd.filter.db"), &["db"])
         .pick_file().await
     else { return Ok(None) };
     let src_path = file.path().to_path_buf();
@@ -3865,9 +3864,9 @@ fn main() {
             // РИСК 2: иконку вшиваем (include_bytes), НЕ полагаемся на default_window_icon.
             let tray_icon = Image::from_bytes(include_bytes!("../icons/icon.ico"))?;
 
-            let show_i = MenuItem::with_id(app, "show",     "Показать URL-Album", true, None::<&str>)?;
-            let add_i  = MenuItem::with_id(app, "add_clip", "Добавить из буфера", true, None::<&str>)?;
-            let quit_i = MenuItem::with_id(app, "quit",     "Выход",              true, None::<&str>)?;
+            let show_i = MenuItem::with_id(app, "show",     t!("tray.show"),     true, None::<&str>)?;
+            let add_i  = MenuItem::with_id(app, "add_clip", t!("tray.add_clip"), true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit",     t!("tray.quit"),     true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[
                 &show_i, &PredefinedMenuItem::separator(app)?,
                 &add_i,  &PredefinedMenuItem::separator(app)?,
@@ -4066,6 +4065,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Служебная папка базового языка: тесты идут на вшитом русском словаре.
+    const INBOX_FOLDER_NAME: &str = "Новые ссылки";
 
     #[test]
     fn shot_lock_rejects_second() {

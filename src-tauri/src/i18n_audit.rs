@@ -182,7 +182,9 @@ pub(crate) fn rust_keys() -> Vec<(String, String)> {
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
         if name == "i18n_audit.rs" { continue; }
         let text = std::fs::read_to_string(&p).unwrap();
-        let code = text.split("#[cfg(test)]").next().unwrap_or("");
+        // Отрезается модуль тестов; одиночный #[cfg(test)] у объявления
+        // модуля (mod i18n_audit в main.rs) границей не считается.
+        let code = text.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         for (n, l) in code.lines().enumerate() {
             if l.trim_start().starts_with("//") { continue; }
             for m in ["t!(\"", "t_log!(\""] {

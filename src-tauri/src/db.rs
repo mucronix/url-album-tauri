@@ -953,7 +953,8 @@ fn chromium_node(
 ) -> Result<()> {
     match node["type"].as_str() {
         Some("folder") => {
-            let name = node["name"].as_str().unwrap_or("Папка");
+            let untitled = t!("folder.untitled");
+            let name = node["name"].as_str().unwrap_or(&untitled);
             conn.execute(
                 "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3,
                      COALESCE(datetime(?4, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
@@ -1083,7 +1084,8 @@ pub fn import_firefox(conn: &Connection, places_path: &str, browser_name: &str) 
         let Some(&parent_db) = id_map.get(&node.parent) else { continue };
         match node.bk_type {
             2 => {
-                let title = node.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("Закладки");
+                let untitled = t!("folder.bookmarks");
+                let title = node.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(&untitled);
                 conn.execute("INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3,
                      COALESCE(datetime(?4, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
                     params![parent_db, title, node.pos, firefox_date(node.added)])?;
