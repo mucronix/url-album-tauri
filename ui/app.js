@@ -59,10 +59,10 @@ function logTiming(what, t0, t1, t2, t3) {
 // ── Link checker ─────────────────────────────────────────────────────────
 // Column config: id → CSS-var suffix, label, default width
 const CHK_COLS = [
-  { id: "url",  label: "URL",    cls: "cl-url",  var: "--cw-url",  w: 240, num: false },
-  { id: "st",   label: "Статус", cls: "cl-st",   var: "--cw-st",   w: 58,  num: false },
-  { id: "code", label: "HTTP",   cls: "cl-code", var: "--cw-code", w: 42,  num: true  },
-  { id: "ms",   label: "Время",  cls: "cl-ms",   var: "--cw-ms",   w: 52,  num: true  },
+  { id: "url",  label: t('chk.col.url'),    cls: "cl-url",  var: "--cw-url",  w: 240, num: false },
+  { id: "st",   label: t('chk.col.status'), cls: "cl-st",   var: "--cw-st",   w: 58,  num: false },
+  { id: "code", label: t('chk.col.http'),   cls: "cl-code", var: "--cw-code", w: 42,  num: true  },
+  { id: "ms",   label: t('chk.col.time'),   cls: "cl-ms",   var: "--cw-ms",   w: 52,  num: true  },
 ];
 let chkSort    = { col: null, asc: true };
 let chkResults = [];   // all results for sort/re-render
@@ -123,15 +123,15 @@ function buildChkHeader() {
 function makeChkRow(r) {
   const row = document.createElement("div");
   let cls, st;
-  if (r.skipped)        { cls = "cl-skip"; st = "не проверяется"; }
-  else if (r.timed_out) { cls = "cl-err";  st = "Timeout"; }
-  else if (r.redirect)  { cls = "cl-warn"; st = "Redirect"; }
-  else if (r.ok)        { cls = "cl-ok";   st = "OK"; }
-  else                  { cls = "cl-err";  st = "Ошибка"; }
+  if (r.skipped)        { cls = "cl-skip"; st = t('chk.st.skipped'); }
+  else if (r.timed_out) { cls = "cl-err";  st = t('chk.st.timeout'); }
+  else if (r.redirect)  { cls = "cl-warn"; st = t('chk.st.redirect'); }
+  else if (r.ok)        { cls = "cl-ok";   st = t('chk.st.ok'); }
+  else                  { cls = "cl-err";  st = t('chk.st.error'); }
   const rowCls = r.skipped ? "" : ((!r.ok || r.redirect) ? (r.redirect ? "cl-warn" : "cl-err") : "");
   row.className = "cl-row " + rowCls;
-  const ms   = r.ms < 1000 ? `${r.ms}ms` : `${(r.ms/1000).toFixed(1)}s`;
-  const code = r.skipped ? "—" : (r.status || (r.timed_out ? "T/O" : "—"));
+  const ms   = r.ms < 1000 ? t('unit.ms', { n: r.ms }) : t('unit.s', { n: (r.ms/1000).toFixed(1) });
+  const code = r.skipped ? "—" : (r.status || (r.timed_out ? t('chk.st.timeout_short') : "—"));
   const urlStr = r.url.replace(/^https?:\/\/(www\.)?/, "");
   row.innerHTML =
     `<div class="cl-url" title="${r.url}">${urlStr}</div>` +
@@ -153,7 +153,7 @@ function renderChkTable() {
       let va, vb;
       if (col.id === "ms")   { va = a.ms    || 0; vb = b.ms    || 0; }
       else if (col.id === "code") { va = a.status || 0; vb = b.status || 0; }
-      else if (col.id === "st")   { va = a.ok ? "OK" : "Ошибка"; vb = b.ok ? "OK" : "Ошибка"; }
+      else if (col.id === "st")   { va = a.ok ? t('chk.st.ok') : t('chk.st.error'); vb = b.ok ? t('chk.st.ok') : t('chk.st.error'); }
       else { va = a.url || ""; vb = b.url || ""; }
       if (col.num || col.id === "ms" || col.id === "code") {
         return chkSort.asc ? va - vb : vb - va;
@@ -325,7 +325,7 @@ function _refreshBreadcrumbIfOnPath(id) {
 async function createFolderAndRename(parentId) {
   try {
     const t0 = performance.now();
-    const newId = await invoke('create_folder', { parentId, title: 'Новая папка' });
+    const newId = await invoke('create_folder', { parentId, title: t('folder.new_name') });
     const t1 = performance.now();
     const [node] = _applyNodeRows(await invoke('get_nodes', { ids: [newId] }));
     const t2 = performance.now();
@@ -373,7 +373,7 @@ function openCheckerPanel(folderNode, bookmarkListOverride) {
   CC.redirects.textContent = "0";
   CC.timeouts.textContent  = "0";
   chkBarFill.style.width   = "0%";
-  chkStatusText.textContent = "Готов к проверке";
+  chkStatusText.textContent = t('chk.ready');
   chkResults = [];
   chkSort    = { col: null, asc: true };
   buildChkHeader();
@@ -410,7 +410,7 @@ async function runChecker() {
     const batch = _ck.bookmarks.slice(i, i + BATCH);
     await Promise.all(batch.map(async (b) => {
       if (_ck.cancelled) return;
-      chkStatusText.textContent = "Проверяется: " + b.url;
+      chkStatusText.textContent = t('chk.checking', { url: b.url });
 
       const r = await invoke("check_url", { url: b.url }).catch(err => {
         // Отказ САМОГО вызова, а не ответ сервера: команда до своих записей
@@ -449,8 +449,8 @@ async function runChecker() {
   chkStopBtn.disabled  = true;
   chkStartBtn.disabled = _ck.done >= total;
   chkStatusText.textContent = _ck.cancelled
-    ? `Остановлено. Проверено: ${_ck.done}, ошибок: ${_ck.errors}`
-    : `Завершено. Всего: ${total}, ошибок: ${_ck.errors}, redirect: ${_ck.redirects}`;
+    ? t('chk.stopped', { done: _ck.done, errors: _ck.errors })
+    : t('chk.finished', { total, errors: _ck.errors, redirects: _ck.redirects });
   chkBarFill.style.width = _ck.cancelled ? chkBarFill.style.width : "100%";
 }
 
@@ -483,8 +483,8 @@ async function runChecker() {
 chkStartBtn.onclick   = () => { if (!_ck.running) runChecker(); };
 chkPauseBtn.onclick   = () => {
   _ck.paused = !_ck.paused;
-  chkPauseBtn.textContent = _ck.paused ? "Продолжить" : "Пауза";
-  chkStatusText.textContent = _ck.paused ? "Пауза…" : chkStatusText.textContent;
+  chkPauseBtn.textContent = _ck.paused ? t('chk.resume') : t('chk.pause');
+  chkStatusText.textContent = _ck.paused ? t('chk.paused') : chkStatusText.textContent;
 };
 chkStopBtn.onclick    = () => { _ck.cancelled = true; _ck.paused = false; };
 document.getElementById("chk-close2").onclick  = () => checkerPanel.classList.add("hidden");
@@ -522,7 +522,7 @@ function hideFaviconPanel() {
 }
 
 function _finishFaviconBatch() {
-  document.getElementById('fv-domain').textContent = 'Готово';
+  document.getElementById('fv-domain').textContent = t('panel.done');
   // _faviconDone — пройдено доменов, вместе с неудачами; итог — как в журнале.
   setStatus(`Favicon: удалось ${_faviconDone - _faviconFailed}, не удалось ${_faviconFailed}`);
   // Одна строка на весь пакет: для «у меня половина иконок не грузится»
@@ -576,7 +576,7 @@ function hideThumbPanel() {
 }
 
 function _finishThumbBatch() {
-  document.getElementById('tp-label').textContent = 'Готово';
+  document.getElementById('tp-label').textContent = t('panel.done');
   const browsersUsed = [..._thumbBrowsers].map(([b, n]) => `${b} ${n}`).join(', ');
   // _thumbDone — пройдено ссылок, вместе с неудачами и пропущенными; итог — как в журнале.
   const ok = _thumbDone - _thumbFailed - _thumbSkipped;
@@ -643,18 +643,18 @@ function findDuplicates() {
 }
 
 function _dSummary() {
-  if (!_dGroups.length) { dupesSummaryEl.textContent = "Дубликаты не найдены."; return; }
+  if (!_dGroups.length) { dupesSummaryEl.textContent = t('dupes.none_found'); return; }
   const total = _dGroups.reduce((s, g) => s + g.nodes.length, 0);
   const extra = _dGroups.reduce((s, g) => s + g.nodes.length - 1, 0);
   dupesSummaryEl.textContent =
-    `Групп: ${_dGroups.length}  ·  Копий: ${total}  ·  Лишних: ${extra}`;
+    t('dupes.summary', { groups: _dGroups.length, total, extra });
 }
 
 function _dRenderGroups() {
   const el = document.getElementById('dupes-groups');
   el.innerHTML = '';
   if (!_dGroups.length) {
-    el.innerHTML = '<div class="dup-empty">Нет дубликатов.</div>'; return;
+    el.innerHTML = `<div class="dup-empty">${t('dupes.empty')}</div>`; return;
   }
   _dGroups.forEach((g, i) => {
     const item = document.createElement('div');
@@ -691,7 +691,7 @@ function _dRenderTable(nodes) {
   const tbody = document.getElementById('dupes-tbody');
   tbody.innerHTML = '';
   if (!_dRows.length) {
-    tbody.innerHTML = `<tr><td colspan="4" class="dupes-td" style="text-align:center;color:#888;padding:16px">Нет данных</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="dupes-td" style="text-align:center;color:#888;padding:16px">${t('dupes.no_data')}</td></tr>`;
     return;
   }
   _dRows.forEach((node, i) => {
@@ -724,7 +724,7 @@ function _dSelectGroup(idx) {
   _dRenderGroups();
   const g = _dGroups[idx];
   document.getElementById('dupes-right-hdr').textContent =
-    g ? `Дубликаты (${g.nodes.length}): ${g.url.replace(/^https?:\/\/(www\.)?/,'').substring(0,60)}` : 'Дубликаты';
+    g ? t('dupes.header_group', { n: g.nodes.length, url: g.url.replace(/^https?:\/\/(www\.)?/,'').substring(0,60) }) : t('dupes.header');
   _dRenderTable(g?.nodes || []);
   _dUpdateBtns();
 }
@@ -1991,7 +1991,7 @@ function openMoveToDialog(node) {
   if (node.parent !== null) {
     const rootOpt = document.createElement('option');
     rootOpt.value = '';
-    rootOpt.textContent = '(Корень)';
+    rootOpt.textContent = t('moveto.root');
     sel.appendChild(rootOpt);
   }
 
@@ -2096,9 +2096,9 @@ function openDbPropertiesDialog() {
 }
 
 function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  if (bytes < 1024) return t('unit.bytes', { n: bytes });
+  if (bytes < 1024 * 1024) return t('unit.kb', { n: (bytes / 1024).toFixed(1) });
+  return t('unit.mb', { n: (bytes / (1024 * 1024)).toFixed(2) });
 }
 
 document.getElementById('dbprops-x').onclick    = () => dbpropsOverlay.classList.add('hidden');
@@ -2659,7 +2659,7 @@ document.getElementById('bi-pick-folder').addEventListener('click', async () => 
   const found = await invoke('find_bookmarks_in_folder', { folder }).catch(() => null);
   if (!found) {
     biSelPathEl.textContent = '';
-    biStatus.textContent = 'Файл закладок не найден в выбранной папке.';
+    biStatus.textContent = t('bi.not_found');
     return;
   }
   const name = guessNameFromBookmarksPath(folder);
@@ -2695,12 +2695,12 @@ function guessNameFromBookmarksPath(path) {
       return p;
     }
   }
-  return 'Браузер';
+  return t('bi.generic_name');
 }
 
 async function openBrowserImportDialog() {
   biReset();
-  biList.innerHTML = '<div style="padding:8px;color:#888;font-size:11px">Поиск браузеров…</div>';
+  biList.innerHTML = `<div style="padding:8px;color:#888;font-size:11px">${t('bi.searching')}</div>`;
   raiseOverlay(biOverlay);
 
   try { biDetected = await invoke('detect_browsers'); }
@@ -2708,7 +2708,7 @@ async function openBrowserImportDialog() {
 
   biList.innerHTML = '';
   if (!biDetected.length) {
-    biList.innerHTML = '<div style="padding:8px;color:#888;font-size:11px">Установленные браузеры не найдены.<br>Используйте кнопки ниже.</div>';
+    biList.innerHTML = `<div style="padding:8px;color:#888;font-size:11px">${t('bi.none_found')}<br>${t('bi.use_buttons')}</div>`;
     return;
   }
 
@@ -2735,16 +2735,16 @@ async function doBrowserImport() {
 
   if (biManual) {
     // Portable / manual file mode
-    biStatus.textContent = `Импортирую из ${biManual.name}…`;
+    biStatus.textContent = t('bi.importing', { name: biManual.name });
     try {
       const r = await invoke('import_from_bookmarks_file', {
         path: biManual.path, name: biManual.name
       });
-      biStatus.textContent = `Импортировано: ${r.links} ${plural(r.links, 'ссылка', 'ссылки', 'ссылок')}, ${r.folders} ${plural(r.folders, 'папка', 'папки', 'папок')}.`;
+      biStatus.textContent = t('bi.imported', { links: t('count.links', { n: r.links }), folders: t('count.folders', { n: r.folders }) });
       refreshTree();
       setTimeout(() => biOverlay.classList.add('hidden'), 2500);
     } catch(e) {
-      biStatus.textContent = `Ошибка: ${e}`;
+      biStatus.textContent = t('common.error', { e });
       biOkBtn.disabled = false;
     }
     return;
@@ -2752,14 +2752,14 @@ async function doBrowserImport() {
 
   if (biSelIdx < 0 || biSelIdx >= biDetected.length) { biOkBtn.disabled = false; return; }
   const b = biDetected[biSelIdx];
-  biStatus.textContent = `Импортирую из ${b.name}…`;
+  biStatus.textContent = t('bi.importing', { name: b.name });
   try {
     const r = await invoke('import_from_browser', { browserId: b.id });
-    biStatus.textContent = `Импортировано: ${r.links} ${plural(r.links, 'ссылка', 'ссылки', 'ссылок')}, ${r.folders} ${plural(r.folders, 'папка', 'папки', 'папок')}.`;
+    biStatus.textContent = t('bi.imported', { links: t('count.links', { n: r.links }), folders: t('count.folders', { n: r.folders }) });
     refreshTree();
     setTimeout(() => biOverlay.classList.add('hidden'), 2500);
   } catch(e) {
-    biStatus.textContent = `Ошибка: ${e}`;
+    biStatus.textContent = t('common.error', { e });
     biOkBtn.disabled = false;
   }
 }
@@ -2832,7 +2832,7 @@ document.getElementById("dlg-portable").addEventListener("click", async () => {
 // ── "Обнаружить" button ──────────────────────────────────────────────────────
 const dlgDetectStatus = document.getElementById("dlg-detect-status");
 document.getElementById("dlg-detect").addEventListener("click", async () => {
-  dlgDetectStatus.textContent = "Поиск…";
+  dlgDetectStatus.textContent = t('browsers.searching');
   let detected = [];
   try { detected = await invoke("detect_browser_exes"); } catch(e) { console.error(e); }
 
@@ -2850,11 +2850,11 @@ document.getElementById("dlg-detect").addEventListener("click", async () => {
   if (added > 0) {
     dlgSelIdx = dlgBrowsers.length - 1;
     renderDlgList(); renderDlgDefault(); updateDlgBtns();
-    dlgDetectStatus.textContent = `Добавлено: ${addedNames.join(", ")}`;
+    dlgDetectStatus.textContent = t('browsers.added', { names: addedNames.join(", ") });
   } else if (detected.length === 0) {
-    dlgDetectStatus.textContent = "Браузеры не обнаружены.";
+    dlgDetectStatus.textContent = t('browsers.none_found');
   } else {
-    dlgDetectStatus.textContent = "Все найденные браузеры уже в списке.";
+    dlgDetectStatus.textContent = t('browsers.all_listed');
   }
   setTimeout(() => { dlgDetectStatus.textContent = ""; }, 3000);
 });
@@ -3311,10 +3311,10 @@ function tbMoveItem(dir) {
       o.value = val; o.textContent = label;
       destSelect.appendChild(o);
     };
-    addOpt('root', 'Корень');
+    addOpt('root', t('importdb.root'));
     allNodes.filter(n => n.kind === 'folder' && n.parent === null)
             .forEach(f => addOpt(String(f.id), f.title));
-    addOpt('new', '— Создать новую папку...');
+    addOpt('new', t('importdb.new_folder'));
 
     newFolderRow.classList.add('hidden');
     newFolderName.value = '';
@@ -3355,7 +3355,7 @@ function tbMoveItem(dir) {
 
   function openNewItemDlg(mode, prefill = {}) {
     _mode = mode;
-    titleEl.textContent = 'Новая ссылка';
+    titleEl.textContent = t('newitem.title_link');
     nameInput.value = prefill.title || '';
     urlInput.value  = prefill.url   || '';
     noteInput.value = '';
@@ -3384,7 +3384,7 @@ function tbMoveItem(dir) {
   async function submit() {
     const url = urlInput.value.trim();
     if (!url) {
-      _warn('Введите адрес');
+      _warn(t('newitem.enter_url'));
       urlInput.focus();
       return;
     }
@@ -3393,7 +3393,7 @@ function tbMoveItem(dir) {
     if (appSettings.noDuplicateUrls) {
       const dup = allNodes.find(n => n.kind === 'bookmark' && n.url === url);
       if (dup) {
-        _warn(`Уже существует: «${dup.title}»`);
+        _warn(t('newitem.exists', { title: dup.title }));
         urlInput.focus();
         return;
       }
@@ -3411,7 +3411,7 @@ function tbMoveItem(dir) {
         pid = await invoke('inbox_folder');
       } catch (e) {
         logUi(`Новая ссылка: папка «Новые ссылки» не заведена: ${e}`);
-        _warn(`Не удалось завести папку «Новые ссылки»: ${e}`);
+        _warn(t('newitem.inbox_failed', { e }));
         return;
       } finally {
         _inboxPending = false;
@@ -4361,7 +4361,7 @@ function parseHotkeyString(s) {
 function updateHotkeyPreview() {
   const combo = buildHotkeyString();
   const el = document.getElementById('s-hk-preview');
-  if (el) el.textContent = combo ? ('Текущая: ' + combo) : 'Только F8';
+  if (el) el.textContent = combo ? t('settings.hotkey_current', { combo }) : t('settings.hotkey_only_f8');
 }
 
 function applySidebarWidth(px, persist = true) {
@@ -4589,18 +4589,18 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
     const port = parseInt(document.getElementById('s-proxy-port').value, 10);
     const user = document.getElementById('s-proxy-user').value.trim();
     const pass = document.getElementById('s-proxy-pass').value;
-    if (!host) { setProxyStatus('Укажите адрес прокси', 'err'); return; }
+    if (!host) { setProxyStatus(t('settings.proxy.no_host'), 'err'); return; }
     // Tauri не десериализует u16 > 65535 и вернул бы сырую ошибку — режем здесь.
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      setProxyStatus('Неверный порт', 'err');
+      setProxyStatus(t('settings.proxy.bad_port'), 'err');
       return;
     }
     proxyTestBtn.disabled = true;
-    setProxyStatus('Проверка...', null);
+    setProxyStatus(t('settings.proxy.testing'), null);
     try {
       setProxyStatus(await invoke('test_proxy', { host, port, user, pass }), 'ok');
     } catch (e) {
-      setProxyStatus(typeof e === 'string' ? e : 'Не удалось проверить прокси', 'err');
+      setProxyStatus(typeof e === 'string' ? e : t('settings.proxy.test_failed'), 'err');
     } finally {
       // Не просто false: при снятой галке кнопка обязана остаться погашенной.
       proxyTestBtn.disabled = !proxyEnEl.checked;
@@ -4822,7 +4822,7 @@ async function updateWindowTitle() {
     const title = `URL Album ${APP_VERSION}`;
     document.title = title;
     await invoke('set_window_title', { title });
-    rootZone.textContent = currentDbName || '↑ Корень';
+    rootZone.textContent = currentDbName || t('tree.root');
   } catch(_) { currentDbName = ''; currentDbPath = ''; }
 }
 
@@ -5286,7 +5286,7 @@ function appendTrashNode() {
 
   const label = document.createElement('span');
   label.className = 'label';
-  label.textContent = 'Корзина';
+  label.textContent = t('tree.trash');
 
   item.append(arrow, ico, label);
 
@@ -5300,7 +5300,7 @@ function appendTrashNode() {
     e.stopPropagation();
     document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
     item.classList.add('active');
-    showFolderContextMenu(e, { id: -1, kind: 'folder', title: 'Корзина' });
+    showFolderContextMenu(e, { id: -1, kind: 'folder', title: t('tree.trash') });
   });
 
   wrap.appendChild(item);
@@ -5367,13 +5367,13 @@ function createTreeNode(node, depth) {
     e.dataTransfer.setData('text/plain', String(node.id));
     item.classList.add('dragging');
     document.body.classList.add('is-dragging');
-    rootZone.textContent = '↑ Корень';
+    rootZone.textContent = t('tree.root');
   });
   item.addEventListener('dragend', () => {
     _dragNode = null;
     item.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
-    rootZone.textContent = currentDbName || '↑ Корень';
+    rootZone.textContent = currentDbName || t('tree.root');
     _clearDragOver();
     _stopAutoScroll();
   });
@@ -5748,14 +5748,14 @@ function renderSearchResults(q) {
   if (searchResults.length === 0) {
     const el = document.createElement("div");
     el.className = "search-empty";
-    el.textContent = "Ничего не найдено.";
+    el.textContent = t('search.nothing');
     searchResultsEl.appendChild(el);
     return;
   }
 
   const cnt = document.createElement("div");
   cnt.className = "result-count";
-  cnt.textContent = `Найдено: ${searchResults.length}`;
+  cnt.textContent = t('search.found', { n: searchResults.length });
   searchResultsEl.appendChild(cnt);
 
   searchResults.forEach((r, i) => {
@@ -5926,7 +5926,7 @@ function hideInfoBar() {
 // Запись привязана к базе, где правку начали (`dbPath`): Rust отклонит её,
 // если открыта другая. Смена и закрытие базы, закрытие окна сначала ждут
 // flushNoteEdit(), поэтому до отказа в обычной жизни не доходит.
-const NOTE_PLACEHOLDER = 'Добавить описание…';
+const NOTE_PLACEHOLDER = t('note.placeholder');
 let _noteEdit   = null;               // { box, id, dbPath, orig, saved, ta }
 let _noteSaving = Promise.resolve();  // цепочка записей — строго по очереди
 
@@ -5938,7 +5938,7 @@ function _renderNoteBox(box, node) {
   box.dataset.id = node.id;
   box.classList.toggle('empty', !node.note);
   box.textContent = node.note || NOTE_PLACEHOLDER;
-  box.title = 'Щёлкните, чтобы изменить заметку';
+  box.title = t('note.click_to_edit');
 }
 
 // Точечное обновление везде, где заметка видна. Окно «Свойства» берёт
@@ -6287,7 +6287,7 @@ document.addEventListener('keydown', (e) => {
   if (!_taTitles || _taBuf.length === 1) {
     _taTitles = new Map();
     for (const n of allNodes) _taTitles.set(n.id, n.title || '');
-    _taTitles.set(-1, 'Корзина');
+    _taTitles.set(-1, t('tree.trash'));
   }
 
   if (inTree) {
@@ -6353,7 +6353,7 @@ function selectFolder(folderId, expand = true, noTreeExpand = false) {
 
   // Breadcrumb
   if (folderId === -1) {
-    breadcrumb.textContent = 'Корзина';
+    breadcrumb.textContent = t('tree.trash');
   } else {
     const folder = allFolders.find(f => f.id === folderId);
     breadcrumb.textContent = folder ? buildBreadcrumbText(folderId) : "";
@@ -6477,7 +6477,7 @@ function createTrashRow(node, depth, ancestors, hasChildren) {
   addr.className = isFolder ? 'row-addr row-addr-folder' : 'row-addr';
   if (isFolder) {
     addr.textContent = node.count > 0
-      ? `${node.count} ${plural(node.count, 'ссылка', 'ссылки', 'ссылок')}` : '';
+      ? t('count.links', { n: node.count }) : '';
   } else {
     addr.textContent = node.url || '';
     if (node.url) addr.title = node.url;
@@ -6577,13 +6577,13 @@ function createFolderRow(node) {
     e.dataTransfer.setData('text/plain', String(node.id));
     row.classList.add('dragging');
     document.body.classList.add('is-dragging');
-    rootZone.textContent = '↑ Корень';
+    rootZone.textContent = t('tree.root');
   });
   row.addEventListener('dragend', () => {
     _dragNode = null;
     row.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
-    rootZone.textContent = currentDbName || '↑ Корень';
+    rootZone.textContent = currentDbName || t('tree.root');
     _clearDragOver();
     _stopAutoScroll();
   });
@@ -6605,7 +6605,7 @@ function createFolderRow(node) {
   const addr = document.createElement("span");
   addr.className = "row-addr row-addr-folder";
   addr.textContent = node.count > 0
-    ? `${node.count} ${plural(node.count, 'ссылка', 'ссылки', 'ссылок')}` : '';
+    ? t('count.links', { n: node.count }) : '';
 
   row.append(dot, name, sep, addr);
   return row;
@@ -6627,13 +6627,13 @@ function createCard(b) {
     e.dataTransfer.setData('text/plain', String(b.id));
     card.classList.add('dragging');
     document.body.classList.add('is-dragging');
-    rootZone.textContent = '↑ Корень';
+    rootZone.textContent = t('tree.root');
   });
   card.addEventListener('dragend', () => {
     _dragNode = null;
     card.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
-    rootZone.textContent = currentDbName || '↑ Корень';
+    rootZone.textContent = currentDbName || t('tree.root');
     _clearDragOver();
     _stopAutoScroll();
   });
