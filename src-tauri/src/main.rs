@@ -2,6 +2,8 @@
 
 #[macro_use]
 mod i18n;
+#[cfg(test)]
+mod i18n_audit;
 mod clipboard;
 mod db;
 mod importer;

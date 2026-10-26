@@ -7,6 +7,32 @@ const { convertFileSrc } = window.__TAURI__.core;
 const MAX_FAVICON_CONCURRENCY = 5; // intentional per-domain rate limiting
 const APP_VERSION = '2.3.4-beta';
 
+// ── Словарь интерфейса ─────────────────────────────────────────────────────
+// Словарь кладёт Rust скриптом инициализации до загрузки app.js
+// (i18n::init_script): { lang, strings, broken }. Поэтому t() работает и в
+// константах ниже, и разметка переводится до первой отрисовки.
+// Ключ — всегда литерал: по нему тесты сверяют вызовы со словарём.
+// Локальные переменные с именем t не заводить — затенят функцию.
+const I18N = window.__UA_I18N__ || { lang: 'ru', strings: {}, broken: [] };
+const _pluralRules = new Intl.PluralRules(I18N.lang);
+
+// Фраза с числом — объект категорий Intl.PluralRules, число в ней — {n}.
+// Нет ключа — заметная метка ⟦ключ⟧, не пустота.
+function t(key, params) {
+  let v = I18N.strings[key];
+  if (v == null) return `⟦${key}⟧`;
+  if (typeof v === 'object') v = v[_pluralRules.select(params?.n ?? 0)] ?? v.other ?? '';
+  return params ? v.replace(/\{(\w+)\}/g, (m, k) => (k in params ? String(params[k]) : m)) : v;
+}
+
+// Разметка: data-i18n — текст элемента, data-i18n-title — подсказка.
+function applyI18nDom(root = document) {
+  root.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });     // i18n: ключ из разметки
+  root.querySelectorAll('[data-i18n-title]').forEach(el => { el.title = t(el.dataset.i18nTitle); }); // i18n: ключ из разметки
+}
+document.documentElement.lang = I18N.lang;
+applyI18nDom();
+
 // Записать строку в журнал программы. console.error в release-сборке
 // недоступен (DevTools отключены), поэтому причины отказов уходят сюда.
 function logUi(message) {
@@ -1593,8 +1619,8 @@ async function clearThumb(node) {
   // Update grid card
   const card = gridEl.querySelector(`.card[data-id="${node.id}"]`);
   if (card) {
-    const t = card.querySelector(".card-thumb");
-    if (t) { t.innerHTML = ""; t.appendChild(makeNoImg(node.title)); }
+    const thumbEl = card.querySelector(".card-thumb");
+    if (thumbEl) { thumbEl.innerHTML = ""; thumbEl.appendChild(makeNoImg(node.title)); }
   }
 
   // Update detail view
@@ -2116,8 +2142,10 @@ async function noteBrokenConfig(file, err) {
   }
 }
 
-function reportBrokenConfigs() {
-  if (!brokenConfigs.length) return;
+// then — после закрытия окна (или сразу, если окна нет): следующее окно
+// запуска не должно затереть это.
+function reportBrokenConfigs(then) {
+  if (!brokenConfigs.length) { then?.(); return; }
   const many  = brokenConfigs.length > 1;
   const names = brokenConfigs.join(', ');
   const bads  = brokenConfigs.map(f => f + '.bad').join(', ');
@@ -2125,7 +2153,15 @@ function reportBrokenConfigs() {
     (many ? 'Не удалось прочитать файлы: ' : 'Не удалось прочитать файл ') + names + '.\n\n' +
     'Применены значения по умолчанию. ' +
     (many ? 'Прежние сохранены' : 'Прежний сохранён') + ' рядом с программой как ' + bads +
-    ': оттуда можно достать свои значения или прислать для разбора.');
+    ': оттуда можно достать свои значения или прислать для разбора.', then);
+}
+
+// Файлы lang\, которые не разобрались: Rust их не читал, работает встроенный
+// перевод (строка в журнале — от Rust).
+function reportBrokenLang() {
+  if (!I18N.broken?.length) return;
+  showNotice(t('notice.lang_broken.title'),
+    t('notice.lang_broken.msg', { files: I18N.broken.map(f => 'lang\\' + f).join(', ') }));
 }
 
 // ── Browser list ─────────────────────────────────────────────────────────
@@ -2451,9 +2487,9 @@ function hideContextMenu() {
 // (так было в переименовании папки). Поэтому — перехват на document в фазе
 // capture, раньше любых точечных обработчиков, и своё меню.
 const EDIT_INPUT_TYPES = ['text', 'search', 'url', 'email', 'tel', 'password', 'number'];
-function _isTextField(t) {
-  return t instanceof HTMLTextAreaElement
-      || (t instanceof HTMLInputElement && EDIT_INPUT_TYPES.includes(t.type));
+function _isTextField(el) {
+  return el instanceof HTMLTextAreaElement
+      || (el instanceof HTMLInputElement && EDIT_INPUT_TYPES.includes(el.type));
 }
 
 // Есть ли в буфере текст — через Rust (clipboard_text). navigator.clipboard.
@@ -2511,12 +2547,12 @@ async function showEditMenu(field, x, y) {
 }
 
 document.addEventListener('contextmenu', (e) => {
-  const t = e.target;
-  if (!_isTextField(t) || t.disabled) return;
+  const field = e.target;
+  if (!_isTextField(field) || field.disabled) return;
   e.preventDefault();
   e.stopPropagation();
   hideContextMenu();
-  showEditMenu(t, e.clientX, e.clientY);
+  showEditMenu(field, e.clientX, e.clientY);
 }, true);
 
 // Щелчок по пункту не должен забирать фокус у поля: переименование и заметка
@@ -3900,18 +3936,18 @@ function handleMenuAction(action) {
       break;
 
     case 'open-link': {
-      const t = getActiveLink();
-      if (t?.url) openWithBrowser(t.url, resolveOpenerForNode(t));
+      const link = getActiveLink();
+      if (link?.url) openWithBrowser(link.url, resolveOpenerForNode(link));
       break;
     }
     case 'open-with': {
-      const t = getActiveLink();
-      if (t?.url) showOpenWithDialog(t.url);
+      const link = getActiveLink();
+      if (link?.url) showOpenWithDialog(link.url);
       break;
     }
     case 'properties': {
-      const t = getActiveLink();
-      if (t) openPropsDialog(t);
+      const link = getActiveLink();
+      if (link) openPropsDialog(link);
       break;
     }
     case 'copy-url': {
@@ -3920,9 +3956,9 @@ function handleMenuAction(action) {
       break;
     }
     case 'delete-link': {
-      const t = activeBookmarkNode
+      const link = activeBookmarkNode
         || allNodes.find(n => String(n.id) === gridEl.querySelector(".card.selected")?.dataset.id);
-      if (t) deleteBookmark(t);
+      if (link) deleteBookmark(link);
       break;
     }
     case 'find':
@@ -4312,10 +4348,10 @@ function parseHotkeyString(s) {
         alt = document.getElementById('s-hk-alt'), keySel = document.getElementById('s-hk-key');
   ctrl.checked = shift.checked = alt.checked = false; keySel.value = '';
   if (!s) return;
-  const tokens = s.split('+').map(t => t.trim());
+  const tokens = s.split('+').map(tok => tok.trim());
   const key = (tokens.pop() || '').toUpperCase();
-  for (const t of tokens) {
-    const lt = t.toLowerCase();
+  for (const tok of tokens) {
+    const lt = tok.toLowerCase();
     if (lt === 'ctrl') ctrl.checked = true;
     else if (lt === 'shift') shift.checked = true;
     else if (lt === 'alt') alt.checked = true;
@@ -4473,7 +4509,7 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
   const tabs   = document.querySelectorAll('#settings-tabs .stab');
   const panels = document.querySelectorAll('.stab-panel');
   tabs.forEach(tab => tab.addEventListener('click', () => {
-    tabs.forEach(t => t.classList.remove('active'));
+    tabs.forEach(tab => tab.classList.remove('active'));
     panels.forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('stab-' + tab.dataset.tab)?.classList.add('active');
@@ -4579,7 +4615,7 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
       if (el) el.textContent = p;
     }).catch(() => {});
     // Reset to first tab
-    tabs.forEach(t => t.classList.remove('active'));
+    tabs.forEach(tab => tab.classList.remove('active'));
     panels.forEach(p => p.classList.remove('active'));
     tabs[0]?.classList.add('active');
     document.getElementById('stab-general')?.classList.add('active');
@@ -4692,7 +4728,7 @@ async function init() {
     invoke('get_data_dir').then(d => { dataDir = d; }).catch(() => {}),
   ]);
   // Одно окно на все испорченные файлы — после того, как отчитались все трое.
-  reportBrokenConfigs();
+  reportBrokenConfigs(reportBrokenLang);
   buildToolbar();
   _refreshNavButtons();
   await showApp();
@@ -4714,9 +4750,9 @@ async function init() {
   // своё меню редактирования (showEditMenu, перехват в фазе capture); проверка
   // полей ниже осталась для прочих редактируемых элементов.
   document.addEventListener('contextmenu', (e) => {
-    const t = e.target;
-    if (t && (((t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') && !t.readOnly && !t.disabled)
-              || t.isContentEditable)) return;
+    const el = e.target;
+    if (el && (((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && !el.readOnly && !el.disabled)
+              || el.isContentEditable)) return;
     e.preventDefault();
   });
 }
@@ -6195,8 +6231,8 @@ function _typeAheadFind(cur, buf, rows) {
   const same = [...buf].every(ch => ch === buf[0]);
   const want = same ? buf[0] : buf;
   const hits = (el) => {
-    const t = _taTitles.get(parseInt(el.dataset.id, 10));
-    return t != null && t.slice(0, want.length).toLowerCase() === want;
+    const title = _taTitles.get(parseInt(el.dataset.id, 10));
+    return title != null && title.slice(0, want.length).toLowerCase() === want;
   };
   if (rows) {
     if (!rows.length) return null;
@@ -6229,8 +6265,8 @@ document.addEventListener('keydown', (e) => {
     else _typeAheadFlush();
     return;
   }
-  const t = e.target;
-  if (t.matches?.('input,textarea,select') || t.isContentEditable) return;
+  const target = e.target;
+  if (target.matches?.('input,textarea,select') || target.isContentEditable) return;
   if (document.querySelector('.dlg-overlay:not(.hidden), .menu-group.open')
       || !ctxMenuEl.classList.contains('hidden')) return;
 
