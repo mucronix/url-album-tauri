@@ -311,3 +311,156 @@ fn js_lexer_skips_strings_comments_and_regex() {
     assert!(js_keys("x.t = 1; function t(key) {}").is_ok(), "свойство и сама функция");
     assert!(js_keys("t(el.key); // i18n: ключ из разметки").is_ok(), "пометка");
 }
+
+// ── Сторожа: кириллица в строках — только в словаре ─────────────────────────
+
+/// Строки app.js с кириллицей вне журнала (аргументы logUi, logTiming и console.*),
+/// окна «Сверка с базой» (_verifyState, runVerifyState) и строк с пометкой
+/// `// i18n: не переводится`.
+pub(crate) fn js_cyrillic(src: &str) -> Vec<(usize, String)> {
+    let toks = js_tokens(src);
+    let allowed = marked_lines(src, "не переводится");
+    // Конец группы, открытой toks[open] (`(` или `{`).
+    let group_end = |open: usize| -> usize {
+        let (o, c) = match toks[open].1 { Tok::Punct('(') => ('(', ')'), _ => ('{', '}') };
+        let mut depth = 0;
+        for j in open..toks.len() {
+            match toks[j].1 {
+                Tok::Punct(p) if p == o => depth += 1,
+                Tok::Punct(p) if p == c => { depth -= 1; if depth == 0 { return j + 1; } }
+                _ => {}
+            }
+        }
+        toks.len()
+    };
+    let at = |j: usize| toks.get(j).map(|t| &t.1);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < toks.len() {
+        match &toks[i].1 {
+            Tok::Ident(n) if (n == "logUi" || n == "logTiming") && at(i + 1) == Some(&Tok::Punct('(')) => {
+                i = group_end(i + 1); continue;
+            }
+            Tok::Ident(n) if n == "console" && at(i + 1) == Some(&Tok::Punct('.'))
+                && at(i + 3) == Some(&Tok::Punct('(')) => {
+                i = group_end(i + 3); continue;
+            }
+            Tok::Ident(n) if n == "function"
+                && matches!(at(i + 1), Some(Tok::Ident(f)) if f == "_verifyState" || f == "runVerifyState") => {
+                match (i..toks.len()).find(|&j| toks[j].1 == Tok::Punct('{')) {
+                    Some(body) => { i = group_end(body); continue; }
+                    None => break,
+                }
+            }
+            Tok::Str(s) if has_cyrillic(s) && !allowed.contains(&toks[i].0) => out.push((toks[i].0, s.clone())),
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Строковые литералы Rust с кириллицей вне журнала: пропускаются doc-
+/// комментарии, элементы под `#[cfg(test)]`, аргументы `logger::log(…)` и
+/// строки с пометкой `// i18n: не переводится`.
+pub(crate) fn rs_cyrillic(src: &str) -> Vec<(usize, String)> {
+    use proc_macro2::{Delimiter, TokenStream, TokenTree};
+    fn walk(ts: TokenStream, allowed: &std::collections::HashSet<usize>, out: &mut Vec<(usize, String)>) {
+        let toks: Vec<TokenTree> = ts.into_iter().collect();
+        let mut i = 0;
+        while i < toks.len() {
+            match &toks[i] {
+                // #[doc = "…"] — комментарий; #[cfg(test)] — следующий элемент целиком
+                TokenTree::Punct(p) if p.as_char() == '#' => {
+                    // `//!` — это `#![doc = "…"]`
+                    let bang = matches!(toks.get(i + 1), Some(TokenTree::Punct(b)) if b.as_char() == '!');
+                    if let Some(TokenTree::Group(g)) = toks.get(i + 1 + bang as usize) {
+                        let inner = g.stream().to_string().replace(' ', "");
+                        if inner.starts_with("doc") { i += 2 + bang as usize; continue; }
+                        if inner == "cfg(test)" {
+                            i += 2;
+                            while i < toks.len() {
+                                let end = matches!(&toks[i], TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
+                                    || matches!(&toks[i], TokenTree::Punct(p) if p.as_char() == ';');
+                                i += 1;
+                                if end { break; }
+                            }
+                            continue;
+                        }
+                    }
+                }
+                // logger::log(…) — журнал, не переводится
+                TokenTree::Ident(id) if id == "logger"
+                    && matches!(toks.get(i + 3), Some(TokenTree::Ident(f)) if f == "log")
+                    && matches!(toks.get(i + 4), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis) => {
+                    i += 5; continue;
+                }
+                TokenTree::Group(g) => walk(g.stream(), allowed, out),
+                TokenTree::Literal(l) => {
+                    let text = l.to_string();
+                    let line = l.span().start().line;
+                    if has_cyrillic(&text) && !allowed.contains(&line) { out.push((line, text)); }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    let allowed = marked_lines(src, "не переводится");
+    let ts: TokenStream = src.parse().expect("файл Rust не разобрался лексером");
+    let mut out = Vec::new();
+    walk(ts, &allowed, &mut out);
+    out
+}
+
+fn rs_sources() -> Vec<(String, String)> {
+    let mut files: Vec<_> = std::fs::read_dir(root().join("src")).unwrap().flatten().map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs")).collect();
+    files.sort();
+    files.into_iter()
+        .map(|p| (p.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read_to_string(&p).unwrap()))
+        .filter(|(n, _)| n != "i18n_audit.rs")
+        .collect()
+}
+
+/// В app.js строки с кириллицей — только в журнале и «Сверке с базой»:
+/// всё, что видит человек, идёт через t().
+#[test]
+fn no_cyrillic_literals_in_app_js() {
+    let bad: Vec<String> = js_cyrillic(&read("../ui/app.js")).into_iter()
+        .map(|(l, s)| format!("app.js:{l}: {s}")).collect();
+    assert!(bad.is_empty(), "кириллица вне словаря:\n{}", bad.join("\n"));
+}
+
+/// То же для Rust: видимое человеку — через t!/t_msg!.
+#[test]
+fn no_cyrillic_literals_in_rust() {
+    let mut bad = Vec::new();
+    for (name, text) in rs_sources() {
+        for (l, s) in rs_cyrillic(&text) { bad.push(format!("{name}:{l}: {s}")); }
+    }
+    assert!(bad.is_empty(), "кириллица вне словаря:\n{}", bad.join("\n"));
+}
+
+/// Каждый ключ ru.json (кроме _meta) где-то используется: мёртвый ключ —
+/// лишняя работа переводчику и признак забытой правки.
+#[test]
+fn no_unused_keys() {
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    used.extend(js_keys(&read("../ui/app.js")).unwrap_or_else(|e| panic!("{e}")).into_iter().map(|(_, k)| k));
+    used.extend(html_keys(&read("../ui/index.html")).0.into_iter().map(|(k, _)| k));
+    used.extend(rust_keys().into_iter().map(|(_, k)| k));
+    let unused: Vec<String> = dict().keys().filter(|k| *k != "_meta" && !used.contains(*k)).cloned().collect();
+    assert!(unused.is_empty(), "ключи ru.json без использования:\n{}", unused.join("\n"));
+}
+
+#[test]
+fn cyrillic_scanners_skip_log_and_tests() {
+    let js = "logUi(`журнал ${x}`); logTiming('замер', 1); console.error('ошибка'); function _verifyState() { a('сверка'); }\n\
+              t('k'); const a = 'видно';\nconst b = 'тоже'; // i18n: не переводится — легаси";
+    assert_eq!(js_cyrillic(js), vec![(2, "видно".to_string())]);
+    let rs = "//! модуль «текст»\n/// документ «текст»\nfn f() { logger::log(&format!(\"журнал {}\", \"тоже\")); let a = \"видно\"; }\n\
+              const B: &str = \"легаси\"; // i18n: не переводится\n#[cfg(test)]\nmod tests { fn g() { let _ = \"тест\"; } }";
+    let got: Vec<String> = rs_cyrillic(rs).into_iter().map(|(_, s)| s).collect();
+    assert_eq!(got, vec!["\"видно\"".to_string()]);
+}

@@ -4513,6 +4513,7 @@ version = "2.3.4-beta"
 dependencies = [
  "encoding_rs",
  "getrandom 0.2.17",
+ "proc-macro2",
  "reqwest 0.12.28",
  "rfd",
  "rusqlite",

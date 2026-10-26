@@ -93,7 +93,7 @@ pub const ROLE_INBOX: &str = "inbox";
 
 /// Название служебной папки в базах до колонки `role` — по нему такие базы
 /// отмечаются (`mark_legacy_inbox`). Не переводится: те базы заводились по-русски.
-const LEGACY_INBOX_TITLE: &str = "Новые ссылки";
+const LEGACY_INBOX_TITLE: &str = "Новые ссылки";   // i18n: не переводится — легаси: так называлась служебная папка старых баз
 
 /// База до колонки `role`: служебной считалась живая корневая папка «Новые
 /// ссылки», первая по id (так искал find_or_create_inbox_folder). Ей и ставим
@@ -514,7 +514,7 @@ fn txt_folder(nodes: &[ExportNode], parent: Option<i64>, depth: usize) -> String
                 // сбрасывал контекст папок (последнее починено в `c8570f6`).
                 let mut parts = note.split('\n').map(|l| l.trim_end_matches('\r'));
                 if let Some(first) = parts.next() {
-                    out.push_str(&format!("{prefix}  Заметка: {first}\n"));
+                    out.push_str(&format!("{prefix}  Заметка: {first}\n"));   // i18n: не переводится — формат TXT (отдельный шаг)
                     for cont in parts {
                         out.push_str(&format!("{prefix}    {cont}\n"));
                     }
@@ -751,7 +751,7 @@ pub fn looks_like_our_txt(text: &str) -> bool {
         if first.starts_with('[') && first.ends_with(']') { return true; }
     }
     text.lines().map(str::trim)
-        .any(|l| l.starts_with("Заметка: ") || (l.starts_with('[') && l.ends_with(']')))
+        .any(|l| l.starts_with("Заметка: ") || (l.starts_with('[') && l.ends_with(']')))   // i18n: не переводится — формат TXT (отдельный шаг)
 }
 
 /// Свободное имя папки в этом родителе: `ссылки`, `ссылки (2)`, `ссылки (3)`…
@@ -875,7 +875,7 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
         // Вид строки определяется ДО того, как трогается стек: разделитель
         // ищется только там, где строка не папка и не заметка.
         let is_folder = trimmed.starts_with('[') && trimmed.ends_with(']');
-        let is_note   = trimmed.starts_with("Заметка: ");
+        let is_note   = trimmed.starts_with("Заметка: ");   // i18n: не переводится — формат TXT (отдельный шаг)
         let sep       = if is_folder || is_note { None } else { trimmed.rfind(" - ") };
 
         // Стек выталкивают ТОЛЬКО структурные строки — папка и ссылка.
@@ -903,7 +903,7 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
             res.folders += 1;
             stack.push((depth, conn.last_insert_rowid()));
             last_bm_id = None;
-        } else if let Some(note) = trimmed.strip_prefix("Заметка: ") {
+        } else if let Some(note) = trimmed.strip_prefix("Заметка: ") {   // i18n: не переводится — формат TXT (отдельный шаг)
             match last_bm_id {
                 // Не пишем сразу: заметка может продолжаться следующими
                 // строками, и запись идёт одним UPDATE при её закрытии.

@@ -23,6 +23,10 @@ reqwest     = { version = "0.12", default-features = false, features = ["rustls-
 tiny_http   = "0.12"
 getrandom   = "0.2"
 
+[dev-dependencies]
+# Лексер Rust для теста «нет кириллицы в строках вне журнала» (i18n_audit.rs)
+proc-macro2 = { version = "1", features = ["span-locations"] }
+
 [profile.release]
 panic         = "abort"
 codegen-units = 1

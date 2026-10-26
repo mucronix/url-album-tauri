@@ -91,7 +91,7 @@ static BASE: OnceLock<Map<String, Value>> = OnceLock::new();
 fn parse(text: &str) -> Result<Map<String, Value>, String> {
     match serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')) {
         Ok(Value::Object(m)) => Ok(m),
-        Ok(_)  => Err("не объект JSON".to_string()),
+        Ok(_)  => Err("не объект JSON".to_string()),   // i18n: не переводится — журнал
         Err(e) => Err(e.to_string()),
     }
 }
@@ -190,7 +190,7 @@ fn load_with(base_text: &str, embedded: &dyn Fn(&str) -> Option<&'static str>,
         match parse(&text) {
             Ok(m)  => Some(m),
             Err(e) => {
-                notes.push(format!("язык: lang\\{name} не разобран ({e}) — не используется"));
+                notes.push(format!("язык: lang\\{name} не разобран ({e}) — не используется"));   // i18n: не переводится — журнал
                 broken.push(name);
                 None
             }
@@ -210,8 +210,8 @@ fn load_with(base_text: &str, embedded: &dyn Fn(&str) -> Option<&'static str>,
 
     let mut strings = base.clone();
     let layers = [
-        ("вшитый en".to_string(),      embedded("en").filter(|_| lang != "en" && lang != BASE_LANG).and_then(|t| parse(t).ok())),
-        (format!("вшитый {lang}"),  embedded(&lang).filter(|_| lang != BASE_LANG).and_then(|t| parse(t).ok())),
+        ("вшитый en".to_string(),      embedded("en").filter(|_| lang != "en" && lang != BASE_LANG).and_then(|t| parse(t).ok())),   // i18n: не переводится — журнал
+        (format!("вшитый {lang}"),  embedded(&lang).filter(|_| lang != BASE_LANG).and_then(|t| parse(t).ok())),   // i18n: не переводится — журнал
         (format!("lang\\{lang}.json"), file),
     ];
     for (name, layer) in layers {
@@ -219,7 +219,7 @@ fn load_with(base_text: &str, embedded: &dyn Fn(&str) -> Option<&'static str>,
         let mut rejected = Vec::new();
         overlay(&mut strings, &layer, &base, &mut rejected);
         if !rejected.is_empty() {
-            notes.push(format!("язык: {name} — ключи пропущены (неизвестные или неверные): {}",
+            notes.push(format!("язык: {name} — ключи пропущены (неизвестные или неверные): {}",   // i18n: не переводится — журнал
                                rejected.join(", ")));
         }
     }
@@ -252,8 +252,8 @@ pub fn init() {
     let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("lang")));
     let mut d = load_with(embedded(BASE_LANG).unwrap_or("{}"), &embedded, dir.as_deref(),
                           settings.as_deref(), system.as_deref());
-    d.notes.insert(0, format!("язык: {} (настройка: {}, система: {})", d.lang,
-                              settings.as_deref().unwrap_or("нет"), system.as_deref().unwrap_or("не определён")));
+    d.notes.insert(0, format!("язык: {} (настройка: {}, система: {})", d.lang,   // i18n: не переводится — журнал
+                              settings.as_deref().unwrap_or("нет"), system.as_deref().unwrap_or("не определён")));   // i18n: не переводится — журнал
     let _ = CURRENT.set(d);
 }
 

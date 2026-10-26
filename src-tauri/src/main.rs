@@ -1131,14 +1131,14 @@ async fn do_screenshot(
     // 19.10.2026): по журналу видно, каким браузером и за сколько снята каждая
     // ссылка и был ли браузер запасным. Строки перед запуском нет: у ожидания
     // жёсткий предел (t+8 на попытку), зависший снимок всё равно дойдёт сюда.
-    let fallback_note = choice.fallback.as_ref().map(|r| format!("; запасной: {}", r.log)).unwrap_or_default();
+    let fallback_note = choice.fallback.as_ref().map(|r| format!("; запасной: {}", r.log)).unwrap_or_default();   // i18n: не переводится — журнал
     if visible {
         let flag = run.as_ref().ok().and_then(|(v, _)| v.last().copied()).unwrap_or("");
         logger::log(&format!(
             "скриншот id={id}: снят за {}мс ({}, {flag}{fallback_note})",
             t_start.elapsed().as_millis(), choice.name));
     } else {
-        let tried = run.as_ref().map(|(v, _)| v.join(", ")).unwrap_or_else(|e| format!("отказ запуска: {e}"));
+        let tried = run.as_ref().map(|(v, _)| v.join(", ")).unwrap_or_else(|e| format!("отказ запуска: {e}"));   // i18n: не переводится — журнал
         logger::log(&format!(
             "скриншот id={id}: файла нет за {}мс ({}, {}; попытки: {tried}{}; {w}x{h}, ожидание {t}с, прокси: {}{fallback_note})",
             t_start.elapsed().as_millis(),
@@ -1513,13 +1513,13 @@ fn init_new_db(conn: &Connection) -> Result<(), String> {
 fn open_startup_db(path: &std::path::Path) -> Result<Connection, String> {
     let is_new = !path.exists();
     let conn = Connection::open(path)
-        .map_err(|e| format!("не удалось открыть базу {}: {e}", path.display()))?;
+        .map_err(|e| format!("не удалось открыть базу {}: {e}", path.display()))?;   // i18n: не переводится — журнал (окна ещё нет)
     if is_new {
         init_new_db(&conn)
     } else {
         db::init(&conn).map_err(|e| e.to_string())
     }
-    .map_err(|e| format!("не удалось подготовить базу {}: {e}", path.display()))?;
+    .map_err(|e| format!("не удалось подготовить базу {}: {e}", path.display()))?;   // i18n: не переводится — журнал (окна ещё нет)
     Ok(conn)
 }
 
@@ -2412,12 +2412,12 @@ const CONFIG_FILES: [&str; 3] = ["settings.json", "toolbar.json", "browsers.json
 /// руками — восстановить такое неоткуда, только глазами из `.bad`.
 fn backup_bad_config_file(name: &str) -> Result<std::path::PathBuf, String> {
     if !CONFIG_FILES.contains(&name) {
-        return Err(format!("неизвестный файл настроек: {name}"));
+        return Err(format!("неизвестный файл настроек: {name}"));   // i18n: не переводится — журнал (JS пишет отказ в журнал)
     }
     let src = std::env::current_exe().map_err(|e| e.to_string())?
         .parent().ok_or("no parent")?.join(name);
     if !src.exists() {
-        return Err(format!("{name} не найден"));
+        return Err(format!("{name} не найден"));   // i18n: не переводится — журнал (JS пишет отказ в журнал)
     }
     let dst = src.with_extension("json.bad");
 
@@ -3709,10 +3709,10 @@ fn main() {
     std::panic::set_hook(Box::new(move |info| {
         let place = info.location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
-            .unwrap_or_else(|| "место неизвестно".to_string());
+            .unwrap_or_else(|| "место неизвестно".to_string());   // i18n: не переводится — журнал
         let msg = info.payload().downcast_ref::<&str>().map(|s| (*s).to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "причина неизвестна".to_string());
+            .unwrap_or_else(|| "причина неизвестна".to_string());   // i18n: не переводится — журнал
         logger::log(&format!("ПАНИКА в {place}: {msg}"));
         prev_hook(info);   // прежнее поведение не теряем
     }));
