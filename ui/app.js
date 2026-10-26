@@ -580,11 +580,15 @@ function _finishThumbBatch() {
   const browsersUsed = [..._thumbBrowsers].map(([b, n]) => `${b} ${n}`).join(', ');
   // _thumbDone — пройдено ссылок, вместе с неудачами и пропущенными; итог — как в журнале.
   const ok = _thumbDone - _thumbFailed - _thumbSkipped;
-  const skipped = _thumbSkipped ? `, пропущено ${_thumbSkipped}` : '';
-  setStatus(`Рисунки: удалось ${ok}, не удалось ${_thumbFailed}${skipped}`
-      + (_thumbFallback ? ` — снято в ${[..._thumbBrowsers.keys()].join(', ')}: ${_thumbFallback}` : ''));
+  const result = _thumbSkipped
+    ? t('status.thumbs_done_skipped', { ok, failed: _thumbFailed, skipped: _thumbSkipped })
+    : t('status.thumbs_done', { ok, failed: _thumbFailed });
+  setStatus(_thumbFallback
+    ? t('status.thumbs_done_fallback', { result, browsers: [..._thumbBrowsers.keys()].join(', '), reason: _thumbFallback })
+    : result);
   logUi(`скриншоты, итог пакета: всего ${_thumbTotal}, удалось ${ok}, `
-      + `не удалось ${_thumbFailed}${skipped}, ${Math.round((Date.now() - _thumbStarted) / 1000)}с`
+      + `не удалось ${_thumbFailed}${_thumbSkipped ? `, пропущено ${_thumbSkipped}` : ''}, `
+      + `${Math.round((Date.now() - _thumbStarted) / 1000)}с`
       + (browsersUsed ? `; снято: ${browsersUsed}` : '')
       + (_thumbFallback ? `; запасной: ${_thumbFallback}` : ''));
   setTimeout(hideThumbPanel, 2000);
@@ -1123,8 +1127,9 @@ function deleteFolder(node) {
   if (!node || node.id === -1) return;
   const ids     = collectSubtreeIds(node.id);
   const total   = ids.size - 1;   // exclude the folder itself
-  const detail  = total > 0 ? ` и всё содержимое (${total} эл.)` : "";
-  deleteConfirm(`Удалить папку «${node.title}»${detail}?`, async () => {
+  deleteConfirm(total > 0
+      ? t('confirm.delete_folder_content', { title: node.title, n: total })
+      : t('confirm.delete_folder', { title: node.title }), async () => {
     const nextEl = findNextAfterDelete(node.id);
 
     await invoke("delete_folder", { id: node.id }).catch(console.error);
@@ -2146,14 +2151,11 @@ async function noteBrokenConfig(file, err) {
 // запуска не должно затереть это.
 function reportBrokenConfigs(then) {
   if (!brokenConfigs.length) { then?.(); return; }
-  const many  = brokenConfigs.length > 1;
-  const names = brokenConfigs.join(', ');
-  const bads  = brokenConfigs.map(f => f + '.bad').join(', ');
-  showNotice('Настройки',
-    (many ? 'Не удалось прочитать файлы: ' : 'Не удалось прочитать файл ') + names + '.\n\n' +
-    'Применены значения по умолчанию. ' +
-    (many ? 'Прежние сохранены' : 'Прежний сохранён') + ' рядом с программой как ' + bads +
-    ': оттуда можно достать свои значения или прислать для разбора.', then);
+  const names = brokenConfigs.join(t('list.sep'));
+  const bads  = brokenConfigs.map(f => f + '.bad').join(t('list.sep'));
+  showNotice(t('settings.title'), brokenConfigs.length > 1
+    ? t('notice.configs_broken_many', { names, bads })
+    : t('notice.configs_broken_one', { names, bads }), then);
 }
 
 // Файлы lang\, которые не разобрались: Rust их не читал, работает встроенный
@@ -4825,14 +4827,6 @@ async function updateWindowTitle() {
 // ── Statusbar API ─────────────────────────────────────────────────────────
 
 // sticky=false → auto-clears after 3s; sticky=true → stays until replaced/cleared
-// Склонение: 1 ссылка, 2 ссылки, 5 ссылок. Раньше писалось «Импортировано
-// 1 ссылок» — мелочь, но она первое, что человек видит после импорта.
-function plural(n, one, few, many) {
-  const m10 = n % 10, m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-  return many;
-}
 
 // Итог импорта TXT. При K = 0 — одна строка в статусбаре и ничего больше:
 // сообщение не должно превращаться в шум на обычном импорте. При K > 0
@@ -4840,31 +4834,28 @@ function plural(n, one, few, many) {
 // пропала, и человеку нужно объяснить, что делать.
 function reportTxtImport(res) {
   const parts = [];
-  if (res.links)   parts.push(`${res.links} ${plural(res.links, 'ссылка', 'ссылки', 'ссылок')}`);
+  if (res.links)   parts.push(t('count.links', { n: res.links }));
   // Папку-контейнер в счёт не берём — вместо числа говорим, КУДА легло:
   // размещение теперь зависит от того, пуста ли целевая папка.
   if (res.folders && !res.folder)
-    parts.push(`${res.folders} ${plural(res.folders, 'папка', 'папки', 'папок')}`);
+    parts.push(t('count.folders', { n: res.folders }));
 
-  const imported = parts.length ? `Импортировано: ${parts.join(', ')}` : 'Импортировано: ничего';
-  const where    = res.folder ? ` в папку «${res.folder}»` : '';
+  // Целыми фразами: «что» и «куда» в разных языках стоят по-разному.
+  const items    = parts.join(t('list.sep'));
+  const folder   = res.folder;
+  const imported = items
+    ? (folder ? t('txt.imported_into', { items, folder }) : t('txt.imported', { items }))
+    : (folder ? t('txt.imported_nothing_into', { folder }) : t('txt.imported_nothing'));
 
-  let line = imported + where;
-  if (res.skipped) line += `; не разобрано строк: ${res.skipped}`;
-  setStatus(line);
+  setStatus(res.skipped ? t('txt.status_skipped', { status: imported, n: res.skipped }) : imported);
 
   if (res.skipped) {
     // Текст окна собирается отдельно, а не переделкой строки статуса: окно
     // начинается с того, чего в статусе нет, — с потери, — и не зависит от
     // формулировки статуса, которую мы уже однажды меняли. Прежний вариант
     // правил статус через `replace` и ломался бы от любой правки его текста.
-    const lost = `${res.skipped} ${plural(res.skipped, 'строка', 'строки', 'строк')}`;
-    showNotice('Импорт из TXT',
-      `Часть файла не разобрана: ${lost}.\n` +
-      `${imported}${where}.\n\n` +
-      'Если ожидали больше — возможно, файл в другом формате. Программа читает ' +
-      'либо свой экспорт (строки «[Папка]», «Название - URL», «Заметка: …»), ' +
-      'либо простой список ссылок — по одной в строке.');
+    showNotice(t('notice.txt_import'),
+      t('txt.notice_skipped', { lost: t('count.lines', { n: res.skipped }), imported }));
   }
 }
 
