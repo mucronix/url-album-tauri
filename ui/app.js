@@ -507,14 +507,14 @@ function showFaviconPanel(total) {
   document.getElementById('fv-bar-fill').style.width = '0%';
   document.getElementById('fv-domain').textContent   = '';
   document.getElementById('favicon-panel').classList.remove('hidden');
-  setStatus(`Загрузка favicon 0/${total}`, { sticky: true });
+  setStatus(t('status.favicon_progress', { done: 0, total }), { sticky: true });
 }
 
 function _updateFaviconPanelProgress() {
   document.getElementById('fv-done').textContent = _faviconDone;
   const pct = _faviconTotal > 0 ? Math.round(_faviconDone / _faviconTotal * 100) : 0;
   document.getElementById('fv-bar-fill').style.width = pct + '%';
-  setStatus(`Загрузка favicon ${_faviconDone}/${_faviconTotal}`, { sticky: true });
+  setStatus(t('status.favicon_progress', { done: _faviconDone, total: _faviconTotal }), { sticky: true });
 }
 
 function hideFaviconPanel() {
@@ -524,7 +524,7 @@ function hideFaviconPanel() {
 function _finishFaviconBatch() {
   document.getElementById('fv-domain').textContent = t('panel.done');
   // _faviconDone — пройдено доменов, вместе с неудачами; итог — как в журнале.
-  setStatus(`Favicon: удалось ${_faviconDone - _faviconFailed}, не удалось ${_faviconFailed}`);
+  setStatus(t('status.favicon_done', { ok: _faviconDone - _faviconFailed, failed: _faviconFailed }));
   // Одна строка на весь пакет: для «у меня половина иконок не грузится»
   // сводка полезнее, чем сотня отдельных записей.
   logUi(`favicon, итог пакета: всего ${_faviconTotal}, удалось ${_faviconDone - _faviconFailed}, `
@@ -561,14 +561,14 @@ function showThumbPanel(total) {
   document.getElementById('tp-bar-fill').style.width = '0%';
   document.getElementById('tp-label').textContent   = '';
   document.getElementById('thumb-panel').classList.remove('hidden');
-  setStatus(`Загрузка рисунков 0/${total}`, { sticky: true });
+  setStatus(t('status.thumb_progress', { done: 0, total }), { sticky: true });
 }
 
 function _updateThumbPanelProgress() {
   document.getElementById('tp-done').textContent = _thumbDone;
   const pct = _thumbTotal > 0 ? Math.round(_thumbDone / _thumbTotal * 100) : 0;
   document.getElementById('tp-bar-fill').style.width = pct + '%';
-  setStatus(`Загрузка рисунков ${_thumbDone}/${_thumbTotal}`, { sticky: true });
+  setStatus(t('status.thumb_progress', { done: _thumbDone, total: _thumbTotal }), { sticky: true });
 }
 
 function hideThumbPanel() {
@@ -777,7 +777,7 @@ document.getElementById('dupes-del-one').addEventListener('click', () => {
   if (_dRowIdx < 0 || _dGroupIdx < 0) return;
   const node = _dRows[_dRowIdx];
   const g    = _dGroups[_dGroupIdx];
-  deleteConfirm(`Удалить «${node.title}»?`, async () => {
+  deleteConfirm(t('confirm.delete_link', { title: node.title }), async () => {
     await invoke('delete_node', { id: node.id });
     const ai = allNodes.findIndex(n => n.id === node.id);
     if (ai >= 0) allNodes.splice(ai, 1);
@@ -802,7 +802,7 @@ document.getElementById('dupes-keep-one').addEventListener('click', () => {
   const g = _dGroups[_dGroupIdx];
   if (!g || g.nodes.length < 2) return;
   const toDelete = g.nodes.slice(1);
-  deleteConfirm(`Удалить ${toDelete.length} ${plural(toDelete.length, 'дубликат', 'дубликата', 'дубликатов')}?`, async () => {
+  deleteConfirm(t('confirm.delete_dupes', { dupes: t('count.dupes', { n: toDelete.length }) }), async () => {
     for (const node of toDelete) {
       await invoke('delete_node', { id: node.id });
       const ai = allNodes.findIndex(n => n.id === node.id);
@@ -1248,12 +1248,12 @@ function buildExportSubmenu(folderNode) {
   const doExport = (cmd) => {
     hideContextMenu();
     invoke(cmd, { folderId: folderNode.id })
-      .then(saved => { if (saved) setStatus('Экспорт завершён'); })   // false — окно закрыли
+      .then(saved => { if (saved) setStatus(t('status.export_done')); })   // false — окно закрыли
       .catch(err => {
         // console.error в release недоступен — причина (нет прав, диск полон)
         // терялась целиком, пользователь видел только «Ошибка экспорта».
         logUi(`экспорт (${cmd}) не удался: ${err}`);
-        setStatus('Ошибка экспорта');
+        setStatus(t('status.export_failed'));
       });
   };
 
@@ -1400,7 +1400,7 @@ async function invokeFolderImport(action, parentId) {
         try {
           res = await invoke('import_txt_file', { parentId });
         } catch (e) {
-          showNotice('Импорт из TXT', String(e));
+          showNotice(t('notice.txt_import'), String(e));
           return;
         }
         if (!res) return;   // окно закрыли
@@ -1442,7 +1442,7 @@ function showFolderContextMenu(e, folderNode) {
   if (folderNode.id === -1) {
     ctxMenuEl.appendChild(ctxItem("trash-bin", t('ctx.trash.empty'), null, () => {
       hideContextMenu();
-      deleteConfirm("Очистить корзину? Всё удалённое будет стёрто безвозвратно.", async () => {
+      deleteConfirm(t('confirm.empty_trash'), async () => {
         await invoke('empty_trash');
         allNodes = await invoke('get_tree');
         allFolders = allNodes.filter(n => n.kind === 'folder');
@@ -1577,9 +1577,9 @@ async function refreshThumb(node) {
     // жал «Обновить рисунок», overlay гас, и ничего не происходило.
     // В журнал не пишем: do_screenshot уже записал и команду, и итог
     // («файла нет» с длительностью). Наше дело — показать причину.
-    showNotice('Рисунок', err === SHOT_BUSY ? SHOT_BUSY_TEXT
+    showNotice(t('notice.thumb'), err === SHOT_BUSY ? SHOT_BUSY_TEXT
       : typeof err === 'string' ? err
-      : 'Не удалось обновить рисунок: ' + (err?.message ?? String(err)));
+      : t('notice.thumb_failed', { e: err?.message ?? String(err) }));
   } finally {
     detailLoadingOverlay.classList.remove("visible");
     _isRefreshing = false;
@@ -1748,7 +1748,7 @@ function decrementFolderBadge(parentId) {
 }
 
 function deleteBookmark(node) {
-  deleteConfirm(`Удалить «${node.title}»?`, async () => {
+  deleteConfirm(t('confirm.delete_link', { title: node.title }), async () => {
     // Capture next item BEFORE DOM changes
     const nextEl = findNextAfterDelete(node.id);
 
@@ -1841,13 +1841,13 @@ function _showItemStatus(node) {
   const n = node ? (allNodes.find(x => x.id === node.id) ?? node) : null;
   const created = formatCreated(n?.created);
   const thumbEl = document.getElementById('sb-thumb');
-  document.getElementById('sb-created').textContent = created ? `Добавлено: ${created}` : '';
+  document.getElementById('sb-created').textContent = created ? t('status.added', { date: created }) : '';
   thumbEl.textContent = '';
   if (!n?.thumb) return;
   const visited = formatCreated(n.visited);
-  if (visited) { thumbEl.textContent = `Рисунок: ${visited}`; return; }
+  if (visited) { thumbEl.textContent = t('status.thumb_date', { date: visited }); return; }
   invoke('get_thumb_time', { filename: n.thumb }).then(ms => {
-    if (seq === _sbItemSeq && ms != null) thumbEl.textContent = `Рисунок: ${formatLocalDate(new Date(ms))}`;
+    if (seq === _sbItemSeq && ms != null) thumbEl.textContent = t('status.thumb_date', { date: formatLocalDate(new Date(ms)) });
   }).catch(() => {});
 }
 
@@ -2065,7 +2065,7 @@ function openMoveToDialog(node) {
       const t3 = performance.now();
       nextPaint().then(() => logTiming('«Переместить в…»', t0, t1, t2, t3));
     } catch(e) {
-      showNotice('Переместить в…', 'Ошибка перемещения: ' + e);
+      showNotice(t('moveto.title'), t('notice.move_failed', { e }));
     } finally {
       okBtn.disabled = false;
     }
@@ -2229,7 +2229,7 @@ function openWithBrowser(url, path) {
   // В журнал не пишем: отказ уже записан в Rust — и в `open_url`, и
   // в `open_url_with`, с причиной. Здесь осталось только показать его человеку.
   invoke("open_url_with", { url, browser: path || "default" })
-    .catch(e => showNotice('Открытие ссылки', (e && e.message) ? e.message : String(e)));
+    .catch(e => showNotice(t('notice.open_link'), (e && e.message) ? e.message : String(e)));
 }
 
 function findRootFolder(node) {
@@ -2422,7 +2422,7 @@ function showContextMenu(e, node) {
       // Отказ теперь настоящий (ShellExecuteW), и его надо показать: без catch
       // это молчаливый unhandled rejection — файл удалён, а в ответ ничего.
       () => invoke("open_file", { path: thumbFilePath(node.thumb) })
-              .catch(e => showNotice('Рисунок', typeof e === 'string' ? e : String(e))),
+              .catch(e => showNotice(t('notice.thumb'), typeof e === 'string' ? e : String(e))),
       !hasThumb)
   );
   ctxMenuEl.appendChild(
@@ -2532,7 +2532,7 @@ async function showEditMenu(field, x, y) {
         .catch(err => {
           // Rust отказ не пишет: при проверке для меню он штатный и не нужен
           logUi(`меню «Вставить»: ${err}`);
-          showNotice('Вставить', `Не удалось прочитать буфер обмена: ${err}. Попробуйте ещё раз.`);
+          showNotice(t('edit.paste'), t('notice.paste_failed', { err }));
         });
     }), ro || !canPaste),
     ctxItem(null, t('edit.delete'), 'Del', run(() => document.execCommand('delete')), ro || !hasSel),
@@ -3286,12 +3286,12 @@ function tbMoveItem(dir) {
       close();
       if (count > 0) {
         await refreshTree();
-        setStatus(`Импортировано ${count} ${plural(count, 'ссылка', 'ссылки', 'ссылок')}`);
+        setStatus(t('status.imported', { links: t('count.links', { n: count }) }));
       } else {
-        setStatus('Нет новых ссылок для импорта');
+        setStatus(t('status.nothing_new'));
       }
     } catch(e) {
-      showNotice('Импорт из другой базы', 'Ошибка импорта: ' + e);
+      showNotice(t('importdb.title'), t('notice.import_failed', { e }));
     } finally {
       okBtn.disabled = false;
     }
@@ -3706,7 +3706,7 @@ function _populateRecentDbs(drop) {
         flushNoteEdit()   // заметка — в ту базу, где её правили, до переключения
           .then(() => invoke('switch_db', { newPath: p }))
           .then(() => showApp())
-          .catch(e => showNotice('Не удалось открыть базу', String(e)));
+          .catch(e => showNotice(t('notice.open_db_failed'), String(e)));
       });
       subEl.appendChild(el);
     }
@@ -3869,27 +3869,27 @@ function handleMenuAction(action) {
     case 'export-html': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
       if (fid != null) invoke("export_folder_html", { folderId: fid })
-        .then(saved => { if (saved) setStatus('Экспорт в HTML завершён'); })   // false — окно закрыли
-        .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
+        .then(saved => { if (saved) setStatus(t('status.export_html_done')); })   // false — окно закрыли
+        .catch(e => { logUi('экспорт не удался: ' + e); setStatus(t('status.export_failed')); });
       break;
     }
     case 'export-txt': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
       if (fid != null) invoke("export_folder_txt", { folderId: fid })
-        .then(saved => { if (saved) setStatus('Экспорт в текст завершён'); })
-        .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
+        .then(saved => { if (saved) setStatus(t('status.export_txt_done')); })
+        .catch(e => { logUi('экспорт не удался: ' + e); setStatus(t('status.export_failed')); });
       break;
     }
     // ── Backup ──
     case 'backup-without':
       invoke("backup_db")
-        .then(path => { if (path != null) showNotice('Резервная копия', 'Резервная копия базы создана:\n' + path); })
-        .catch(e => { console.error(e); showNotice('Ошибка', 'Не удалось создать резервную копию:\n' + e); });
+        .then(path => { if (path != null) showNotice(t('notice.backup'), t('notice.backup_done', { path })); })
+        .catch(e => { console.error(e); showNotice(t('notice.error'), t('notice.backup_failed', { e })); });
       break;
     case 'backup-with':
       invoke("backup_db_with_data")
-        .then(path => { if (path != null) showNotice('Резервная копия', 'Резервная копия базы с рисунками создана:\n' + path); })
-        .catch(e => { console.error(e); showNotice('Ошибка', e); });
+        .then(path => { if (path != null) showNotice(t('notice.backup'), t('notice.backup_with_done', { path })); })
+        .catch(e => { console.error(e); showNotice(t('notice.error'), e); });
       break;
     // ── Sort all ──
     case 'sort-all-title-asc':    invoke("sort_all_bookmarks", { by: "title",   desc: false }).then(refreshTree).catch(console.error); break;
@@ -3916,7 +3916,7 @@ function handleMenuAction(action) {
     case 'import-txt-lines':
       invoke("import_txt_file")
         .then(res => { if (!res) return; reportTxtImport(res); if (res.links + res.folders > 0) refreshTree(); })
-        .catch(e => showNotice('Импорт из TXT', String(e)));
+        .catch(e => showNotice(t('notice.txt_import'), String(e)));
       break;
     case 'import-html':
       invoke("import_html")
@@ -3929,8 +3929,8 @@ function handleMenuAction(action) {
           // null — окно закрыли: проверка ДО «Нет новых ссылок», иначе отмена
           // показывала бы это сообщение.
           if (n == null) return;
-          if (n > 0) { refreshTree(); setStatus(`Импортировано ${n} ${plural(n, 'ссылка', 'ссылки', 'ссылок')}`); }
-          else setStatus('Нет новых ссылок для импорта');
+          if (n > 0) { refreshTree(); setStatus(t('status.imported', { links: t('count.links', { n }) })); }
+          else setStatus(t('status.nothing_new'));
         })
         .catch(e => console.error('import_folder:', e));
       break;
@@ -3994,7 +3994,7 @@ function handleMenuAction(action) {
         .catch(e => console.error('create_new_db:', e));
       break;
     case 'clear-db':
-      deleteConfirm('Очистить базу данных?\nВсе закладки, папки и скриншоты будут удалены.', async () => {
+      deleteConfirm(t('confirm.clear_db'), async () => {
         await flushNoteEdit();
         await Promise.all([invoke('clear_db'), invoke('clear_screenshots')]).catch(console.error);
         // В очищенной базе Rust заводит «Новые ссылки» — дерево перечитать.
@@ -4017,7 +4017,7 @@ function handleMenuAction(action) {
 
     // ── Справка ──
     case 'help-topics':
-      showNotice('Справка', 'Появится в следующих версиях');
+      showNotice(t('menu.help.topics'), t('notice.coming_soon'));
       break;
     case 'open-website':
       openWithBrowser('https://joomfan.com/katalog/ad/programmy-dlya-windows/url-album', 'default');
@@ -4029,7 +4029,7 @@ function handleMenuAction(action) {
       openWithBrowser('https://github.com/mucronix/url-album-tauri/issues/new', 'default');
       break;
     case 'check-updates':
-      showNotice('Проверить обновления', 'Появится в следующих версиях');
+      showNotice(t('menu.help.updates'), t('notice.coming_soon'));
       break;
     case 'about':
       openAboutDialog();
@@ -4053,7 +4053,7 @@ function handleMenuAction(action) {
     case 'import-from-db':
       invoke('analyze_import_db')
         .then(a => { if (a) openImportDbDialog(a); })   // null — окно закрыли
-        .catch(e => showNotice('Импорт из другой базы', 'Ошибка: ' + e));
+        .catch(e => showNotice(t('importdb.title'), t('common.error', { e })));
       break;
 
     case 'refresh-favicons-folder': {
@@ -4231,7 +4231,7 @@ let _thumbStarted   = 0;
 // рисунок», новая ссылка, расширение). Код, тот же — SHOT_BUSY в main.rs;
 // текст для человека — SHOT_BUSY_TEXT.
 const SHOT_BUSY = 'shot_busy';
-const SHOT_BUSY_TEXT = 'Рисунок этой ссылки уже снимается';
+const SHOT_BUSY_TEXT = t('notice.shot_busy');
 let _thumbBrowsers  = new Map();  // браузер → снято им, для сводки пакета
 let _thumbFallback  = null;       // причина запасного браузера, если был
 
@@ -4239,7 +4239,7 @@ let _thumbFallback  = null;       // причина запасного брау�
 // человеку, чем снято и почему. Обычный снимок молчит: так решено, чтобы
 // строка состояния не говорила очевидного на каждую ссылку.
 function _noteShotFallback(shot) {
-  if (shot?.fallback) setStatus(`Рисунок снят в ${shot.browser}: ${shot.fallback}`);
+  if (shot?.fallback) setStatus(t('status.shot_fallback', { browser: shot.browser, reason: shot.fallback }));
 }
 
 // ── App settings ──────────────────────────────────────────────────────────────
@@ -4321,7 +4321,7 @@ function applySettings(save = true) {
   document.documentElement.style.setProperty('--ui-font', (appSettings.uiFontSize || 13) + 'px');
   invoke('set_extension_add_mode', { mode: appSettings.extensionAddMode || 'quick' }).catch(() => {});
   invoke('set_hotkey', { combo: appSettings.hotkey || null })
-    .catch(e => showNotice('Горячая клавиша', typeof e === 'string' ? e : 'Не удалось назначить горячую клавишу'));
+    .catch(e => showNotice(t('settings.group.hotkey'), typeof e === 'string' ? e : t('notice.hotkey_failed')));
   if (save) saveAppSettings();
 }
 
@@ -4531,7 +4531,7 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
     try {
       const p = await invoke('get_log_path');
       if (!p) {
-        showNotice('Журнал', 'Журнал пуст — включите запись и повторите действие, которое даёт сбой.');
+        showNotice(t('notice.log'), t('notice.log_empty'));
         return;
       }
       // Файл есть, но запись выключена: в нём только прошлые сеансы. Без этого
@@ -4539,19 +4539,15 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
       if (!appSettings.logEnabled) {
         // Блокнот открываем только ПОСЛЕ закрытия окна: showNotice не блокирует,
         // и без колбэка предупреждение мелькнуло бы под окном блокнота.
-        showNotice('Журнал',
-          'Запись журнала сейчас выключена — в файле только записи прошлых сеансов, ' +
-          'сегодняшней ошибки в нём не будет.\n\n' +
-          'Чтобы её записать: включите «Вести журнал», сохраните настройки ' +
-          'и повторите действие, которое даёт сбой.',
+        showNotice(t('notice.log'), t('notice.log_disabled'),
           () => invoke('open_file', { path: p })
-                  .catch(e => showNotice('Журнал',
-                    typeof e === 'string' ? e : 'Не удалось открыть журнал')));
+                  .catch(e => showNotice(t('notice.log'),
+                    typeof e === 'string' ? e : t('notice.log_open_failed'))));
         return;
       }
       await invoke('open_file', { path: p });
     } catch (e) {
-      showNotice('Журнал', typeof e === 'string' ? e : 'Не удалось открыть журнал');
+      showNotice(t('notice.log'), typeof e === 'string' ? e : t('notice.log_open_failed'));
     }
   });
 
@@ -4664,11 +4660,11 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
                    || document.getElementById('s-hk-shift').checked
                    || document.getElementById('s-hk-alt').checked;
     if (document.getElementById('s-hk-key').value && !_hkHasMod) {
-      showNotice('Горячая клавиша', 'Выберите хотя бы один модификатор: Ctrl, Shift или Alt');
+      showNotice(t('settings.group.hotkey'), t('notice.hotkey_need_mod'));
       return;
     }
     if (_hkHasMod && !document.getElementById('s-hk-key').value) {
-      showNotice('Горячая клавиша', 'Выберите клавишу для горячей комбинации');
+      showNotice(t('settings.group.hotkey'), t('notice.hotkey_need_key'));
       return;
     }
     // Общие
@@ -4737,7 +4733,7 @@ async function init() {
   invoke('get_pending_url').then(pending => {
     if (!pending) return;
     if (activeFolderId == null) {
-      showNotice('Новая ссылка', 'Сначала откройте или создайте базу данных (Файл → Создать базу).');
+      showNotice(t('newitem.title_link'), t('notice.open_db_first'));
       return;
     }
     openNewItemDlg('link', { url: pending.url, title: pending.title });
@@ -4797,7 +4793,7 @@ document.getElementById("wb-import").addEventListener("click", async () => {
     const n = await invoke("import_uadat_pick");
     if (n == null) return;   // окно закрыли
     await showApp();
-    setStatus(`Импортировано ${n} ${plural(n, 'ссылка', 'ссылки', 'ссылок')}`);
+    setStatus(t('status.imported', { links: t('count.links', { n }) }));
   } catch(e) {
     console.error("import_uadat_pick:", e);
   }
@@ -4930,9 +4926,9 @@ function clearStatus() {
 function updateStatusLeft() {
   const nFolders = allFolders.length;
   const nLinks   = allNodes.filter(n => n.kind === 'bookmark').length;
-  const parts    = [`Папок: ${nFolders}`, `Ссылок: ${nLinks}`];
-  if      (_sbSearchCount   !== null) parts.push(`Найдено: ${_sbSearchCount}`);
-  else if (_sbInFolderCount !== null) parts.push(`В папке: ${_sbInFolderCount}`);
+  const parts    = [t('status.folders', { n: nFolders }), t('status.links', { n: nLinks })];
+  if      (_sbSearchCount   !== null) parts.push(t('search.found', { n: _sbSearchCount }));
+  else if (_sbInFolderCount !== null) parts.push(t('status.in_folder', { n: _sbInFolderCount }));
   document.getElementById('sb-left').textContent = parts.join(' · ');
 }
 
@@ -6042,7 +6038,7 @@ function _queueNoteSave(ed, text) {
       .catch((err) => {
         // Отказ записан в журнал в Rust (update_note) — здесь только окно.
         ed.saved = allNodes.find(x => x.id === ed.id)?.note ?? ed.orig;
-        showNotice('Заметка не сохранена', String(err));
+        showNotice(t('notice.note_not_saved'), String(err));
         const box = ed.box;
         if (ed.dbPath === currentDbPath && Number(box.dataset.id) === ed.id && !_noteEdit &&
             !box.closest('.hidden')) {
@@ -6502,7 +6498,7 @@ function createTrashRow(node, depth, ancestors, hasChildren) {
     }));
     ctxMenuEl.appendChild(ctxItem('trash-bin', t('ctx.trash.purge'), null, () => {
       hideContextMenu();
-      deleteConfirm('Удалить навсегда? Объект будет стёрт безвозвратно.', async () => {
+      deleteConfirm(t('confirm.purge'), async () => {
         await invoke('purge_node', { id: node.id });
         loadTrashContents();
       });
@@ -7057,7 +7053,7 @@ window.__TAURI__.event.listen('tray-add-from-clipboard', async () => {
         text = (await invoke('clipboard_text') ?? '').trim();
     } catch (err) {
         logUi(`Добавить из буфера: ${err}`);
-        setStatus('Буфер занят другой программой — вставьте адрес вручную (Ctrl+V)');
+        setStatus(t('status.clipboard_busy'));
     }
     openNewItemDlg('link', { url: text });
 });
