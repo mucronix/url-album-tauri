@@ -1257,8 +1257,8 @@ function buildExportSubmenu(folderNode) {
       });
   };
 
-  sub.appendChild(ctxItem("import", "HTML файл",       null, () => doExport("export_folder_html")));
-  sub.appendChild(ctxItem("props",  "Текстовый файл",  null, () => doExport("export_folder_txt")));
+  sub.appendChild(ctxItem("import", t('menu.transfer.to_html'), null, () => doExport("export_folder_html")));
+  sub.appendChild(ctxItem("props",  t('menu.transfer.to_txt'),  null, () => doExport("export_folder_txt")));
 
   return sub;
 }
@@ -1285,7 +1285,7 @@ function buildOpenerSubmenu(folderNode) {
   sub.appendChild(ctxSep());
 
   // Обзор… — выбрать exe вручную
-  sub.appendChild(ctxItem("openwith", "Обзор…", null, async () => {
+  sub.appendChild(ctxItem("openwith", t('ctx.opener.browse'), null, async () => {
     const p = await invoke("pick_browser_file").catch(() => null);
     if (p) await setOpener(p);
   }));
@@ -1352,11 +1352,11 @@ function buildSortSubmenu(folderNode) {
     });
   };
 
-  sub.appendChild(S("По имени",         "title"));
+  sub.appendChild(S(t('ctx.sort.by_title'),   "title"));
   sub.appendChild(ctxSep());
-  sub.appendChild(S("По дате добавления", "created"));
+  sub.appendChild(S(t('ctx.sort.by_created'), "created"));
   sub.appendChild(ctxSep());
-  sub.appendChild(S("По URL",           "url"));
+  sub.appendChild(S(t('ctx.sort.by_url'),     "url"));
   return sub;
 }
 
@@ -1371,12 +1371,12 @@ function buildFolderImportSubmenu(folderNode) {
     }));
   };
 
-  addItem("browser", "Из браузера...",     "import-from-browser");
+  addItem("browser", t('menu.transfer.from_browser'), "import-from-browser");
   sub.appendChild(ctxSep());
-  addItem("import",  "Из файла HTML",      "import-html");
-  addItem("import",  "Из файла TXT",       "import-txt-lines");
+  addItem("import",  t('menu.transfer.from_html'),    "import-html");
+  addItem("import",  t('menu.transfer.from_txt'),     "import-txt-lines");
   sub.appendChild(ctxSep());
-  addItem("folder",  "Из ua.dat...",       "import-folder");
+  addItem("folder",  t('menu.transfer.from_uadat'),   "import-folder");
 
   return sub;
 }
@@ -1440,7 +1440,7 @@ function showFolderContextMenu(e, folderNode) {
   ctxMenuEl.innerHTML = "";
 
   if (folderNode.id === -1) {
-    ctxMenuEl.appendChild(ctxItem("trash-bin", "Очистить корзину", null, () => {
+    ctxMenuEl.appendChild(ctxItem("trash-bin", t('ctx.trash.empty'), null, () => {
       hideContextMenu();
       deleteConfirm("Очистить корзину? Всё удалённое будет стёрто безвозвратно.", async () => {
         await invoke('empty_trash');
@@ -1463,40 +1463,40 @@ function showFolderContextMenu(e, folderNode) {
   }
 
   // ── Folder management ──────────────────────────────────────────────────
-  ctxMenuEl.appendChild(ctxItem("new", "Новая папка", null, () => {
+  ctxMenuEl.appendChild(ctxItem("new", t('ctx.folder.new'), null, () => {
     hideContextMenu();
     createFolderAndRename(folderNode.id);
   }));
-  ctxMenuEl.appendChild(ctxItem("edit", "Переименовать", "F2", () => {
+  ctxMenuEl.appendChild(ctxItem("edit", t('ctx.folder.rename'), "F2", () => {
     hideContextMenu();
     startInlineRename(folderNode.id);
   }));
-  ctxMenuEl.appendChild(ctxItem("folder", "Переместить в…", null, () => {
+  ctxMenuEl.appendChild(ctxItem("folder", t('ctx.move_to'), null, () => {
     hideContextMenu();
     openMoveToDialog(folderNode);
   }));
   ctxMenuEl.appendChild(ctxSep());
 
   // ── Transfer ───────────────────────────────────────────────────────────
-  const impEl = addSubTrigger("Импорт в папку", "import");
+  const impEl = addSubTrigger(t('ctx.folder.import'), "import");
   wireMainContextFloat(impEl, () => buildFolderImportSubmenu(folderNode));
   ctxMenuEl.appendChild(impEl);
 
-  const expEl = addSubTrigger("Экспорт папки", "backup");
+  const expEl = addSubTrigger(t('ctx.folder.export'), "backup");
   wireMainContextFloat(expEl, () => buildExportSubmenu(folderNode));
   ctxMenuEl.appendChild(expEl);
   ctxMenuEl.appendChild(ctxSep());
 
   // ── Operations ─────────────────────────────────────────────────────────
-  ctxMenuEl.appendChild(ctxItem("verify", "Проверить ссылки", null, () => {
+  ctxMenuEl.appendChild(ctxItem("verify", t('ctx.folder.check'), null, () => {
     hideContextMenu();
     openCheckerPanel(folderNode);
   }));
-  ctxMenuEl.appendChild(ctxItem("favicon", "Обновить favicon'ы", null, () => {
+  ctxMenuEl.appendChild(ctxItem("favicon", t('ctx.folder.favicons'), null, () => {
     hideContextMenu();
     startFaviconBatch(folderNode, true);
   }));
-  ctxMenuEl.appendChild(ctxItem("refresh", "Обновить рисунки", null, () => {
+  ctxMenuEl.appendChild(ctxItem("refresh", t('ctx.folder.thumbs'), null, () => {
     hideContextMenu();
     startThumbBatch(folderNode);
   }));
@@ -1504,25 +1504,25 @@ function showFolderContextMenu(e, folderNode) {
 
   // ── Открывать через… (только корневая папка) ─────────────────────────────
   if (folderNode.parent === null) {
-    const openerEl = addSubTrigger("Открывать через…", "openwith");
+    const openerEl = addSubTrigger(t('ctx.folder.opener'), "openwith");
     wireMainContextFloat(openerEl, () => buildOpenerSubmenu(folderNode));
     ctxMenuEl.appendChild(openerEl);
     ctxMenuEl.appendChild(ctxSep());
   }
 
   // ── Sort ───────────────────────────────────────────────────────────────
-  const sortEl = addSubTrigger("Сортировка", "sort");
+  const sortEl = addSubTrigger(t('ctx.folder.sort'), "sort");
   wireMainContextFloat(sortEl, () => buildSortSubmenu(folderNode));
   ctxMenuEl.appendChild(sortEl);
   ctxMenuEl.appendChild(ctxSep());
-  ctxMenuEl.appendChild(ctxItem("trash", "Удалить", "Del", () => {
+  ctxMenuEl.appendChild(ctxItem("trash", t('ctx.folder.delete'), "Del", () => {
     hideContextMenu();
     deleteFolder(folderNode);
   }));
 
   // ── Properties ─────────────────────────────────────────────────────────
   ctxMenuEl.appendChild(ctxSep());
-  ctxMenuEl.appendChild(ctxItem("props", "Свойства", "F4", () => {
+  ctxMenuEl.appendChild(ctxItem("props", t('ctx.props'), "F4", () => {
     hideContextMenu();
     openFolderPropsDialog(folderNode);
   }));
@@ -2165,12 +2165,12 @@ function reportBrokenLang() {
 }
 
 // ── Browser list ─────────────────────────────────────────────────────────
-let browsers        = [{ name: "Браузер по умолчанию", path: "default" }];
+let browsers        = [{ name: t('browser.default_label'), path: "default" }];
 let defaultBrowserPath = "default";
 
 // Подпись записи "default" — по path, не по name из browsers.json: имя в файле
 // могло остаться с другого языка; сам файл не трогаем.
-const DEFAULT_BROWSER_LABEL = "Браузер по умолчанию";
+const DEFAULT_BROWSER_LABEL = t('browser.default_label');
 function browserLabel(b) { return b.path === "default" ? DEFAULT_BROWSER_LABEL : b.name; }
 
 // File-based portable storage for browser list
@@ -2347,7 +2347,7 @@ function openSubFloat(trigger, node) {
     sub.appendChild(it);
   });
   sub.appendChild(ctxSep());
-  sub.appendChild(ctxItem("gear", "Список браузеров...", null,
+  sub.appendChild(ctxItem("gear", t('ctx.open_with.browsers'), null,
     () => { hideContextMenu(); openBrowsersDialog(); }));
 
   // Fixed positioning — no parent stacking context issues
@@ -2399,14 +2399,14 @@ function showContextMenu(e, node) {
   const hasThumb = !!node.thumb;
 
   ctxMenuEl.appendChild(
-    ctxItem("link", "Открыть", null,
+    ctxItem("link", t('ctx.link.open'), null,
       // Через резолвер, как и двойной клик по этой же ссылке: иначе два
       // способа открыть одну ссылку дают разные браузеры.
       () => openWithBrowser(node.url, resolveOpenerForNode(node)))
   );
 
   // "Открыть с помощью" — NO submenu child; float created on hover
-  const owEl = ctxItem("openwith", "Открыть с помощью", null, null, false);
+  const owEl = ctxItem("openwith", t('ctx.link.open_with'), null, null, false);
   owEl.classList.add("ctx-has-sub");
   const arrow = document.createElement("span");
   arrow.className = "ctx-arrow";
@@ -2418,7 +2418,7 @@ function showContextMenu(e, node) {
   ctxMenuEl.appendChild(ctxSep());
 
   ctxMenuEl.appendChild(
-    ctxItem("image",   "Открыть рисунок",  "F12",
+    ctxItem("image",   t('ctx.link.open_thumb'),  "F12",
       // Отказ теперь настоящий (ShellExecuteW), и его надо показать: без catch
       // это молчаливый unhandled rejection — файл удалён, а в ответ ничего.
       () => invoke("open_file", { path: thumbFilePath(node.thumb) })
@@ -2426,36 +2426,36 @@ function showContextMenu(e, node) {
       !hasThumb)
   );
   ctxMenuEl.appendChild(
-    ctxItem("refresh", "Обновить рисунок", null,
+    ctxItem("refresh", t('ctx.link.refresh_thumb'), null,
       () => refreshThumb(node), !node.url)
   );
   ctxMenuEl.appendChild(
-    ctxItem("delimg",  "Удалить рисунок",  null,
+    ctxItem("delimg",  t('ctx.link.clear_thumb'),  null,
       () => clearThumb(node), !hasThumb)
   );
   ctxMenuEl.appendChild(ctxSep());
   ctxMenuEl.appendChild(
-    ctxItem("favicon", "Загрузить favicon", null,
+    ctxItem("favicon", t('ctx.link.favicon'), null,
       () => { hideContextMenu(); loadSingleFavicon(node); },
       !node.url)
   );
 
   ctxMenuEl.appendChild(ctxSep());
   ctxMenuEl.appendChild(
-    ctxItem("folder", "Переместить в…", null,
+    ctxItem("folder", t('ctx.move_to'), null,
       () => { hideContextMenu(); openMoveToDialog(node); })
   );
   ctxMenuEl.appendChild(ctxSep());
 
   ctxMenuEl.appendChild(
-    ctxItem("copy", "Копировать URL", "Ctrl+C",
+    ctxItem("copy", t('ctx.link.copy_url'), "Ctrl+C",
       () => navigator.clipboard.writeText(node.url || "").catch(() => {}))
   );
   ctxMenuEl.appendChild(ctxSep());
-  ctxMenuEl.appendChild(ctxItem("trash",  "Удалить ссылку", "Del",
+  ctxMenuEl.appendChild(ctxItem("trash",  t('ctx.link.delete'), "Del",
     () => deleteBookmark(node)));
   ctxMenuEl.appendChild(ctxSep());
-  ctxMenuEl.appendChild(ctxItem("props", "Свойства", "F4",
+  ctxMenuEl.appendChild(ctxItem("props", t('ctx.props'), "F4",
     () => { hideContextMenu(); openPropsDialog(node); }));
 
   // Other items: close float submenu on hover
@@ -2520,11 +2520,11 @@ async function showEditMenu(field, x, y) {
   closeSubFloat();
   ctxMenuEl.innerHTML = '';
   ctxMenuEl.append(
-    ctxItem(null, 'Отменить', 'Ctrl+Z', run(() => document.execCommand('undo')), ro),
+    ctxItem(null, t('edit.undo'), 'Ctrl+Z', run(() => document.execCommand('undo')), ro),
     ctxSep(),
-    ctxItem(null, 'Вырезать', 'Ctrl+X', run(() => document.execCommand('cut')), ro || pwd || !hasSel),
-    ctxItem('copy', 'Копировать', 'Ctrl+C', run(() => document.execCommand('copy')), pwd || !hasSel),
-    ctxItem(null, 'Вставить', 'Ctrl+V', run(() => {
+    ctxItem(null, t('edit.cut'), 'Ctrl+X', run(() => document.execCommand('cut')), ro || pwd || !hasSel),
+    ctxItem('copy', t('edit.copy'), 'Ctrl+C', run(() => document.execCommand('copy')), pwd || !hasSel),
+    ctxItem(null, t('edit.paste'), 'Ctrl+V', run(() => {
       // insertText, а не присваивание value: остаётся в истории Ctrl+Z
       // и даёт полю обычное событие input
       invoke('clipboard_text')
@@ -2535,9 +2535,9 @@ async function showEditMenu(field, x, y) {
           showNotice('Вставить', `Не удалось прочитать буфер обмена: ${err}. Попробуйте ещё раз.`);
         });
     }), ro || !canPaste),
-    ctxItem(null, 'Удалить', 'Del', run(() => document.execCommand('delete')), ro || !hasSel),
+    ctxItem(null, t('edit.delete'), 'Del', run(() => document.execCommand('delete')), ro || !hasSel),
     ctxSep(),
-    ctxItem(null, 'Выделить всё', 'Ctrl+A', run(() => field.select()), field.value === ''),
+    ctxItem(null, t('edit.select_all'), 'Ctrl+A', run(() => field.select()), field.value === ''),
   );
   ctxMenuEl.classList.add('ctx-edit');
   ctxMenuEl.classList.remove('hidden');
@@ -2968,89 +2968,89 @@ const ICONS = {
 // todo:true = disabled (not yet implemented)
 const MENU_DATA = [
   {
-    id: 'file', label: 'Файл',
+    id: 'file', label: t('menu.file'),
     items: [
-      { label: 'Создать базу...',  icon: 'db',     action: 'new-db'    },
-      { label: 'Открыть базу...',  icon: 'db',     action: 'open-db'   },
-      { label: 'Последние базы',   icon: 'db',     sub: [], _dynamic: true },
-      { label: 'Закрыть базу',     icon: 'db',     action: 'close-db'  },
+      { label: t('menu.file.new_db'),  icon: 'db',     action: 'new-db'    },
+      { label: t('menu.file.open_db'),  icon: 'db',     action: 'open-db'   },
+      { label: t('menu.file.recent'),   icon: 'db',     sub: [], _dynamic: true },
+      { label: t('menu.file.close_db'),     icon: 'db',     action: 'close-db'  },
       '---',
-      { label: 'Создать резервную копию...',             icon: 'backup', action: 'backup-without' },
-      { label: 'Создать резервную копию с рисунками...', icon: 'backup', action: 'backup-with'    },
+      { label: t('menu.file.backup'),             icon: 'backup', action: 'backup-without' },
+      { label: t('menu.file.backup_with'), icon: 'backup', action: 'backup-with'    },
       '---',
-      { label: 'Свойства базы',  icon: 'props',  action: 'db-properties' },
+      { label: t('menu.file.db_props'),  icon: 'props',  action: 'db-properties' },
       '---',
-      { label: 'Настройки',      icon: 'gear',   action: 'settings'   },
+      { label: t('menu.file.settings'),      icon: 'gear',   action: 'settings'   },
       '---',
-      { label: 'Свернуть в трей', icon: 'tray',  action: 'tray-hide'  },
+      { label: t('menu.file.tray'), icon: 'tray',  action: 'tray-hide'  },
     ]
   },
   {
-    id: 'links', label: 'Ссылки',
+    id: 'links', label: t('menu.links'),
     items: [
-      { label: 'Новая ссылка',                   icon: 'new',      action: 'new-link'                },
-      { label: 'Редактировать',                  icon: 'edit',     shortcut: 'F2',  action: 'properties' },
-      { label: 'Удалить ссылку',                 icon: 'trash',    shortcut: 'Del', action: 'delete-link' },
+      { label: t('menu.links.new'),                   icon: 'new',      action: 'new-link'                },
+      { label: t('menu.links.edit'),                  icon: 'edit',     shortcut: 'F2',  action: 'properties' },
+      { label: t('menu.links.delete'),                 icon: 'trash',    shortcut: 'Del', action: 'delete-link' },
       '---',
-      { label: 'Открыть',                        icon: 'open',     shortcut: 'Enter', action: 'open-link' },
-      { label: 'Открыть с помощью...',           icon: 'openwith', action: 'open-with'               },
+      { label: t('menu.links.open'),                        icon: 'open',     shortcut: 'Enter', action: 'open-link' },
+      { label: t('menu.links.open_with'),           icon: 'openwith', action: 'open-with'               },
       '---',
-      { label: 'Проверить ссылки',               icon: 'verify',   action: 'check-all-links'         },
-      { label: 'Найти дубликаты',                icon: 'dupes',    action: 'find-dupes'              },
+      { label: t('menu.links.check'),               icon: 'verify',   action: 'check-all-links'         },
+      { label: t('menu.links.dupes'),                icon: 'dupes',    action: 'find-dupes'              },
       '---',
-      { label: "Обновить favicon'ы",             icon: 'favicon',  action: 'refresh-favicons-folder' },
-      { label: 'Обновить рисунки',               icon: 'refresh',  action: 'refresh-thumbs-folder'  },
+      { label: t('menu.links.favicons'),             icon: 'favicon',  action: 'refresh-favicons-folder' },
+      { label: t('menu.links.thumbs'),               icon: 'refresh',  action: 'refresh-thumbs-folder'  },
       '---',
-      { label: 'Копировать URL',                 icon: 'copy',     shortcut: 'Ctrl+C', action: 'copy-url' },
-      { label: 'Свойства',                       icon: 'props',    shortcut: 'F4',  action: 'properties'  },
+      { label: t('menu.links.copy_url'),                 icon: 'copy',     shortcut: 'Ctrl+C', action: 'copy-url' },
+      { label: t('menu.links.props'),                       icon: 'props',    shortcut: 'F4',  action: 'properties'  },
     ]
   },
   {
-    id: 'transfer', label: 'Перенос',
+    id: 'transfer', label: t('menu.transfer'),
     items: [
-      { label: 'Импорт', icon: 'import', sub: [
-        { label: 'Из браузера...',          icon: 'browser', action: 'import-from-browser' },
-        { label: 'Из другой базы...',       icon: 'db',      action: 'import-from-db'      },
+      { label: t('menu.transfer.import'), icon: 'import', sub: [
+        { label: t('menu.transfer.from_browser'),          icon: 'browser', action: 'import-from-browser' },
+        { label: t('menu.transfer.from_db'),       icon: 'db',      action: 'import-from-db'      },
         '---',
-        { label: 'Из файла HTML',           icon: 'import',  action: 'import-html'         },
-        { label: 'Из файла TXT',            icon: 'import',  action: 'import-txt-lines'    },
+        { label: t('menu.transfer.from_html'),           icon: 'import',  action: 'import-html'         },
+        { label: t('menu.transfer.from_txt'),            icon: 'import',  action: 'import-txt-lines'    },
         '---',
-        { label: 'Из ua.dat...',            icon: 'folder',  action: 'import-folder'        },
+        { label: t('menu.transfer.from_uadat'),            icon: 'folder',  action: 'import-folder'        },
       ]},
-      { label: 'Экспорт', icon: 'backup', sub: [
-        { label: 'HTML файл',                   icon: 'import',  action: 'export-html'          },
-        { label: 'Текстовый файл',              icon: 'import',  action: 'export-txt'           },
+      { label: t('menu.transfer.export'), icon: 'backup', sub: [
+        { label: t('menu.transfer.to_html'),                   icon: 'import',  action: 'export-html'          },
+        { label: t('menu.transfer.to_txt'),              icon: 'import',  action: 'export-txt'           },
       ]},
       '---',
-      { label: 'Браузеры', icon: 'browser', action: 'manage-browsers' },
+      { label: t('menu.transfer.browsers'), icon: 'browser', action: 'manage-browsers' },
     ]
   },
   {
-    id: 'search', label: 'Поиск',
+    id: 'search', label: t('menu.search'),
     items: [
-      { label: 'Найти', icon: 'search', shortcut: 'Ctrl+F', action: 'find' },
+      { label: t('menu.search.find'), icon: 'search', shortcut: 'Ctrl+F', action: 'find' },
     ]
   },
   {
-    id: 'view', label: 'Вид',
+    id: 'view', label: t('menu.view'),
     items: [
-      { label: 'Развернуть все папки', icon: 'expand-all', action: 'toggle-expand-all' },
+      { label: t('menu.view.expand_all'), icon: 'expand-all', action: 'toggle-expand-all' },
       '---',
-      { label: 'Настроить toolbar…',   icon: 'gear',       action: 'customize-toolbar' },
+      { label: t('menu.view.toolbar'),   icon: 'gear',       action: 'customize-toolbar' },
     ]
   },
   {
-    id: 'help', label: 'Справка',
+    id: 'help', label: t('menu.help'),
     items: [
-      { label: 'Справка',               icon: 'props',    action: 'help-topics'  },
+      { label: t('menu.help.topics'),               icon: 'props',    action: 'help-topics'  },
       '---',
-      { label: 'Сайт программы',        icon: 'favicon',  action: 'open-website' },
-      { label: 'Репозиторий на GitHub', icon: 'open',     action: 'open-repo'    },
-      { label: 'Сообщить об ошибке',    icon: 'edit',     action: 'report-issue' },
+      { label: t('menu.help.site'),        icon: 'favicon',  action: 'open-website' },
+      { label: t('menu.help.repo'), icon: 'open',     action: 'open-repo'    },
+      { label: t('menu.help.report'),    icon: 'edit',     action: 'report-issue' },
       '---',
-      { label: 'Проверить обновления',  icon: 'refresh',  action: 'check-updates' },
+      { label: t('menu.help.updates'),  icon: 'refresh',  action: 'check-updates' },
       '---',
-      { label: 'О программе',           icon: 'info',     action: 'about'        },
+      { label: t('menu.help.about'),           icon: 'info',     action: 'about'        },
     ]
   },
 ];
@@ -3060,51 +3060,51 @@ const MENU_DATA = [
 // появится в toolbar customization без других изменений.
 const CMD_REGISTRY = [
   // Создание
-  { id:'new-link',            label:'Новая ссылка',              icon:'link',        group:'Создание',     shortcut:'Ctrl+Shift+N', action:'new-link' },
-  { id:'new-folder',          label:'Новая папка',               icon:'folder',      group:'Создание',     shortcut:'Ctrl+N',       action:'new-folder' },
-  { id:'new-subfolder',       label:'Новая подпапка',            icon:'subfolder',   group:'Создание',                              action:'new-subfolder' },
+  { id:'new-link',            label:t('cmd.new-link'),              icon:'link',        group:t('cmd.group.create'),     shortcut:'Ctrl+Shift+N', action:'new-link' },
+  { id:'new-folder',          label:t('cmd.new-folder'),               icon:'folder',      group:t('cmd.group.create'),     shortcut:'Ctrl+N',       action:'new-folder' },
+  { id:'new-subfolder',       label:t('cmd.new-subfolder'),            icon:'subfolder',   group:t('cmd.group.create'),                              action:'new-subfolder' },
   // Правка
-  { id:'delete-link',         label:'Удалить ссылку',            icon:'trash',       group:'Правка',       shortcut:'Del',          action:'delete-link' },
-  { id:'properties',          label:'Свойства ссылки',           icon:'props',       group:'Правка',       shortcut:'F4',           action:'properties' },
-  { id:'copy-url',            label:'Копировать URL',            icon:'copy',        group:'Правка',       shortcut:'Ctrl+C',       action:'copy-url' },
-  { id:'open-link',           label:'Открыть в браузере',        icon:'open',        group:'Правка',       shortcut:'Enter',        action:'open-link' },
-  { id:'open-with',           label:'Открыть с помощью…',        icon:'openwith',    group:'Правка',                                action:'open-with' },
-  { id:'refresh-thumb',       label:'Обновить рисунок',          icon:'refresh',     group:'Правка',                                action:'refresh-thumb' },
-  { id:'clear-thumb',         label:'Удалить рисунок',           icon:'delimg',      group:'Правка',                                action:'clear-thumb' },
+  { id:'delete-link',         label:t('cmd.delete-link'),            icon:'trash',       group:t('cmd.group.edit'),       shortcut:'Del',          action:'delete-link' },
+  { id:'properties',          label:t('cmd.properties'),           icon:'props',       group:t('cmd.group.edit'),       shortcut:'F4',           action:'properties' },
+  { id:'copy-url',            label:t('cmd.copy-url'),            icon:'copy',        group:t('cmd.group.edit'),       shortcut:'Ctrl+C',       action:'copy-url' },
+  { id:'open-link',           label:t('cmd.open-link'),        icon:'open',        group:t('cmd.group.edit'),       shortcut:'Enter',        action:'open-link' },
+  { id:'open-with',           label:t('cmd.open-with'),        icon:'openwith',    group:t('cmd.group.edit'),                                action:'open-with' },
+  { id:'refresh-thumb',       label:t('cmd.refresh-thumb'),          icon:'refresh',     group:t('cmd.group.edit'),                                action:'refresh-thumb' },
+  { id:'clear-thumb',         label:t('cmd.clear-thumb'),           icon:'delimg',      group:t('cmd.group.edit'),                                action:'clear-thumb' },
   // Навигация
-  { id:'nav-back',            label:'Назад',                     icon:'nav-back',    group:'Навигация',    shortcut:'Alt+←',        action:'nav-back' },
-  { id:'nav-forward',         label:'Вперёд',                    icon:'nav-forward', group:'Навигация',    shortcut:'Alt+→',        action:'nav-forward' },
-  { id:'nav-up',              label:'Вверх',                     icon:'nav-up',      group:'Навигация',    shortcut:'Alt+↑',        action:'nav-up' },
-  { id:'toggle-expand-all',   label:'Развернуть/Свернуть все',   icon:'expand-all',  group:'Навигация',                             action:'toggle-expand-all' },
-  { id:'move-up',             label:'Переместить вверх',         icon:'move-up',     group:'Навигация',                             action:'move-up' },
-  { id:'move-down',           label:'Переместить вниз',          icon:'move-down',   group:'Навигация',                             action:'move-down' },
-  { id:'toggle-menubar',      label:'Переключить меню',          icon:'menu-toggle', group:'Навигация',                             action:'toggle-menubar' },
-  { id:'tray-hide',           label:'Свернуть в трей',           icon:'tray',        group:'Навигация',                             action:'tray-hide' },
+  { id:'nav-back',            label:t('cmd.nav-back'),                     icon:'nav-back',    group:t('cmd.group.nav'),    shortcut:'Alt+←',        action:'nav-back' },
+  { id:'nav-forward',         label:t('cmd.nav-forward'),                    icon:'nav-forward', group:t('cmd.group.nav'),    shortcut:'Alt+→',        action:'nav-forward' },
+  { id:'nav-up',              label:t('cmd.nav-up'),                     icon:'nav-up',      group:t('cmd.group.nav'),    shortcut:'Alt+↑',        action:'nav-up' },
+  { id:'toggle-expand-all',   label:t('cmd.toggle-expand-all'),   icon:'expand-all',  group:t('cmd.group.nav'),                             action:'toggle-expand-all' },
+  { id:'move-up',             label:t('cmd.move-up'),         icon:'move-up',     group:t('cmd.group.nav'),                             action:'move-up' },
+  { id:'move-down',           label:t('cmd.move-down'),          icon:'move-down',   group:t('cmd.group.nav'),                             action:'move-down' },
+  { id:'toggle-menubar',      label:t('cmd.toggle-menubar'),          icon:'menu-toggle', group:t('cmd.group.nav'),                             action:'toggle-menubar' },
+  { id:'tray-hide',           label:t('cmd.tray-hide'),           icon:'tray',        group:t('cmd.group.nav'),                             action:'tray-hide' },
   // Поиск
-  { id:'find',                label:'Поиск',                     icon:'search',      group:'Поиск',        shortcut:'Ctrl+F',       action:'find' },
-  { id:'find-dupes',          label:'Поиск дубликатов',          icon:'dupes',       group:'Поиск',                                 action:'find-dupes' },
+  { id:'find',                label:t('cmd.find'),                     icon:'search',      group:t('cmd.group.search'),        shortcut:'Ctrl+F',       action:'find' },
+  { id:'find-dupes',          label:t('cmd.find-dupes'),          icon:'dupes',       group:t('cmd.group.search'),                                 action:'find-dupes' },
   // Проверка
-  { id:'check-all-links',     label:'Проверить все ссылки',      icon:'verify',      group:'Проверка',                              action:'check-all-links' },
+  { id:'check-all-links',     label:t('cmd.check-all-links'),      icon:'verify',      group:t('cmd.group.check'),                              action:'check-all-links' },
   // Импорт
-  { id:'import-from-browser', label:'Импорт из браузера',        icon:'import',      group:'Импорт',                                action:'import-from-browser' },
-  { id:'import-html',         label:'Импорт из HTML',            icon:'import',      group:'Импорт',                                action:'import-html' },
+  { id:'import-from-browser', label:t('cmd.import-from-browser'),        icon:'import',      group:t('cmd.group.import'),                                action:'import-from-browser' },
+  { id:'import-html',         label:t('cmd.import-html'),            icon:'import',      group:t('cmd.group.import'),                                action:'import-html' },
   // Id намеренно остаётся `import-txt-lines`, хотя формат теперь определяется
   // сам: он может стоять в пользовательском `toolbar.json`, а переименование
   // молча убрало бы кнопку с панели.
-  { id:'import-txt-lines',    label:'Импорт из TXT',             icon:'import',      group:'Импорт',                                action:'import-txt-lines' },
+  { id:'import-txt-lines',    label:t('cmd.import-txt-lines'),             icon:'import',      group:t('cmd.group.import'),                                action:'import-txt-lines' },
   // Экспорт
-  { id:'export-html',         label:'Экспорт в HTML',            icon:'backup',      group:'Экспорт',                               action:'export-html' },
-  { id:'export-txt',          label:'Экспорт в TXT',             icon:'backup',      group:'Экспорт',                               action:'export-txt' },
+  { id:'export-html',         label:t('cmd.export-html'),            icon:'backup',      group:t('cmd.group.export'),                               action:'export-html' },
+  { id:'export-txt',          label:t('cmd.export-txt'),             icon:'backup',      group:t('cmd.group.export'),                               action:'export-txt' },
   // Backup
-  { id:'backup-without',      label:'Backup (без рисунков)',      icon:'backup',      group:'Backup',                                action:'backup-without' },
-  { id:'backup-with',         label:'Backup (с рисунками)',       icon:'backup',      group:'Backup',                                action:'backup-with' },
+  { id:'backup-without',      label:t('cmd.backup-without'),      icon:'backup',      group:t('cmd.group.backup'),                                action:'backup-without' },
+  { id:'backup-with',         label:t('cmd.backup-with'),       icon:'backup',      group:t('cmd.group.backup'),                                action:'backup-with' },
   // Сортировка
-  { id:'sort-title-asc',      label:'По имени ↑',                icon:'sort',        group:'Сортировка',                            action:'sort-all-title-asc' },
-  { id:'sort-title-desc',     label:'По имени ↓',                icon:'sort',        group:'Сортировка',                            action:'sort-all-title-desc' },
-  { id:'sort-url-asc',        label:'По URL ↑',                  icon:'sort',        group:'Сортировка',                            action:'sort-all-url-asc' },
-  { id:'sort-url-desc',       label:'По URL ↓',                  icon:'sort',        group:'Сортировка',                            action:'sort-all-url-desc' },
-  { id:'sort-created-asc',    label:'По дате ↑',                 icon:'sort',        group:'Сортировка',                            action:'sort-all-created-asc' },
-  { id:'sort-created-desc',   label:'По дате ↓',                 icon:'sort',        group:'Сортировка',                            action:'sort-all-created-desc' },
+  { id:'sort-title-asc',      label:t('cmd.sort-title-asc'),                icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-title-asc' },
+  { id:'sort-title-desc',     label:t('cmd.sort-title-desc'),                icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-title-desc' },
+  { id:'sort-url-asc',        label:t('cmd.sort-url-asc'),                  icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-url-asc' },
+  { id:'sort-url-desc',       label:t('cmd.sort-url-desc'),                  icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-url-desc' },
+  { id:'sort-created-asc',    label:t('cmd.sort-created-asc'),                 icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-created-asc' },
+  { id:'sort-created-desc',   label:t('cmd.sort-created-desc'),                 icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-created-desc' },
 ];
 
 // Alias for backward-compat
@@ -3165,7 +3165,7 @@ function buildToolbar() {
     btn.dataset.tbCmd = cmd.id;
     const hint = cmd.shortcut ? `${cmd.label} (${cmd.shortcut})` : cmd.label;
     btn.title = cmd.id === 'toggle-menubar'
-      ? (appSettings.compactMode ? 'Показать меню' : 'Скрыть меню')
+      ? (appSettings.compactMode ? t('toolbar.show_menu') : t('toolbar.hide_menu'))
       : hint;
     btn.innerHTML = tbIconHtml(cmd.icon);
     btn.addEventListener('click', () => handleToolbarAction(cmd.id));
@@ -3506,7 +3506,7 @@ function tbMoveItem(dir) {
     const groups = {};
     for (const cmd of CMD_REGISTRY) {
       if (used.has(cmd.id)) continue;
-      const g = cmd.group || 'Другое';
+      const g = cmd.group || t('cmd.group.other');
       (groups[g] = groups[g] || []).push(cmd);
     }
     availEl.innerHTML = '';
@@ -3691,7 +3691,7 @@ function _populateRecentDbs(drop) {
     if (paths.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'menu-entry disabled';
-      empty.innerHTML = '<span class="entry-icon"></span><span class="entry-label">(пусто)</span>';
+      empty.innerHTML = `<span class="entry-icon"></span><span class="entry-label">${t('menu.file.recent_empty')}</span>`;
       subEl.appendChild(empty);
       return;
     }
@@ -3820,7 +3820,7 @@ function buildMenubar() {
   // margin-left:auto в CSS; группы меню остаются шириной по контенту.
   const trayBtn = document.createElement('button');
   trayBtn.className = 'menu-tray-btn';
-  trayBtn.title = 'Свернуть в трей';
+  trayBtn.title = t('menu.file.tray');
   trayBtn.innerHTML = ICONS['tray'];
   trayBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -3844,7 +3844,7 @@ function closeAllMenus() {
 
 function _syncExpandToggleUI() {
   const anyOpen = !!treeEl.querySelector('.tree-children.open');
-  const label = anyOpen ? 'Свернуть все папки' : 'Развернуть все папки';
+  const label = anyOpen ? t('menu.view.collapse_all') : t('menu.view.expand_all');
   const icon  = anyOpen ? 'collapse-all' : 'expand-all';
   // Menu label + icon
   document.querySelectorAll('.menu-entry[data-action="toggle-expand-all"]').forEach(entry => {
@@ -4312,7 +4312,7 @@ function applySettings(save = true) {
   const mbBtn = toolbarEl.querySelector('[data-tb-cmd="toggle-menubar"]');
   if (mbBtn) {
     mbBtn.classList.toggle('active', !!appSettings.compactMode);
-    mbBtn.title = appSettings.compactMode ? 'Показать меню' : 'Скрыть меню';
+    mbBtn.title = appSettings.compactMode ? t('toolbar.show_menu') : t('toolbar.hide_menu');
   }
   applyColWidth(appSettings.listColWidth ?? 42, false);
   applySidebarWidth(appSettings.sidebarWidth ?? 230, false);
@@ -6490,7 +6490,7 @@ function createTrashRow(node, depth, ancestors, hasChildren) {
     e.stopPropagation();
     closeSubFloat();
     ctxMenuEl.innerHTML = '';
-    ctxMenuEl.appendChild(ctxItem('import', 'Восстановить', null, async () => {
+    ctxMenuEl.appendChild(ctxItem('import', t('ctx.trash.restore'), null, async () => {
       hideContextMenu();
       await invoke('restore_node', { id: node.id });
       allNodes = await invoke('get_tree');
@@ -6500,7 +6500,7 @@ function createTrashRow(node, depth, ancestors, hasChildren) {
       restoreOpenState(openIds);
       loadTrashContents();
     }));
-    ctxMenuEl.appendChild(ctxItem('trash-bin', 'Удалить навсегда', null, () => {
+    ctxMenuEl.appendChild(ctxItem('trash-bin', t('ctx.trash.purge'), null, () => {
       hideContextMenu();
       deleteConfirm('Удалить навсегда? Объект будет стёрт безвозвратно.', async () => {
         await invoke('purge_node', { id: node.id });
