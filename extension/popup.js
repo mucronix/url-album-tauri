@@ -76,7 +76,7 @@ async function loadFolders(token) {
   // Служебная — по признаку `inbox`; по названию — для прежних версий
   // программы, которые признака не присылают.
   const inbox = folders.find(f => f.inbox)
-             || folders.find(f => f.inbox === undefined && f.title === 'Новые ссылки');   // i18n: не переводится — название служебной папки в программах до 2.3.4 (без признака inbox)
+             || folders.find(f => f.inbox === undefined && f.title === 'Новые ссылки');   // i18n: не переводится — название служебной папки в программах 2.3.4 и раньше (без признака inbox)
   select.value = inbox ? inbox.id : folders[0].id;
   row.style.display = '';
   return 'ok';
