@@ -1822,17 +1822,23 @@ function makeDlgDraggable(dlgEl, handleEl) {
 }
 
 // Дата создания в базе — «ГГГГ-ММ-ДД чч:мм:сс» (db::init переводит и старые
-// даты ua.dat). Показ — «ДД.ММ.ГГГГ чч:мм». Нет даты или не разобрана —
+// даты ua.dat). Показ — по формату словаря (format.datetime: в ru
+// «ДД.ММ.ГГГГ чч:мм», в en «ГГГГ-ММ-ДД чч:мм»). Нет даты или не разобрана —
 // пустая строка: у старых ссылок не показываем ничего, не «01.01.1970».
 function formatCreated(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(s || '');
-  return m ? `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}` : '';
+  return m ? formatDateTime(m[1], m[2], m[3], m[4], m[5]) : '';
 }
 
-// То же «ДД.ММ.ГГГГ чч:мм» для Date (время файла снимка, местное).
+// То же для Date (время файла снимка, местное).
 function formatLocalDate(d) {
   const p = (x) => String(x).padStart(2, '0');
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return formatDateTime(d.getFullYear(), p(d.getMonth() + 1), p(d.getDate()), p(d.getHours()), p(d.getMinutes()));
+}
+
+// Поля — уже строками нужной длины (месяц, день, часы, минуты — две цифры).
+function formatDateTime(yyyy, mm, dd, HH, MM) {
+  return t('format.datetime', { yyyy, mm, dd, HH, MM });
 }
 
 // Середина строки состояния, как в старом URL-Album: «Добавлено» и «Рисунок»
