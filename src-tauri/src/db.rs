@@ -771,9 +771,14 @@ pub fn looks_like_our_txt(text: &str) -> bool {
 }
 
 /// Текст заметки, если строка начинается с одной из меток: за меткой —
-/// пробел. Регистр точный: экспорт пишет метку ровно так.
+/// пробел или конец строки. Конец — это заметка с пустой первой строкой:
+/// экспорт пишет «метка + пробел», а строка приходит сюда уже обрезанной.
+/// Регистр точный: экспорт пишет метку ровно так.
 fn strip_note_label<'a>(trimmed: &'a str, labels: &[String]) -> Option<&'a str> {
-    labels.iter().find_map(|l| trimmed.strip_prefix(l.as_str())?.strip_prefix(' '))
+    labels.iter().find_map(|l| {
+        let rest = trimmed.strip_prefix(l.as_str())?;
+        if rest.is_empty() { Some(rest) } else { rest.strip_prefix(' ') }
+    })
 }
 
 /// Свободное имя папки в этом родителе: `ссылки`, `ссылки (2)`, `ссылки (3)`…
@@ -2436,6 +2441,31 @@ mod tests {
             assert_eq!((res.folders, res.links, res.skipped), (2, 2, 0), "{label}");
             assert_eq!(note_of(&dest, "Ventoy"), "первая\nвторая - не ссылка\n[не папка]", "{label}");
             assert_eq!(titles(&children(&dest, Some(id_of(&dest, "Работа")))), vec!["Ventoy", "Rust"], "{label}");
+        }
+    }
+
+    /// Заметка с пустой первой строкой: экспорт пишет «Заметка: » с пробелом
+    /// в конце, разбор срезает его — и строка «Заметка:» без пробела раньше
+    /// не узнавалась: она уходила в «не разобрано», продолжение — следом.
+    #[test]
+    fn note_with_empty_first_line_survives_roundtrip() {
+        for label in ["Заметка:", "Note:", "Нотатка:"] {
+            let src = Connection::open_in_memory().unwrap();
+            init(&src).unwrap();
+            let root = folder(&src, None, "Закладки", 0);
+            let a = link(&src, Some(root), "Ventoy", "https://ventoy.net/", 0);
+            link(&src, Some(root), "Rust", "https://rust-lang.org/", 1);
+            src.execute("UPDATE nodes SET note = ?1 WHERE id = ?2", params!["\nвторая\nтретья", a]).unwrap();
+
+            let txt = export_txt(&src, root, label).unwrap();
+            let dest = Connection::open_in_memory().unwrap();
+            init(&dest).unwrap();
+            let res = import_txt(&dest, &txt, None).unwrap();
+            assert_eq!((res.links, res.skipped), (2, 0), "{label}:\n{txt}");
+            // Пустая первая строка доезжает: с неё начинается заметка, а не
+            // разрыв внутри (пустые строки внутри не сохраняются — 18.08.2026).
+            assert_eq!(note_of(&dest, "Ventoy"), "\nвторая\nтретья", "{label}");
+            assert!(looks_like_our_txt(&format!("Ventoy - https://ventoy.net/\n  {label}\n    вторая\n")), "{label}");
         }
     }
 
