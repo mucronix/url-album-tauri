@@ -28,6 +28,7 @@ pub const BASE_LANG: &str = "ru";
 /// Вшитые словари. Новый язык — строкой сюда и файлом в `lang/`.
 const EMBEDDED: &[(&str, &str)] = &[
     ("ru", include_str!("../lang/ru.json")),
+    ("en", include_str!("../lang/en.json")),
 ];
 
 /// Категории `Intl.PluralRules`, допустимые в объекте фразы с числом.
@@ -401,6 +402,66 @@ mod tests {
                 _ => panic!("{k}: не строка и не фраза с числом"),
             }
         }
+    }
+
+    /// Категории `Intl.PluralRules` по языкам вшитых словарей. Сверено с
+    /// `new Intl.PluralRules(код).resolvedOptions().pluralCategories` в Node 24
+    /// и в WebView2 (27.10.2026). Новый вшитый язык — строкой сюда.
+    const PLURAL_BY_LANG: &[(&str, &[&str])] = &[
+        ("ru", &["few", "many", "one", "other"]),
+        ("uk", &["few", "many", "one", "other"]),
+        ("en", &["one", "other"]),
+    ];
+
+    /// Вшитые переводы полны: ключи как в ru, подстановки те же, у фраз с
+    /// числом — ровно категории своего языка (лишняя «few» в английском — знак
+    /// фразы, скопированной не глядя), `_meta` с кодом и названием. Частичные
+    /// файлы `lang\` по-прежнему разрешены — тест только про вшитые.
+    #[test]
+    fn embedded_translations_complete() {
+        let langs: Vec<&str> = EMBEDDED.iter().map(|(l, _)| *l).collect();
+        for need in ["en"] {
+            assert!(langs.contains(&need), "нет вшитого {need}.json");
+        }
+        let base = parse(embedded(BASE_LANG).unwrap()).unwrap();
+        let mut errors = Vec::new();
+        for &lang in langs.iter().filter(|l| **l != BASE_LANG) {
+            let m = match parse(embedded(lang).unwrap()) {
+                Ok(m) => m,
+                Err(e) => { errors.push(format!("{lang}: не разобран: {e}")); continue; }
+            };
+            let Some(&(_, cats)) = PLURAL_BY_LANG.iter().find(|(l, _)| *l == lang) else {
+                errors.push(format!("{lang}: добавь категории в PLURAL_BY_LANG"));
+                continue;
+            };
+            if m.get("_meta").and_then(|x| x.get("lang")).and_then(Value::as_str) != Some(lang) || meta_name(&m).is_none() {
+                errors.push(format!("{lang}: _meta без lang = \"{lang}\" или name"));
+            }
+            for k in base.keys().filter(|k| *k != "_meta" && !m.contains_key(*k)) {
+                errors.push(format!("{lang}: нет ключа {k}"));
+            }
+            for (k, v) in m.iter().filter(|(k, _)| *k != "_meta") {
+                let Some(bv) = base.get(k) else { errors.push(format!("{lang}: лишний ключ {k}")); continue };
+                match (bv, v) {
+                    (Value::String(b), Value::String(s)) => if placeholders(b) != placeholders(s) {
+                        errors.push(format!("{lang}: {k}: подстановки {:?} ≠ {:?}", placeholders(s), placeholders(b)));
+                    },
+                    (Value::Object(_), Value::Object(o)) => {
+                        let mut have: Vec<&str> = o.keys().map(String::as_str).collect();
+                        have.sort();
+                        if have != cats { errors.push(format!("{lang}: {k}: категории {have:?}, нужны {cats:?}")); }
+                        if !o.get("other").and_then(Value::as_str).is_some_and(|s| s.contains("{n}")) {
+                            errors.push(format!("{lang}: {k}: в other нет {{n}}"));
+                        }
+                        if !value_ok(bv, v) { errors.push(format!("{lang}: {k}: не строки или чужие подстановки")); }
+                    }
+                    _ => errors.push(format!("{lang}: {k}: не тот вид (строка / фраза с числом)")),
+                }
+            }
+            let d = load_with(embedded(BASE_LANG).unwrap(), &embedded, None, Some(lang), None);
+            if d.lang != lang || !d.notes.is_empty() { errors.push(format!("{lang}: загрузка: {} {:?}", d.lang, d.notes)); }
+        }
+        assert!(errors.is_empty(), "\n{}", errors.join("\n"));
     }
 
     #[test]
