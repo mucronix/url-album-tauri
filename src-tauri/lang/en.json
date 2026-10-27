@@ -231,7 +231,7 @@
   "cmd.export-html":               "Export to HTML",
   "cmd.group.export":              "Export",
   "cmd.export-txt":                "Export to TXT",
-  "cmd.backup-without":            "Backup (without screenshots)",
+  "cmd.backup-without":            "Backup (no screenshots)",
   "cmd.group.backup":              "Backup",
   "cmd.backup-with":               "Backup (with screenshots)",
   "cmd.sort-title-asc":            "By name ↑",

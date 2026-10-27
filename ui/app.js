@@ -1327,6 +1327,7 @@ function wireMainContextFloat(trigger, buildSubFn) {
     const sw = sub.offsetWidth, sh = sub.offsetHeight;
     let left = mr.right - 1, top = tr.top;
     if (left + sw > window.innerWidth  - 4) left = mr.left - sw + 1;
+    if (left < 4) left = 4;   // узкое окно: ни справа, ни слева не влезло — поверх меню
     if (top  + sh > window.innerHeight - 4) top  = window.innerHeight - sh - 4;
     sub.style.left = left + "px";
     sub.style.top  = top  + "px";
@@ -3814,6 +3815,7 @@ function buildMenubar() {
         group.classList.add('open');
         if (menu.id === 'view') _syncExpandToggleUI();
         if (menu.id === 'file') _populateRecentDbs(drop);
+        _fitMenuDropdown(drop);
       }
     });
 
@@ -3822,6 +3824,7 @@ function buildMenubar() {
         closeAllMenus();
         group.classList.add('open');
         if (menu.id === 'file') _populateRecentDbs(drop);
+        _fitMenuDropdown(drop);
       }
     });
   }
@@ -3850,6 +3853,14 @@ function buildMenubar() {
 
 function closeAllMenus() {
   document.querySelectorAll('.menu-group.open').forEach(g => g.classList.remove('open'));
+}
+
+// Выпадающее меню у правого края узкого окна (длинный перевод, крупный
+// шрифт) не уходит за край: сдвиг влево ровно на выступ.
+function _fitMenuDropdown(drop) {
+  drop.style.left = '';
+  const over = drop.getBoundingClientRect().right - window.innerWidth;
+  if (over > 0) drop.style.left = `${-over}px`;
 }
 
 function _syncExpandToggleUI() {
