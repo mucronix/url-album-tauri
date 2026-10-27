@@ -255,11 +255,22 @@ function startInlineRename(folderId) {
   labelEl.replaceWith(input);
   input.select();
 
+  // Поле стоит внутри строки дерева: щелчок всплывал до неё, строка забирала
+  // фокус — и правка закрывалась с сохранением; двойной щелчок раскрывал
+  // папку. Мышь внутри поля — только полю. Строка на время правки не
+  // перетаскивается, иначе протяжка мышью тащит её вместо выделения текста.
+  for (const type of ['mousedown', 'click', 'dblclick']) {
+    input.addEventListener(type, e => e.stopPropagation());
+  }
+  const wasDraggable = item.draggable;
+  item.draggable = false;
+
   let committed = false;
 
   async function commit() {
     if (committed) return;
     committed = true;
+    item.draggable = wasDraggable;
     const newName = input.value.trim() || orig;
     const span = document.createElement('span');
     span.className = 'label';
@@ -279,6 +290,7 @@ function startInlineRename(folderId) {
   function cancel() {
     if (committed) return;
     committed = true;
+    item.draggable = wasDraggable;
     const span = document.createElement('span');
     span.className = 'label';
     span.textContent = orig;
