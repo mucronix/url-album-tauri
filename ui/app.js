@@ -4912,7 +4912,7 @@ function reportTxtImport(res) {
     // формулировки статуса, которую мы уже однажды меняли. Прежний вариант
     // правил статус через `replace` и ломался бы от любой правки его текста.
     showNotice(t('notice.txt_import'),
-      t('txt.notice_skipped', { lost: t('count.lines', { n: res.skipped }), imported }));
+      t('txt.notice_skipped', { lost: t('count.lines', { n: res.skipped }), imported, note: t('txt.note_label') }));
   }
 }
 

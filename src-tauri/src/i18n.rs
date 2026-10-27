@@ -155,12 +155,14 @@ fn value_ok(base_v: &Value, v: &Value) -> bool {
 }
 
 /// Наложить словарь `from` на `into`: только ключи базового и только годные
-/// значения. Отвергнутые ключи — в `rejected`.
+/// значения; из файла `lang\` (`from_file`) — без ключей формата. Отвергнутые
+/// ключи — в `rejected`.
 fn overlay(into: &mut Map<String, Value>, from: &Map<String, Value>,
-           base: &Map<String, Value>, rejected: &mut Vec<String>) {
+           base: &Map<String, Value>, from_file: bool, rejected: &mut Vec<String>) {
     for (k, v) in from {
         if k == "_meta" { continue; }
         match base.get(k) {
+            Some(_) if from_file && FORMAT_KEYS.contains(&k.as_str()) => rejected.push(k.clone()),
             Some(bv) if value_ok(bv, v) => { into.insert(k.clone(), v.clone()); }
             _ => rejected.push(k.clone()),
         }
@@ -212,20 +214,45 @@ fn load_with(base_text: &str, embedded: &dyn Fn(&str) -> Option<&'static str>,
 
     let mut strings = base.clone();
     let layers = [
-        ("вшитый en".to_string(),      embedded("en").filter(|_| lang != "en" && lang != BASE_LANG).and_then(|t| parse(t).ok())),   // i18n: не переводится — журнал
-        (format!("вшитый {lang}"),  embedded(&lang).filter(|_| lang != BASE_LANG).and_then(|t| parse(t).ok())),   // i18n: не переводится — журнал
-        (format!("lang\\{lang}.json"), file),
+        ("вшитый en".to_string(),      embedded("en").filter(|_| lang != "en" && lang != BASE_LANG).and_then(|t| parse(t).ok()), false),   // i18n: не переводится — журнал
+        (format!("вшитый {lang}"),  embedded(&lang).filter(|_| lang != BASE_LANG).and_then(|t| parse(t).ok()), false),   // i18n: не переводится — журнал
+        (format!("lang\\{lang}.json"), file, true),
     ];
-    for (name, layer) in layers {
+    for (name, layer, from_file) in layers {
         let Some(layer) = layer else { continue };
         let mut rejected = Vec::new();
-        overlay(&mut strings, &layer, &base, &mut rejected);
+        overlay(&mut strings, &layer, &base, from_file, &mut rejected);
         if !rejected.is_empty() {
             notes.push(format!("язык: {name} — ключи пропущены (неизвестные или неверные): {}",   // i18n: не переводится — журнал
                                rejected.join(", ")));
         }
     }
     Dict { lang, strings, broken, notes }
+}
+
+/// Ключи формата файлов: `lang\` их не подменяет. Файл, записанный с меткой
+/// из `lang\`, не прочитал бы никто без того же `lang\`; язык только из
+/// `lang\` получает метку по цепочке — вшитую английскую.
+const FORMAT_KEYS: &[&str] = &["txt.note_label"];
+
+/// Метка заметки в TXT старых версий (2.3.4 и раньше знают только её).
+/// В коде, а не в ru.json: правка словаря не должна ломать чтение старых файлов.
+pub const LEGACY_NOTE_LABEL: &str = "Заметка:";   // i18n: не переводится — метка TXT старых версий
+
+/// Метки заметки, которые узнаёт разбор TXT: старая и `txt.note_label`
+/// всех вшитых словарей, без повторов. От языка интерфейса не зависит —
+/// файл с другого языка читается целиком.
+pub fn note_labels() -> &'static [String] {
+    static LABELS: OnceLock<Vec<String>> = OnceLock::new();
+    LABELS.get_or_init(|| {
+        let mut out = vec![LEGACY_NOTE_LABEL.to_string()];
+        for (_, text) in EMBEDDED {
+            let label = parse(text).ok()
+                .and_then(|m| m.get("txt.note_label").and_then(Value::as_str).map(str::to_string));
+            if let Some(l) = label.filter(|l| !l.is_empty() && !out.contains(l)) { out.push(l); }
+        }
+        out
+    })
 }
 
 /// Язык в списке «Настроек»: код и название на самом языке (`_meta.name`).
@@ -383,6 +410,7 @@ mod tests {
         "_meta": { "lang": "ru" },
         "a": "Файл {path}",
         "b": "Готово",
+        "txt.note_label": "Заметка:",
         "n": { "one": "{n} ссылка", "few": "{n} ссылки", "many": "{n} ссылок", "other": "{n} ссылки" }
     }"#;
 
@@ -463,6 +491,46 @@ mod tests {
             if d.lang != lang || !d.notes.is_empty() { errors.push(format!("{lang}: загрузка: {} {:?}", d.lang, d.notes)); }
         }
         assert!(errors.is_empty(), "\n{}", errors.join("\n"));
+    }
+
+    /// Метки заметки в формате TXT у вшитых языков: годятся для разбора
+    /// (непустая, без пробелов по краям, кончается на «:», не похожа на папку
+    /// или ссылку) и различны — иначе два языка незаметно разъедутся.
+    #[test]
+    fn embedded_note_labels_valid_and_distinct() {
+        let mut seen: Vec<(&str, String)> = Vec::new();
+        for (lang, text) in EMBEDDED {
+            let m = parse(text).unwrap();
+            let l = m.get("txt.note_label").and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("{lang}: нет txt.note_label")).to_string();
+            assert!(!l.is_empty() && l.trim() == l && l.ends_with(':') && !l.starts_with('[') && !l.contains(" - "),
+                    "{lang}: метка «{l}» не годится");
+            if let Some((other, _)) = seen.iter().find(|(_, x)| *x == l) { panic!("{lang} и {other}: одна метка «{l}»"); }
+            seen.push((lang, l));
+        }
+    }
+
+    /// Разбор узнаёт метки всех вшитых языков и старую «Заметка:» — от языка
+    /// интерфейса это не зависит.
+    #[test]
+    fn note_labels_all_embedded_and_legacy() {
+        let l = note_labels();
+        for want in ["Заметка:", "Note:", "Нотатка:"] {
+            assert!(l.iter().any(|x| x == want), "нет {want}: {l:?}");
+        }
+        assert_eq!(l.iter().filter(|x| *x == "Заметка:").count(), 1, "без повторов: {l:?}");
+    }
+
+    /// Метку формата TXT `lang\` не подменяет: файл с такой меткой не прочитал
+    /// бы никто без того же `lang\`. Остальные ключи файла берутся.
+    #[test]
+    fn lang_file_cannot_override_format_key() {
+        let d = TmpDir::new("format_key");
+        d.write("ru.json", r#"{"txt.note_label": "Примечание:", "b": "Сделано"}"#);
+        let r = load_with(BASE_T, &no_embedded, Some(&d.0), None, None);
+        assert_eq!(s(&r, "txt.note_label"), "Заметка:");
+        assert_eq!(s(&r, "b"), "Сделано");
+        assert!(r.notes.iter().any(|n| n.contains("txt.note_label")), "{:?}", r.notes);
     }
 
     #[test]
