@@ -226,6 +226,71 @@ fn load_with(base_text: &str, embedded: &dyn Fn(&str) -> Option<&'static str>,
     Dict { lang, strings, broken, notes }
 }
 
+/// Язык в списке «Настроек»: код и название на самом языке (`_meta.name`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LangInfo {
+    pub code: String,
+    pub name: String,
+}
+
+/// Список языков для «Настроек» и язык пункта «Авто».
+#[derive(Debug, serde::Serialize)]
+pub struct LangList {
+    pub languages: Vec<LangInfo>,
+    /// Язык, который выбрался бы без настройки `language`.
+    pub auto: String,
+}
+
+fn meta_name(m: &Map<String, Value>) -> Option<String> {
+    let name = m.get("_meta")?.get("name")?.as_str()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Вшитые языки и `lang\*.json`, по названию. Битый файл в список не входит —
+/// при запуске он тоже не читается; файл, которого загрузчик не найдёт по
+/// коду («pt-BR.json» — ищется «pt.json»), тоже. Название из файла важнее
+/// вшитого; нет ни того, ни другого — код. `auto` — по тому же порядку, что
+/// при запуске без настройки.
+fn list_with(codes: &[&str], embedded: &dyn Fn(&str) -> Option<&'static str>,
+             lang_dir: Option<&Path>, system: Option<&str>) -> LangList {
+    let mut found: Vec<(String, Option<String>)> = codes.iter()
+        .map(|c| (c.to_string(), embedded(c).and_then(|t| parse(t).ok()).and_then(|m| meta_name(&m))))
+        .collect();
+    for entry in lang_dir.and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("json") { continue; }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let code = stem.to_ascii_lowercase();
+        if normalize_code(stem).as_deref() != Some(code.as_str()) { continue; }
+        let Ok(m) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| parse(&t)) else { continue };
+        let name = meta_name(&m);
+        match found.iter_mut().find(|(c, _)| *c == code) {
+            Some(slot) => if name.is_some() { slot.1 = name; },
+            None => found.push((code, name)),
+        }
+    }
+    let auto = candidates(None, system).into_iter()
+        .find(|c| found.iter().any(|(f, _)| f == c))
+        .unwrap_or_else(|| BASE_LANG.to_string());
+    let mut languages: Vec<LangInfo> = found.into_iter()
+        .map(|(code, name)| LangInfo { name: name.unwrap_or_else(|| code.clone()), code })
+        .collect();
+    languages.sort_by_cached_key(|l| l.name.to_lowercase());
+    LangList { languages, auto }
+}
+
+/// Список языков для «Настроек» — читается при каждом открытии окна:
+/// файл, положенный в `lang\` при открытой программе, виден сразу.
+pub fn list_languages() -> LangList {
+    let codes: Vec<&str> = EMBEDDED.iter().map(|(c, _)| *c).collect();
+    list_with(&codes, &embedded, lang_dir().as_deref(), system_language().as_deref())
+}
+
+/// Папка `lang\` рядом с exe.
+fn lang_dir() -> Option<std::path::PathBuf> {
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("lang")))
+}
+
 /// Язык интерфейса Windows: «ru-RU», «en-US». None — не узнать.
 #[cfg(windows)]
 fn system_language() -> Option<String> {
@@ -249,7 +314,7 @@ pub fn init() {
     let settings = serde_json::from_str::<Value>(&crate::read_settings_raw()).ok()
         .and_then(|v| v.get("language").and_then(|x| x.as_str()).map(str::to_string));
     let system = system_language();
-    let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("lang")));
+    let dir = lang_dir();
     let mut d = load_with(embedded(BASE_LANG).unwrap_or("{}"), &embedded, dir.as_deref(),
                           settings.as_deref(), system.as_deref());
     d.notes.insert(0, format!("язык: {} (настройка: {}, система: {})", d.lang,   // i18n: не переводится — журнал
@@ -424,6 +489,45 @@ mod tests {
         d2.write("de.json", r#"{ "n": { "one": "ein Link" } }"#);
         let r2 = load_with(BASE_T, &no_embedded, Some(&d2.0), Some("de"), None);
         assert!(s(&r2, "n").get("many").is_some(), "без other — из базового");
+    }
+
+    fn names(l: &LangList) -> Vec<(&str, &str)> {
+        l.languages.iter().map(|x| (x.code.as_str(), x.name.as_str())).collect()
+    }
+
+    #[test]
+    fn language_list_embedded_sorted_by_name() {
+        let emb = |l: &str| match l {
+            "ru" => Some(r#"{"_meta": {"lang": "ru", "name": "Русский"}}"#),
+            "en" => Some(r#"{"_meta": {"lang": "en", "name": "English"}}"#),
+            "uk" => Some(r#"{"_meta": {"lang": "uk", "name": "Українська"}}"#),
+            _ => None,
+        };
+        let l = list_with(&["ru", "en", "uk"], &emb, None, Some("uk-UA"));
+        assert_eq!(names(&l), [("en", "English"), ("ru", "Русский"), ("uk", "Українська")]);
+        assert_eq!(l.auto, "uk");
+        assert_eq!(list_with(&["ru", "en", "uk"], &emb, None, Some("ja-JP")).auto, "en",
+                   "языка системы нет — английский");
+        assert_eq!(list_with(&["ru"], &emb, None, None).auto, "ru");
+    }
+
+    #[test]
+    fn language_list_reads_lang_dir() {
+        let d = TmpDir::new("list");
+        d.write("de.json", "\u{feff}{\"_meta\": {\"name\": \"Deutsch\"}, \"b\": \"Fertig\"}");
+        d.write("ru.json", r#"{"_meta": {"name": "Русский (мой)"}}"#);
+        d.write("pl.json", r#"{"b": "Gotowe"}"#);
+        d.write("fr.json", "{ \"b\": ");
+        d.write("pt-BR.json", r#"{"_meta": {"name": "Português"}}"#);
+        d.write("FI.json", r#"{"_meta": {"name": "Suomi"}}"#);
+        d.write("notes.txt", "x");
+        let emb = |l: &str| (l == "ru").then_some(r#"{"_meta": {"name": "Русский"}}"#);
+        let l = list_with(&["ru"], &emb, Some(&d.0), Some("de-AT"));
+        assert_eq!(names(&l), [("de", "Deutsch"), ("pl", "pl"), ("fi", "Suomi"), ("ru", "Русский (мой)")],
+                   "битый fr и pt-BR (загрузчик ищет pt.json) — не в списке; без _meta.name — код");
+        assert_eq!(l.auto, "de");
+        assert_eq!(list_with(&["ru"], &emb, Some(&d.0), Some("fr-FR")).auto, "ru",
+                   "битый файл языка системы — как при запуске, дальше по порядку");
     }
 
     #[test]

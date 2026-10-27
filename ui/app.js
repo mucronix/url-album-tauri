@@ -4613,8 +4613,36 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
     }
   });
 
+  // ── Язык ──
+  // «Авто» — ключа language в settings.json нет: язык системы, если для него
+  // есть словарь, иначе английский. Список — у Rust при каждом открытии окна
+  // (вшитые и lang\). Записанный код без словаря — отдельным пунктом: иначе
+  // сохранение «Настроек» молча стёрло бы выбор человека.
+  const langSel = document.getElementById('s-language');
+  let _langAuto  = I18N.lang;   // язык пункта «Авто»
+  let _langCodes = new Set();
+  const _langNorm = (c) => String(c).split(/[-_]/)[0].toLowerCase();
+  function _fillLanguageSelect(list) {
+    const names = new Map(list.languages.map(l => [l.code, l.name]));
+    _langAuto  = list.auto;
+    _langCodes = new Set(names.keys());
+    const opt = (value, text) => { const o = document.createElement('option'); o.value = value; o.textContent = text; return o; };
+    langSel.replaceChildren(opt('', t('settings.language.auto', { name: names.get(list.auto) ?? list.auto })));
+    for (const l of list.languages) langSel.append(opt(l.code, l.name));
+    // «en-US» в файле — тот же en: загрузчик берёт основной подтег
+    let cur = appSettings.language ? _langNorm(appSettings.language) : '';
+    if (cur && !names.has(cur)) {
+      cur = String(appSettings.language);
+      langSel.append(opt(cur, t('settings.language.missing', { code: cur })));
+    }
+    langSel.value = cur;
+  }
+
   // ── Open dialog: populate fields ──
   window.openSettingsDialog = function() {
+    langSel.replaceChildren();
+    invoke('list_languages').then(_fillLanguageSelect)
+      .catch(e => logUi(`Настройки: список языков не получен: ${e}`));
     // Show actual DB path
     invoke('get_db_path').then(p => {
       const el = document.getElementById('s-db-path');
@@ -4677,6 +4705,15 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
       showNotice(t('settings.group.hotkey'), t('notice.hotkey_need_key'));
       return;
     }
+    // Язык — действует после перезапуска. Список ещё не пришёл — не трогать.
+    let langChanged = false;
+    if (langSel.options.length) {
+      const code = langSel.value;
+      if (code) appSettings.language = code; else delete appSettings.language;
+      // Код без словаря при запуске не найдётся — выберется то же, что «Авто»
+      const next = code && _langCodes.has(code) ? code : _langAuto;
+      langChanged = next !== I18N.lang;
+    }
     // Общие
     appSettings.showToolbar     = document.getElementById('s-show-toolbar').checked;
     appSettings.accordionTree   = document.getElementById('s-accordion').checked;
@@ -4701,6 +4738,7 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
 
     applySettings(true);
     overlay.classList.add('hidden');
+    if (langChanged) showNotice(t('settings.group.language'), t('settings.language.restart'));
   };
 })();
 

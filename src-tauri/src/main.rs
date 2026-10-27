@@ -2189,6 +2189,12 @@ fn load_settings() -> String {
     read_settings_raw()
 }
 
+/// Языки для «Настроек»: вшитые и `lang\`, и язык пункта «Авто».
+#[tauri::command]
+fn list_languages() -> i18n::LangList {
+    i18n::list_languages()
+}
+
 #[tauri::command]
 fn save_settings(json: String) -> Result<(), String> {
     let path = std::env::current_exe().map_err(|e| e.to_string())?
@@ -3995,6 +4001,7 @@ fn main() {
             set_sort_idx,
             load_settings,
             save_settings,
+            list_languages,
             load_toolbar_config,
             save_toolbar_config,
             create_folder,

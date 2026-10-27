@@ -482,5 +482,9 @@
   "clip.busy":                     "буфер обмена занят другой программой",
   "clip.no_data":                  "не удалось получить текст из буфера обмена",
   "clip.read_failed":              "не удалось прочитать текст из буфера обмена",
-  "format.datetime":               "{dd}.{mm}.{yyyy} {HH}:{MM}"
+  "format.datetime":               "{dd}.{mm}.{yyyy} {HH}:{MM}",
+  "settings.group.language":       "Язык",
+  "settings.language.auto":        "Авто — язык системы ({name})",
+  "settings.language.missing":     "{code} — нет словаря",
+  "settings.language.restart":     "Язык сменится после перезапуска программы."
 }
