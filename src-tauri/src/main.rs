@@ -24,7 +24,8 @@ struct AppState {
     db_path:            Mutex<std::path::PathBuf>,
     pending_open:       Mutex<Option<(String, String)>>, // (url, title) from urlalbum:// scheme
     extension_add_mode: Mutex<String>,                   // "quick" | "dialog"
-    user_hotkey:        Mutex<Option<String>>,           // пользовательский хоткей (помимо встроенного F8)
+    user_hotkey:        Mutex<Option<String>>,           // пользовательский хоткей (помимо F8)
+    f8_enabled:         Mutex<bool>,                     // F8 включена в настройках (set_f8)
 }
 
 
@@ -2691,6 +2692,45 @@ fn set_extension_add_mode(state: tauri::State<'_, AppState>, mode: String) {
     }
 }
 
+/// Включена ли F8 по тексту settings.json (галочка «F8 — добавить из
+/// буфера»). Выключена только явным `"f8Enabled": false`; всё прочее —
+/// включена, как было до галочки.
+fn f8_enabled_in(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw).ok()
+        .and_then(|v| v.get("f8Enabled").and_then(|x| x.as_bool()))
+        .unwrap_or(true)
+}
+
+/// Зарегистрировать F8 — «Добавить из буфера». Один обработчик для запуска
+/// и для галочки в «Настройках».
+fn register_f8(app: &tauri::AppHandle) -> Result<(), String> {
+    app.global_shortcut().on_shortcut("F8", |app, _shortcut, event| {
+        if event.state() == ShortcutState::Pressed {   // ТОЛЬКО нажатие, не отпускание — иначе сработает дважды
+            add_from_clipboard(app);
+        }
+    }).map_err(|e| e.to_string())
+}
+
+/// Галочка «F8 — добавить из буфера»: включить или снять F8 без перезапуска.
+/// Состояние — «включена в настройках», а не «зарегистрирована»: если при
+/// запуске F8 заняла другая программа (отказ — в журнале), повторное
+/// применение тех же настроек не показывает окно на каждом старте.
+#[tauri::command]
+fn set_f8(state: tauri::State<AppState>, app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let was = *state.f8_enabled.lock().map_err(|e| e.to_string())?;
+    if was == enabled { return Ok(()); }
+    if enabled {
+        register_f8(&app).map_err(|e| {
+            logger::log(&format!("F8 не зарегистрирован: {e}"));
+            t!("hotkey.register_failed")
+        })?;
+    } else if let Err(e) = app.global_shortcut().unregister("F8") {
+        logger::log(&format!("F8 не снят: {e}"));
+    }
+    *state.f8_enabled.lock().map_err(|e| e.to_string())? = enabled;
+    Ok(())
+}
+
 // Чёрный список: точные строки, которые успешно регистрируются, но ломают копирование/вставку и т.п.
 fn is_blacklisted(combo: &str) -> bool {
     matches!(combo.to_lowercase().as_str(),
@@ -3869,6 +3909,7 @@ fn main() {
                 pending_open:       Mutex::new(pending),
                 extension_add_mode: Mutex::new("quick".to_string()),
                 user_hotkey:        Mutex::new(None),
+                f8_enabled:         Mutex::new(f8_enabled_in(&read_settings_raw())),
             });
 
             // urlalbum:// при запуске больше не регистрируется (2.3.3):
@@ -3958,16 +3999,16 @@ fn main() {
             // через секунду после старта. Держим его в managed-состоянии на всё время работы.
             app.manage(tray);
 
-            // Глобальный хоткей. "F8" — единственное место смены комбинации (например на "Ctrl+Alt+A").
+            // Глобальный хоткей F8 — если не снята галочка в «Настройках»
+            // (`f8Enabled`; maK: F8 нужна Total Commander для удаления).
             // Хоткей не критичен для запуска: комбинацию мог занять чужой процесс.
             // Раньше здесь стоял `?`, и такой отказ ронял setup целиком — окно
             // не появлялось вовсе, без единого следа.
-            if let Err(e) = app.global_shortcut().on_shortcut("F8", |app, _shortcut, event| {
-                if event.state() == ShortcutState::Pressed {   // ТОЛЬКО нажатие, не отпускание — иначе сработает дважды
-                    add_from_clipboard(app);
+            let f8_on = app.state::<AppState>().f8_enabled.lock().map(|g| *g).unwrap_or(true);
+            if f8_on {
+                if let Err(e) = register_f8(app.handle()) {
+                    logger::log(&format!("F8 не зарегистрирован (занят другой программой?): {e}"));
                 }
-            }) {
-                logger::log(&format!("F8 не зарегистрирован (занят другой программой?): {e}"));
             }
 
             Ok(())
@@ -4054,6 +4095,7 @@ fn main() {
             get_pending_url,
             set_extension_add_mode,
             set_hotkey,
+            set_f8,
             analyze_import_db,
             execute_import_db,
         ])
@@ -4092,6 +4134,20 @@ mod tests {
     use super::*;
     // Служебная папка базового языка: тесты идут на вшитом русском словаре.
     const INBOX_FOLDER_NAME: &str = "Новые ссылки";
+
+    /// F8 включена, пока в settings.json явно не записано `"f8Enabled": false`:
+    /// нет файла, нет ключа, мусор, не логическое значение — включена, как
+    /// было до появления галочки.
+    #[test]
+    fn f8_enabled_unless_explicitly_false() {
+        assert!(f8_enabled_in(""));
+        assert!(f8_enabled_in("{}"));
+        assert!(f8_enabled_in(r#"{"hotkey": "Ctrl+Shift+A"}"#));
+        assert!(f8_enabled_in(r#"{"f8Enabled": true}"#));
+        assert!(!f8_enabled_in(r#"{"f8Enabled": false, "hotkey": ""}"#));
+        assert!(f8_enabled_in(r#"{"f8Enabled": "no"}"#));
+        assert!(f8_enabled_in("{ \"f8Enabled\": fal"));
+    }
 
     #[test]
     fn shot_lock_rejects_second() {

@@ -4307,7 +4307,8 @@ let appSettings = {
   extensionToken:    '',
   compactMode:       false,
   extensionAddMode:  'quick',  // 'quick' | 'dialog'
-  hotkey:            '',       // доп. глоб. хоткей "Ctrl+Shift+A"; пусто = только F8
+  hotkey:            '',       // доп. глоб. хоткей "Ctrl+Shift+A"; пусто — нет
+  f8Enabled:         true,     // F8 — «Добавить из буфера» (снять — F8 свободна для других программ)
 };
 
 async function loadAppSettings() {
@@ -4358,6 +4359,8 @@ function applySettings(save = true) {
   invoke('set_extension_add_mode', { mode: appSettings.extensionAddMode || 'quick' }).catch(() => {});
   invoke('set_hotkey', { combo: appSettings.hotkey || null })
     .catch(e => showNotice(t('settings.group.hotkey'), typeof e === 'string' ? e : t('notice.hotkey_failed')));
+  invoke('set_f8', { enabled: appSettings.f8Enabled !== false })
+    .catch(e => showNotice(t('settings.group.hotkey'), typeof e === 'string' ? e : t('notice.hotkey_failed')));
   if (save) saveAppSettings();
 }
 
@@ -4396,8 +4399,13 @@ function parseHotkeyString(s) {
 }
 function updateHotkeyPreview() {
   const combo = buildHotkeyString();
+  const f8 = document.getElementById('s-hk-f8').checked;
   const el = document.getElementById('s-hk-preview');
-  if (el) el.textContent = combo ? t('settings.hotkey_current', { combo }) : t('settings.hotkey_only_f8');
+  if (!el) return;
+  if (f8 && combo)  el.textContent = t('settings.hotkey_both', { combo });
+  else if (combo)   el.textContent = t('settings.hotkey_current', { combo });
+  else if (f8)      el.textContent = t('settings.hotkey_only_f8');
+  else              el.textContent = t('settings.hotkey_off');
 }
 
 function applySidebarWidth(px, persist = true) {
@@ -4688,8 +4696,9 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
     document.getElementById('s-ext-dialog').checked   = appSettings.extensionAddMode === 'dialog';
     _populateHotkeyKeys();
     parseHotkeyString(appSettings.hotkey || '');
+    document.getElementById('s-hk-f8').checked = appSettings.f8Enabled !== false;
     updateHotkeyPreview();
-    ['s-hk-ctrl','s-hk-shift','s-hk-alt','s-hk-key'].forEach(id =>
+    ['s-hk-f8','s-hk-ctrl','s-hk-shift','s-hk-alt','s-hk-key'].forEach(id =>
       document.getElementById(id).onchange = updateHotkeyPreview);
     fontSlider.value = appSettings.uiFontSize || 13;
     fontVal.textContent = fontSlider.value;
@@ -4747,6 +4756,7 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
     appSettings.noDuplicateUrls  = document.getElementById('s-no-dupes').checked;
     appSettings.extensionAddMode = document.getElementById('s-ext-dialog').checked ? 'dialog' : 'quick';
     appSettings.hotkey           = buildHotkeyString();
+    appSettings.f8Enabled        = document.getElementById('s-hk-f8').checked;
     appSettings.uiFontSize       = parseInt(fontSlider.value) || 13;
     // Журнал: применяем сразу, чтобы галочка действовала без перезапуска.
     appSettings.logEnabled       = document.getElementById('s-log-enabled').checked;
