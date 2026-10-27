@@ -29,6 +29,7 @@ pub const BASE_LANG: &str = "ru";
 const EMBEDDED: &[(&str, &str)] = &[
     ("ru", include_str!("../lang/ru.json")),
     ("en", include_str!("../lang/en.json")),
+    ("uk", include_str!("../lang/uk.json")),
 ];
 
 /// Категории `Intl.PluralRules`, допустимые в объекте фразы с числом.
@@ -420,7 +421,7 @@ mod tests {
     #[test]
     fn embedded_translations_complete() {
         let langs: Vec<&str> = EMBEDDED.iter().map(|(l, _)| *l).collect();
-        for need in ["en"] {
+        for need in ["en", "uk"] {
             assert!(langs.contains(&need), "нет вшитого {need}.json");
         }
         let base = parse(embedded(BASE_LANG).unwrap()).unwrap();
