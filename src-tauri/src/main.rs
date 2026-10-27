@@ -1772,7 +1772,7 @@ async fn export_folder_txt(state: tauri::State<'_, AppState>, window: tauri::Win
         .add_filter(t!("rfd.filter.txt"), &["txt"])
         .save_file().await
     else { return Ok(false) };
-    let content = { let c = state.db.lock().map_err(|e| e.to_string())?; db::export_txt(&c, folder_id).map_err(|e| e.to_string())? };
+    let content = { let c = state.db.lock().map_err(|e| e.to_string())?; db::export_txt(&c, folder_id, &t!("txt.note_label")).map_err(|e| e.to_string())? };
     std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())?;
     Ok(true)
 }
