@@ -21,22 +21,22 @@
         <button class="wb-btn" id="wb-new">
           <svg class="wb-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
           <span class="wb-text">
-            <span class="wb-title">Создать новую базу</span>
-            <span class="wb-desc">Начать с пустой коллекцией</span>
+            <span class="wb-title" data-i18n="start.new.title">Создать новую базу</span>
+            <span class="wb-desc" data-i18n="start.new.desc">Начать с пустой коллекцией</span>
           </span>
         </button>
         <button class="wb-btn" id="wb-import">
           <svg class="wb-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8M5 7l3 3 3-3M2 12h12"/></svg>
           <span class="wb-text">
-            <span class="wb-title">Импортировать ua.dat</span>
-            <span class="wb-desc">Перенести данные из классического URL Album</span>
+            <span class="wb-title" data-i18n="start.import.title">Импортировать ua.dat</span>
+            <span class="wb-desc" data-i18n="start.import.desc">Перенести данные из классического URL Album</span>
           </span>
         </button>
         <button class="wb-btn" id="wb-open">
           <svg class="wb-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5h4.5l1.5 2H14V12H2V4.5z"/></svg>
           <span class="wb-text">
-            <span class="wb-title">Открыть существующую базу</span>
-            <span class="wb-desc">Открыть файл album.db</span>
+            <span class="wb-title" data-i18n="start.open.title">Открыть существующую базу</span>
+            <span class="wb-desc" data-i18n="start.open.desc">Открыть файл album.db</span>
           </span>
         </button>
       </div>
@@ -48,7 +48,7 @@
   <div id="app" class="hidden">
 
     <div id="sidebar">
-      <div id="tree-root-drop">↑ Корень</div>
+      <div id="tree-root-drop" data-i18n="tree.root">↑ Корень</div>
       <nav id="tree"></nav>
     </div>
 
@@ -63,17 +63,17 @@
       </div>
       <div id="list-header">
         <span class="lh-dot-ph"></span>
-        <span class="lh-name">Название</span>
+        <span class="lh-name" data-i18n="list.col.title">Название</span>
         <span class="col-resizer" id="col-resizer"></span>
-        <span class="lh-addr">Адрес</span>
+        <span class="lh-addr" data-i18n="list.col.url">Адрес</span>
       </div>
       <div id="grid"></div>
       <div id="search-results" class="hidden"></div>
-      <div id="empty-hint" class="hidden">Нет закладок в этой папке.</div>
+      <div id="empty-hint" class="hidden" data-i18n="list.empty">Нет закладок в этой папке.</div>
 
       <!-- Compact info bar — shown on single-click selection, grid stays visible -->
       <div id="info-bar" class="hidden">
-        <div class="note-splitter" id="info-note-splitter" title="Потяните, чтобы изменить высоту заметки"></div>
+        <div class="note-splitter" id="info-note-splitter" title="Потяните, чтобы изменить высоту заметки" data-i18n-title="note.resize_hint"></div>
         <div id="info-bar-url-row">
           <div id="info-bar-url"></div>
         </div>
@@ -84,17 +84,17 @@
       <div id="detail-view" class="hidden">
         <div id="detail-thumb-wrap">
           <img id="detail-img" src="" alt="">
-          <div id="detail-no-img">Нет рисунка — правый клик → Обновить рисунок</div>
+          <div id="detail-no-img" data-i18n="detail.no_image">Нет рисунка — правый клик → Обновить рисунок</div>
           <div id="detail-loading-overlay">
-            <span class="detail-loading-text">Загрузка рисунка…</span>
+            <span class="detail-loading-text" data-i18n="detail.loading">Загрузка рисунка…</span>
           </div>
         </div>
         <div id="detail-footer">
-          <div class="note-splitter" id="detail-note-splitter" title="Потяните, чтобы изменить высоту заметки"></div>
+          <div class="note-splitter" id="detail-note-splitter" title="Потяните, чтобы изменить высоту заметки" data-i18n-title="note.resize_hint"></div>
           <div id="detail-url-row">
             <img id="detail-favicon" class="favicon-icon hidden" src="" alt="">
             <span id="detail-url"></span>
-            <button id="detail-open-btn" title="Открыть в браузере">↗</button>
+            <button id="detail-open-btn" title="Открыть в браузере" data-i18n-title="detail.open_in_browser">↗</button>
           </div>
           <div id="detail-note-section">
             <div id="detail-note" class="note-box"></div>
@@ -116,16 +116,16 @@
   <div id="confirm-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:320px">
       <div class="dlg-title">
-        <span>Подтверждение</span>
+        <span data-i18n="confirm.title">Подтверждение</span>
         <button class="dlg-close" id="confirm-x">×</button>
       </div>
       <div class="dlg-body" style="padding:16px 14px 10px">
         <div id="confirm-msg"></div>
-        <div style="font-size:11px;color:#666;margin-top:7px">Это действие нельзя отменить.</div>
+        <div style="font-size:11px;color:#666;margin-top:7px" data-i18n="confirm.irreversible">Это действие нельзя отменить.</div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="confirm-ok">OK</button>
-        <button class="win-btn" id="confirm-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="confirm-ok" data-i18n="common.ok">OK</button>
+        <button class="win-btn" id="confirm-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -141,7 +141,7 @@
         <div id="notice-msg" style="word-break:break-all;white-space:pre-line"></div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="notice-ok">OK</button>
+        <button class="win-btn win-btn-default" id="notice-ok" data-i18n="common.ok">OK</button>
       </div>
     </div>
   </div>
@@ -150,30 +150,30 @@
   <div id="about-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:360px">
       <div class="dlg-title">
-        <span>О программе</span>
+        <span data-i18n="about.title">О программе</span>
         <button class="dlg-close" id="about-x">×</button>
       </div>
       <div class="dlg-body" style="padding:16px 14px 10px">
         <div style="font-weight:600">URL Album <span id="about-version"></span></div>
-        <div>Портативный менеджер закладок для Windows</div>
+        <div data-i18n="about.tagline">Портативный менеджер закладок для Windows</div>
         <div style="margin-top:10px">Copyright (C) 2026 mucronix</div>
-        <div style="margin-top:10px">
+        <div style="margin-top:10px" data-i18n="about.license">
           Свободное программное обеспечение. Распространяется
           на условиях GNU General Public License версии 3
           или любой более поздней версии.
         </div>
-        <div style="margin-top:6px">
+        <div style="margin-top:6px" data-i18n="about.warranty">
           Программа распространяется в надежде, что будет полезной,
           но БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ.
         </div>
         <div style="margin-top:10px">
-          <a href="#" id="about-link-license">Текст лицензии</a><br>
-          <a href="#" id="about-link-repo">Исходный код</a><br>
-          <a href="#" id="about-link-site">Сайт программы</a>
+          <a href="#" id="about-link-license" data-i18n="about.link.license">Текст лицензии</a><br>
+          <a href="#" id="about-link-repo" data-i18n="about.link.source">Исходный код</a><br>
+          <a href="#" id="about-link-site" data-i18n="about.link.site">Сайт программы</a>
         </div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="about-ok">OK</button>
+        <button class="win-btn win-btn-default" id="about-ok" data-i18n="common.ok">OK</button>
       </div>
     </div>
   </div>
@@ -182,27 +182,27 @@
   <div id="props-overlay" class="dlg-overlay hidden">
     <div class="win-dlg props-dlg" id="props-dlg">
       <div class="dlg-title props-drag-handle">
-        <span>Свойства ссылки</span>
+        <span data-i18n="props.title">Свойства ссылки</span>
         <button class="dlg-close" id="props-x">×</button>
       </div>
       <div class="dlg-body dlg-form">
-        <div class="form-row"><label class="form-label">Название</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.title">Название</label>
           <input class="dlg-input form-field" id="props-title" type="text" autocomplete="off"></div>
-        <div class="form-row"><label class="form-label">Адрес</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.url">Адрес</label>
           <input class="dlg-input form-field" id="props-url" type="text" autocomplete="off" spellcheck="false"></div>
         <div class="form-row" style="align-items:flex-start">
-          <label class="form-label" style="padding-top:3px">Заметка</label>
+          <label class="form-label" style="padding-top:3px" data-i18n="form.note">Заметка</label>
           <textarea class="dlg-input form-field" id="props-note" rows="3" spellcheck="false"
                     style="height:auto;resize:vertical;line-height:1.4"></textarea></div>
         <div class="props-sep"></div>
-        <div class="form-row"><label class="form-label">Рисунок</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.thumb">Рисунок</label>
           <span class="props-ro form-field" id="props-thumb" title=""></span></div>
-        <div class="form-row" id="props-created-row"><label class="form-label">Добавлена</label>
+        <div class="form-row" id="props-created-row"><label class="form-label" data-i18n="form.added">Добавлена</label>
           <span class="props-ro form-field" id="props-created"></span></div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="props-ok">OK</button>
-        <button class="win-btn" id="props-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="props-ok" data-i18n="common.ok">OK</button>
+        <button class="win-btn" id="props-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -211,23 +211,23 @@
   <div id="fprops-overlay" class="dlg-overlay hidden">
     <div class="win-dlg props-dlg" id="fprops-dlg">
       <div class="dlg-title props-drag-handle">
-        <span>Свойства папки</span>
+        <span data-i18n="fprops.title">Свойства папки</span>
         <button class="dlg-close" id="fprops-x">×</button>
       </div>
       <div class="dlg-body dlg-form">
-        <div class="form-row"><label class="form-label">Название</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.title">Название</label>
           <input class="dlg-input form-field" id="fprops-title" type="text" autocomplete="off"></div>
         <div class="props-sep"></div>
-        <div class="form-row"><label class="form-label">Ссылок</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.links">Ссылок</label>
           <span class="props-ro" id="fprops-links"></span></div>
-        <div class="form-row"><label class="form-label">Подпапок</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.subfolders">Подпапок</label>
           <span class="props-ro" id="fprops-folders"></span></div>
-        <div class="form-row"><label class="form-label">Путь</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.path">Путь</label>
           <span class="props-ro props-path" id="fprops-path"></span></div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="fprops-ok">OK</button>
-        <button class="win-btn" id="fprops-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="fprops-ok" data-i18n="common.ok">OK</button>
+        <button class="win-btn" id="fprops-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -236,23 +236,23 @@
   <div id="dbprops-overlay" class="dlg-overlay hidden">
     <div class="win-dlg props-dlg" id="dbprops-dlg">
       <div class="dlg-title props-drag-handle">
-        <span>Свойства базы данных</span>
+        <span data-i18n="dbprops.title">Свойства базы данных</span>
         <button class="dlg-close" id="dbprops-x">×</button>
       </div>
       <div class="dlg-body dlg-form">
-        <div class="form-row"><label class="form-label">Путь</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.path">Путь</label>
           <span class="props-ro props-path" id="dbp-path"></span></div>
-        <div class="form-row"><label class="form-label">Размер</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.size">Размер</label>
           <span class="props-ro" id="dbp-size"></span></div>
         <div class="props-sep"></div>
-        <div class="form-row"><label class="form-label">Папок</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.folders">Папок</label>
           <span class="props-ro" id="dbp-folders"></span></div>
-        <div class="form-row"><label class="form-label">Ссылок</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.links">Ссылок</label>
           <span class="props-ro" id="dbp-bookmarks"></span></div>
       </div>
       <div class="dlg-footer dbprops-footer">
-        <button class="win-btn win-btn-danger" id="dbp-clear-btn">Очистить базу</button>
-        <button class="win-btn win-btn-default" id="dbp-ok-btn">OK</button>
+        <button class="win-btn win-btn-danger" id="dbp-clear-btn" data-i18n="dbprops.clear">Очистить базу</button>
+        <button class="win-btn win-btn-default" id="dbp-ok-btn" data-i18n="common.ok">OK</button>
       </div>
     </div>
   </div>
@@ -260,31 +260,31 @@
   <!-- Link checker utility panel (non-modal) -->
   <div id="checker-panel" class="hidden">
     <div id="chk-titlebar">
-      <span id="chk-title">Проверка ссылок</span>
+      <span id="chk-title" data-i18n="chk.title">Проверка ссылок</span>
       <div id="chk-titlebtns">
-        <button id="chk-collapse" title="Свернуть">─</button>
-        <button id="chk-close-btn" title="Закрыть">×</button>
+        <button id="chk-collapse" title="Свернуть" data-i18n-title="common.minimize">─</button>
+        <button id="chk-close-btn" title="Закрыть" data-i18n-title="common.close">×</button>
       </div>
     </div>
     <div id="chk-body">
       <div id="chk-main">
         <div id="chk-counters">
-          <div class="chk-ctr"><span class="chk-cl">Всего:</span>    <b id="cc-total">0</b></div>
-          <div class="chk-ctr"><span class="chk-cl">Проверено:</span><b id="cc-done">0</b></div>
-          <div class="chk-ctr err"><span class="chk-cl">Ошибок:</span>  <b id="cc-errors">0</b></div>
-          <div class="chk-ctr warn"><span class="chk-cl">Redirect:</span><b id="cc-redirects">0</b></div>
-          <div class="chk-ctr err"><span class="chk-cl">Timeout:</span> <b id="cc-timeouts">0</b></div>
+          <div class="chk-ctr"><span class="chk-cl" data-i18n="chk.total">Всего:</span>    <b id="cc-total">0</b></div>
+          <div class="chk-ctr"><span class="chk-cl" data-i18n="chk.done">Проверено:</span><b id="cc-done">0</b></div>
+          <div class="chk-ctr err"><span class="chk-cl" data-i18n="chk.errors">Ошибок:</span>  <b id="cc-errors">0</b></div>
+          <div class="chk-ctr warn"><span class="chk-cl" data-i18n="chk.redirects">Redirect:</span><b id="cc-redirects">0</b></div>
+          <div class="chk-ctr err"><span class="chk-cl" data-i18n="chk.timeouts">Timeout:</span> <b id="cc-timeouts">0</b></div>
         </div>
         <div id="chk-btns">
-          <button class="win-btn chk-btn" id="chk-start">Старт</button>
-          <button class="win-btn chk-btn" id="chk-pause"   disabled>Пауза</button>
-          <button class="win-btn chk-btn" id="chk-stop"    disabled>Остановить</button>
-          <button class="win-btn chk-btn" id="chk-close2">Закрыть</button>
+          <button class="win-btn chk-btn" id="chk-start" data-i18n="chk.start">Старт</button>
+          <button class="win-btn chk-btn" id="chk-pause"   disabled data-i18n="chk.pause">Пауза</button>
+          <button class="win-btn chk-btn" id="chk-stop"    disabled data-i18n="chk.stop">Остановить</button>
+          <button class="win-btn chk-btn" id="chk-close2" data-i18n="common.close">Закрыть</button>
         </div>
       </div>
       <div id="chk-progress-wrap">
         <div id="chk-bar-track"><div id="chk-bar-fill"></div></div>
-        <div id="chk-status-text">Готов к проверке</div>
+        <div id="chk-status-text" data-i18n="chk.ready">Готов к проверке</div>
       </div>
       <div id="chk-log">
         <div id="chk-log-head"></div><!-- built by JS -->
@@ -297,7 +297,7 @@
   <div id="search-dlg-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:310px">
       <div class="dlg-title">
-        <span>Поиск</span>
+        <span data-i18n="search.title">Поиск</span>
         <button class="dlg-close" id="search-dlg-x">×</button>
       </div>
       <div class="dlg-body" style="padding:10px 12px 10px">
@@ -305,14 +305,14 @@
                style="width:100%;box-sizing:border-box;margin-bottom:10px"
                autocomplete="off" spellcheck="false">
         <div style="display:flex;flex-direction:column;gap:5px">
-          <label class="dlg-checkbox"><input type="checkbox" id="sch-title" checked> Название</label>
-          <label class="dlg-checkbox"><input type="checkbox" id="sch-url"   checked> Адрес</label>
-          <label class="dlg-checkbox"><input type="checkbox" id="sch-note"  checked> Заметки</label>
+          <label class="dlg-checkbox"><input type="checkbox" id="sch-title" checked> <span data-i18n="search.by_title">Название</span></label>
+          <label class="dlg-checkbox"><input type="checkbox" id="sch-url"   checked> <span data-i18n="search.by_url">Адрес</span></label>
+          <label class="dlg-checkbox"><input type="checkbox" id="sch-note"  checked> <span data-i18n="search.by_note">Заметки</span></label>
         </div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="search-dlg-find">Найти</button>
-        <button class="win-btn"                 id="search-dlg-close">Закрыть</button>
+        <button class="win-btn win-btn-default" id="search-dlg-find" data-i18n="search.find">Найти</button>
+        <button class="win-btn"                 id="search-dlg-close" data-i18n="common.close">Закрыть</button>
       </div>
     </div>
   </div>
@@ -320,14 +320,14 @@
   <!-- Open With picker dialog -->
   <div id="openwith-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:270px">
-      <div class="dlg-title"><span>Открыть с помощью</span>
+      <div class="dlg-title"><span data-i18n="openwith.title">Открыть с помощью</span>
         <button class="dlg-close" id="openwith-x">×</button></div>
       <div class="dlg-body" style="padding:10px 12px 8px">
         <div class="dlg-listbox-wrap" id="openwith-list" style="min-height:80px"></div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="openwith-ok">Открыть</button>
-        <button class="win-btn" id="openwith-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="openwith-ok" data-i18n="openwith.open">Открыть</button>
+        <button class="win-btn" id="openwith-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -336,19 +336,19 @@
   <div id="dupes-overlay" class="dlg-overlay hidden">
     <div class="win-dlg dupes-dlg" id="dupes-dlg">
       <div class="dlg-title props-drag-handle">
-        <span>Поиск дубликатов ссылок</span>
+        <span data-i18n="dupes.title">Поиск дубликатов ссылок</span>
         <button class="dlg-close" id="dupes-x">×</button>
       </div>
       <div id="dupes-summary" class="dupes-summary"></div>
       <div class="dupes-body">
         <!-- Left: groups -->
         <div class="dupes-left">
-          <div class="dupes-panel-hdr">Группы URL</div>
+          <div class="dupes-panel-hdr" data-i18n="dupes.groups">Группы URL</div>
           <div id="dupes-groups" class="dupes-groups"></div>
         </div>
         <!-- Right: detail table -->
         <div class="dupes-right">
-          <div class="dupes-panel-hdr" id="dupes-right-hdr">Дубликаты</div>
+          <div class="dupes-panel-hdr" id="dupes-right-hdr" data-i18n="dupes.header">Дубликаты</div>
           <div class="dupes-table-wrap">
             <table id="dupes-table" class="dupes-table">
               <colgroup>
@@ -359,10 +359,10 @@
               </colgroup>
               <thead>
                 <tr>
-                  <th class="dupes-th" data-col="t"><span class="th-lbl">Название</span><span class="dupes-rsz"></span></th>
-                  <th class="dupes-th" data-col="u"><span class="th-lbl">URL</span><span class="dupes-rsz"></span></th>
-                  <th class="dupes-th" data-col="f"><span class="th-lbl">Папка</span><span class="dupes-rsz"></span></th>
-                  <th class="dupes-th" data-col="d"><span class="th-lbl">Дата</span></th>
+                  <th class="dupes-th" data-col="t"><span class="th-lbl" data-i18n="dupes.col.title">Название</span><span class="dupes-rsz"></span></th>
+                  <th class="dupes-th" data-col="u"><span class="th-lbl" data-i18n="dupes.col.url">URL</span><span class="dupes-rsz"></span></th>
+                  <th class="dupes-th" data-col="f"><span class="th-lbl" data-i18n="dupes.col.folder">Папка</span><span class="dupes-rsz"></span></th>
+                  <th class="dupes-th" data-col="d"><span class="th-lbl" data-i18n="dupes.col.date">Дата</span></th>
                 </tr>
               </thead>
               <tbody id="dupes-tbody"></tbody>
@@ -372,9 +372,9 @@
       </div>
       <div class="dlg-footer">
         <div style="flex:1"></div>
-        <button class="win-btn" id="dupes-del-one"  disabled>Удалить выбранный</button>
-        <button class="win-btn" id="dupes-keep-one" disabled>Оставить одну ссылку</button>
-        <button class="win-btn" id="dupes-close-btn">Закрыть</button>
+        <button class="win-btn" id="dupes-del-one"  disabled data-i18n="dupes.delete_selected">Удалить выбранный</button>
+        <button class="win-btn" id="dupes-keep-one" disabled data-i18n="dupes.keep_one">Оставить одну ссылку</button>
+        <button class="win-btn" id="dupes-close-btn" data-i18n="common.close">Закрыть</button>
       </div>
     </div>
   </div>
@@ -383,76 +383,85 @@
   <div id="settings-overlay" class="dlg-overlay hidden">
     <div class="win-dlg settings-dlg">
       <div class="dlg-title">
-        <span>Настройки</span>
+        <span data-i18n="settings.title">Настройки</span>
         <button class="dlg-close" id="settings-x">×</button>
       </div>
       <div class="settings-tabs" id="settings-tabs">
-        <div class="stab active" data-tab="general">Общие</div>
-        <div class="stab" data-tab="proxy">Прокси</div>
-        <div class="stab" data-tab="thumb">Рисунок</div>
+        <div class="stab active" data-tab="general" data-i18n="settings.tab.general">Общие</div>
+        <div class="stab" data-tab="proxy" data-i18n="settings.tab.proxy">Прокси</div>
+        <div class="stab" data-tab="thumb" data-i18n="settings.tab.thumb">Рисунок</div>
       </div>
       <div class="settings-content">
 
         <!-- Общие -->
         <div class="stab-panel active" id="stab-general">
           <div class="settings-group">
-            <div class="settings-group-title">Вид</div>
-            <label class="settings-row">
-              <input type="checkbox" id="s-show-toolbar"> Показывать toolbar
-            </label>
-            <div class="settings-row" style="gap:8px;margin-top:4px">
-              <span>Размер шрифта</span>
-              <input type="range" id="s-font-size" min="8" max="18" step="1" style="width:80px">
-              <span id="s-font-size-val" style="min-width:18px;text-align:right">13</span>
-              <span style="color:var(--text-dim)">pt</span>
+            <div class="settings-group-title" data-i18n="settings.group.language">Язык</div>
+            <div class="settings-row">
+              <select id="s-language" class="dlg-input"></select>
             </div>
           </div>
           <div class="settings-group">
-            <div class="settings-group-title">Дерево папок</div>
+            <div class="settings-group-title" data-i18n="settings.group.view">Вид</div>
             <label class="settings-row">
-              <input type="checkbox" id="s-accordion"> Сворачивать другие ветки при открытии
+              <input type="checkbox" id="s-show-toolbar"> <span data-i18n="settings.show_toolbar">Показывать toolbar</span>
+            </label>
+            <div class="settings-row" style="gap:8px;margin-top:4px">
+              <span data-i18n="settings.font_size">Размер шрифта</span>
+              <input type="range" id="s-font-size" min="8" max="18" step="1" style="width:80px">
+              <span id="s-font-size-val" style="min-width:18px;text-align:right">13</span>
+              <span style="color:var(--text-dim)" data-i18n="unit.pt">pt</span>
+            </div>
+          </div>
+          <div class="settings-group">
+            <div class="settings-group-title" data-i18n="settings.group.tree">Дерево папок</div>
+            <label class="settings-row">
+              <input type="checkbox" id="s-accordion"> <span data-i18n="settings.accordion">Сворачивать другие ветки при открытии</span>
             </label>
           </div>
           <div class="settings-group">
-            <div class="settings-group-title">Закладки</div>
+            <div class="settings-group-title" data-i18n="settings.group.bookmarks">Закладки</div>
             <label class="settings-row">
-              <input type="checkbox" id="s-confirm-del"> Подтверждать удаление
+              <input type="checkbox" id="s-confirm-del"> <span data-i18n="settings.confirm_delete">Подтверждать удаление</span>
             </label>
             <label class="settings-row">
-              <input type="checkbox" id="s-no-dupes"> Запретить повторяющиеся ссылки
+              <input type="checkbox" id="s-no-dupes"> <span data-i18n="settings.no_dupes">Запретить повторяющиеся ссылки</span>
             </label>
             <label class="settings-row">
-              <input type="checkbox" id="s-ext-dialog"> Открывать окно правки при добавлении из расширения
+              <input type="checkbox" id="s-ext-dialog"> <span data-i18n="settings.ext_dialog">Открывать окно правки при добавлении из расширения</span>
             </label>
             <div class="settings-row" style="margin-top:6px;flex-direction:column;align-items:flex-start;gap:2px">
-              <span style="font-size:calc(var(--ui-font) - 2px);color:var(--text-dim)">Файл базы данных:</span>
+              <span style="font-size:calc(var(--ui-font) - 2px);color:var(--text-dim)" data-i18n="settings.db_file">Файл базы данных:</span>
               <span id="s-db-path" style="font-size:calc(var(--ui-font) - 2px);font-family:monospace;color:var(--text);word-break:break-all;user-select:all"></span>
             </div>
           </div>
 
           <div class="settings-group">
-            <div class="settings-group-title">Горячая клавиша</div>
-            <div class="settings-row" style="font-size:calc(var(--ui-font) - 2px);color:var(--text-dim);margin-bottom:2px">
-              Дополнительная горячая клавиша. F8 работает всегда.
+            <div class="settings-group-title" data-i18n="settings.group.hotkey">Горячая клавиша</div>
+            <label class="settings-row">
+              <input type="checkbox" id="s-hk-f8"> <span data-i18n="settings.hotkey_f8">F8 — добавить из буфера</span>
+            </label>
+            <div class="settings-row" style="font-size:calc(var(--ui-font) - 2px);color:var(--text-dim);margin-bottom:2px" data-i18n="settings.hotkey_hint">
+              Дополнительная горячая клавиша:
             </div>
             <div class="settings-row" style="gap:10px">
               <label><input type="checkbox" id="s-hk-ctrl"> Ctrl</label>
               <label><input type="checkbox" id="s-hk-shift"> Shift</label>
               <label><input type="checkbox" id="s-hk-alt"> Alt</label>
               <select id="s-hk-key" class="dlg-input" style="margin-left:auto">
-                <option value="">— не выбрана —</option>
+                <option value="" data-i18n="settings.hotkey_none">— не выбрана —</option>
               </select>
             </div>
-            <div class="settings-row" id="s-hk-preview" style="font-size:11px;color:var(--text-dim);margin-top:2px">Только F8</div>
+            <div class="settings-row" id="s-hk-preview" style="font-size:11px;color:var(--text-dim);margin-top:2px" data-i18n="settings.hotkey_only_f8">Только F8</div>
           </div>
 
           <div class="settings-group">
-            <div class="settings-group-title">Диагностика</div>
+            <div class="settings-group-title" data-i18n="settings.group.diagnostics">Диагностика</div>
             <div class="settings-row" style="gap:10px">
-              <label><input type="checkbox" id="s-log-enabled"> Вести журнал</label>
-              <button class="win-btn" id="s-log-open" style="margin-left:auto">Открыть журнал</button>
+              <label><input type="checkbox" id="s-log-enabled"> <span data-i18n="settings.log_enabled">Вести журнал</span></label>
+              <button class="win-btn" id="s-log-open" style="margin-left:auto" data-i18n="settings.log_open">Открыть журнал</button>
             </div>
-            <div class="settings-row" style="font-size:calc(var(--ui-font) - 2px);color:var(--text-dim);line-height:1.35">
+            <div class="settings-row" style="font-size:calc(var(--ui-font) - 2px);color:var(--text-dim);line-height:1.35" data-i18n="settings.log_hint">
               Журнал пишется в файл url-album.log рядом с программой. Пригодится, если понадобится разобраться с ошибкой.
             </div>
           </div>
@@ -462,36 +471,36 @@
         <div class="stab-panel" id="stab-proxy">
           <div class="settings-group">
             <label class="settings-row">
-              <input type="checkbox" id="s-proxy-en"> Использовать прокси
+              <input type="checkbox" id="s-proxy-en"> <span data-i18n="settings.proxy.enabled">Использовать прокси</span>
             </label>
           </div>
           <div class="sform" id="proxy-form">
             <div class="sform-row">
-              <span class="sform-label">Адрес</span>
+              <span class="sform-label" data-i18n="settings.proxy.host">Адрес</span>
               <input type="text" id="s-proxy-host" class="dlg-input sform-field" autocomplete="off" spellcheck="false" placeholder="127.0.0.1">
             </div>
             <div class="sform-row">
-              <span class="sform-label">Порт</span>
+              <span class="sform-label" data-i18n="settings.proxy.port">Порт</span>
               <input type="number" id="s-proxy-port" class="dlg-input sform-short" min="1" max="65535" placeholder="8080">
             </div>
             <div class="sform-sep"></div>
             <div class="sform-row">
-              <span class="sform-label">Пользователь</span>
+              <span class="sform-label" data-i18n="settings.proxy.user">Пользователь</span>
               <input type="text" id="s-proxy-user" class="dlg-input sform-field" autocomplete="off">
             </div>
             <div class="sform-row">
-              <span class="sform-label">Пароль</span>
+              <span class="sform-label" data-i18n="settings.proxy.pass">Пароль</span>
               <input type="password" id="s-proxy-pass" class="dlg-input sform-field">
             </div>
-            <div class="settings-row" style="font-size:calc(var(--ui-font) - 2px);color:var(--text-dim)">
+            <div class="settings-row" style="font-size:calc(var(--ui-font) - 2px);color:var(--text-dim)" data-i18n="settings.proxy.pass_hint">
               Пароль хранится в settings.json в открытом виде.
             </div>
             <div class="sform-row">
-              <button class="win-btn" id="s-proxy-test">Проверить</button>
+              <button class="win-btn" id="s-proxy-test" data-i18n="settings.proxy.test">Проверить</button>
               <span id="s-proxy-status" class="sp-status"></span>
             </div>
             <div class="sform-sep"></div>
-            <div class="settings-row" style="font-size:calc(var(--ui-font) - 2px);color:var(--text-dim);line-height:1.35">
+            <div class="settings-row" style="font-size:calc(var(--ui-font) - 2px);color:var(--text-dim);line-height:1.35" data-i18n="settings.proxy.scope">
               Прокси используется при загрузке иконок сайтов, проверке ссылок и создании скриншотов.
             </div>
           </div>
@@ -501,32 +510,32 @@
         <div class="stab-panel" id="stab-thumb">
           <div class="sform">
             <div class="sform-row">
-              <span class="sform-label">Ширина</span>
+              <span class="sform-label" data-i18n="settings.thumb.width">Ширина</span>
               <input type="number" id="s-thumb-w" class="dlg-input sform-short" min="320" max="3840">
-              <span class="sform-unit">px</span>
+              <span class="sform-unit" data-i18n="unit.px">px</span>
             </div>
             <div class="sform-row">
-              <span class="sform-label">Высота</span>
+              <span class="sform-label" data-i18n="settings.thumb.height">Высота</span>
               <input type="number" id="s-thumb-h" class="dlg-input sform-short" min="240" max="2160">
-              <span class="sform-unit">px</span>
+              <span class="sform-unit" data-i18n="unit.px">px</span>
             </div>
             <div class="sform-sep"></div>
             <div class="sform-row">
-              <span class="sform-label">Время ожидания</span>
+              <span class="sform-label" data-i18n="settings.thumb.timeout">Время ожидания</span>
               <input type="number" id="s-thumb-timeout" class="dlg-input sform-short" min="5" max="120">
-              <span class="sform-unit">сек</span>
+              <span class="sform-unit" data-i18n="unit.sec">сек</span>
             </div>
             <div class="sform-sep"></div>
             <div class="sform-row">
-              <button class="win-btn" id="s-thumb-defaults">По умолчанию</button>
+              <button class="win-btn" id="s-thumb-defaults" data-i18n="common.defaults">По умолчанию</button>
             </div>
           </div>
         </div>
 
       </div><!-- /settings-content -->
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="settings-ok">Сохранить</button>
-        <button class="win-btn" id="settings-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="settings-ok" data-i18n="settings.save">Сохранить</button>
+        <button class="win-btn" id="settings-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -535,17 +544,17 @@
   <div id="open-db-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:300px">
       <div class="dlg-title">
-        <span>Открыть базу данных</span>
+        <span data-i18n="opendb.title">Открыть базу данных</span>
         <button class="dlg-close" id="open-db-x">×</button>
       </div>
       <div class="dlg-body" style="padding:14px 14px 8px">
-        <div style="font-size:12px;margin-bottom:8px">Выберите файл базы данных (album.db).</div>
-        <div style="font-size:11px;color:#888">Текущие данные будут заменены содержимым выбранного файла.</div>
+        <div style="font-size:12px;margin-bottom:8px" data-i18n="opendb.hint">Выберите файл базы данных (album.db).</div>
+        <div style="font-size:11px;color:#888" data-i18n="opendb.warn">Текущие данные будут заменены содержимым выбранного файла.</div>
         <div id="open-db-err" style="font-size:11px;color:#c00;margin-top:8px;min-height:14px"></div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="open-db-ok">Выбрать файл…</button>
-        <button class="win-btn" id="open-db-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="open-db-ok" data-i18n="opendb.pick">Выбрать файл…</button>
+        <button class="win-btn" id="open-db-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -554,38 +563,38 @@
   <div id="import-db-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:380px">
       <div class="dlg-title">
-        <span>Импорт из другой базы</span>
+        <span data-i18n="importdb.title">Импорт из другой базы</span>
         <button class="dlg-close" id="import-db-x">×</button>
       </div>
       <div class="dlg-body dlg-form">
-        <div class="form-row"><label class="form-label">Источник</label>
+        <div class="form-row"><label class="form-label" data-i18n="importdb.source">Источник</label>
           <span class="props-ro form-field" id="import-db-path" style="word-break:break-all;font-size:10px;font-family:monospace"></span>
         </div>
         <div class="props-sep"></div>
-        <div class="form-row"><label class="form-label">Папок</label>
+        <div class="form-row"><label class="form-label" data-i18n="form.folders">Папок</label>
           <span class="props-ro" id="import-db-folders"></span>
         </div>
-        <div class="form-row"><label class="form-label">Закладок</label>
+        <div class="form-row"><label class="form-label" data-i18n="importdb.bookmarks">Закладок</label>
           <span class="props-ro" id="import-db-total"></span>
         </div>
-        <div class="form-row"><label class="form-label">Новых</label>
+        <div class="form-row"><label class="form-label" data-i18n="importdb.new">Новых</label>
           <span class="props-ro" id="import-db-new" style="color:var(--accent);font-weight:600"></span>
         </div>
-        <div class="form-row"><label class="form-label">Дубликатов</label>
+        <div class="form-row"><label class="form-label" data-i18n="importdb.dupes">Дубликатов</label>
           <span class="props-ro" id="import-db-dupes" style="color:var(--text-dim)"></span>
         </div>
         <div class="props-sep"></div>
-        <div class="form-row"><label class="form-label">Импортировать в</label>
+        <div class="form-row"><label class="form-label" data-i18n="importdb.dest">Импортировать в</label>
           <select class="dlg-input form-field" id="import-db-dest"></select>
         </div>
         <div class="form-row hidden" id="import-db-new-folder-row">
-          <label class="form-label">Название папки</label>
+          <label class="form-label" data-i18n="importdb.folder_name">Название папки</label>
           <input type="text" class="dlg-input form-field" id="import-db-new-folder-name" autocomplete="off">
         </div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="import-db-ok">Импортировать</button>
-        <button class="win-btn" id="import-db-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="import-db-ok" data-i18n="common.import">Импортировать</button>
+        <button class="win-btn" id="import-db-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -594,18 +603,18 @@
   <div id="move-to-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:320px">
       <div class="dlg-title">
-        <span>Переместить в…</span>
+        <span data-i18n="moveto.title">Переместить в…</span>
         <button class="dlg-close" id="move-to-x">×</button>
       </div>
       <div class="dlg-body dlg-form">
         <div class="form-row">
-          <label class="form-label">Папка назначения</label>
+          <label class="form-label" data-i18n="moveto.dest">Папка назначения</label>
           <select class="dlg-input form-field" id="move-to-folder"></select>
         </div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="move-to-ok">Переместить</button>
-        <button class="win-btn" id="move-to-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="move-to-ok" data-i18n="moveto.ok">Переместить</button>
+        <button class="win-btn" id="move-to-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -614,32 +623,32 @@
   <div id="new-item-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:340px">
       <div class="dlg-title">
-        <span id="new-item-dlg-title">Новая папка</span>
+        <span id="new-item-dlg-title" data-i18n="newitem.title">Новая папка</span>
         <button class="dlg-close" id="new-item-x">×</button>
       </div>
       <div class="dlg-body dlg-form">
         <div id="new-item-folder-row" class="form-row">
-          <label class="form-label">Папка</label>
+          <label class="form-label" data-i18n="form.folder">Папка</label>
           <select class="dlg-input form-field" id="new-item-folder"></select>
         </div>
         <div class="form-row">
-          <label class="form-label">Название</label>
+          <label class="form-label" data-i18n="form.title">Название</label>
           <input class="dlg-input form-field" id="new-item-name" type="text" autocomplete="off">
         </div>
         <div id="new-item-url-row" class="form-row">
-          <label class="form-label">Адрес</label>
+          <label class="form-label" data-i18n="form.url">Адрес</label>
           <input class="dlg-input form-field" id="new-item-url" type="text" autocomplete="off" spellcheck="false">
         </div>
         <div id="new-item-note-row" class="form-row" style="align-items:flex-start">
-          <label class="form-label" style="padding-top:3px">Заметка</label>
+          <label class="form-label" style="padding-top:3px" data-i18n="form.note">Заметка</label>
           <textarea class="dlg-input form-field" id="new-item-note" rows="3"
             spellcheck="false" style="resize:vertical;min-height:52px"></textarea>
         </div>
       </div>
       <div id="new-item-warn" class="new-item-warn hidden"></div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="new-item-ok">Создать</button>
-        <button class="win-btn" id="new-item-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="new-item-ok" data-i18n="newitem.create">Создать</button>
+        <button class="win-btn" id="new-item-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -648,33 +657,33 @@
   <div id="tbc-overlay" class="dlg-overlay hidden">
     <div class="win-dlg tbc-dlg" id="tbc-dlg">
       <div class="dlg-title props-drag-handle">
-        <span>Настройка toolbar</span>
+        <span data-i18n="tbc.title">Настройка toolbar</span>
         <button class="dlg-close" id="tbc-x">×</button>
       </div>
       <div class="tbc-body">
         <div class="tbc-col">
-          <div class="tbc-lbl">Доступные:</div>
+          <div class="tbc-lbl" data-i18n="tbc.available">Доступные:</div>
           <div class="dlg-listbox-wrap" id="tbc-avail"></div>
-          <button class="win-btn tbc-full" id="tbc-add-sep">+ Разделитель</button>
+          <button class="win-btn tbc-full" id="tbc-add-sep" data-i18n="tbc.add_sep">+ Разделитель</button>
         </div>
         <div class="tbc-mid">
-          <button class="win-btn tbc-arrow" id="tbc-add-btn" disabled title="Добавить в toolbar">▶</button>
-          <button class="win-btn tbc-arrow" id="tbc-rem-btn" disabled title="Убрать из toolbar">◀</button>
+          <button class="win-btn tbc-arrow" id="tbc-add-btn" disabled title="Добавить в toolbar" data-i18n-title="tbc.add">▶</button>
+          <button class="win-btn tbc-arrow" id="tbc-rem-btn" disabled title="Убрать из toolbar" data-i18n-title="tbc.remove">◀</button>
         </div>
         <div class="tbc-col">
-          <div class="tbc-lbl">Toolbar:</div>
+          <div class="tbc-lbl" data-i18n="tbc.toolbar">Toolbar:</div>
           <div class="dlg-listbox-wrap" id="tbc-active"></div>
           <div class="tbc-row3">
-            <button class="win-btn" id="tbc-up"   disabled title="Вверх">▲</button>
-            <button class="win-btn" id="tbc-down" disabled title="Вниз">▼</button>
+            <button class="win-btn" id="tbc-up"   disabled title="Вверх" data-i18n-title="common.up">▲</button>
+            <button class="win-btn" id="tbc-down" disabled title="Вниз" data-i18n-title="common.down">▼</button>
           </div>
         </div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn" id="tbc-reset">По умолчанию</button>
+        <button class="win-btn" id="tbc-reset" data-i18n="common.defaults">По умолчанию</button>
         <div style="flex:1"></div>
-        <button class="win-btn win-btn-default" id="tbc-ok">OK</button>
-        <button class="win-btn" id="tbc-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="tbc-ok" data-i18n="common.ok">OK</button>
+        <button class="win-btn" id="tbc-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -682,17 +691,17 @@
   <!-- Favicon loader panel (non-modal background task) -->
   <div id="favicon-panel" class="hidden">
     <div id="fv-titlebar">
-      <span id="fv-title">Загрузка favicon</span>
-      <button id="fv-close-btn" title="Закрыть">×</button>
+      <span id="fv-title" data-i18n="fv.title">Загрузка favicon</span>
+      <button id="fv-close-btn" title="Закрыть" data-i18n-title="common.close">×</button>
     </div>
     <div id="fv-body">
       <div id="fv-info-row">
-        <span>favicon: <b id="fv-done">0</b>/<b id="fv-total">0</b></span>
+        <span><span data-i18n="fv.counter">favicon:</span> <b id="fv-done">0</b>/<b id="fv-total">0</b></span>
         <span id="fv-domain"></span>
       </div>
       <div id="fv-bar-track"><div id="fv-bar-fill"></div></div>
       <div id="fv-btn-row">
-        <button class="win-btn" id="fv-cancel-btn">Отмена</button>
+        <button class="win-btn" id="fv-cancel-btn" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -700,17 +709,17 @@
   <!-- Thumb batch panel (non-modal background task) -->
   <div id="thumb-panel" class="hidden">
     <div id="tp-titlebar">
-      <span id="tp-title">Загрузка рисунков</span>
-      <button id="tp-close-btn" title="Закрыть">×</button>
+      <span id="tp-title" data-i18n="tp.title">Загрузка рисунков</span>
+      <button id="tp-close-btn" title="Закрыть" data-i18n-title="common.close">×</button>
     </div>
     <div id="tp-body">
       <div id="tp-info-row">
-        <span>рисунки: <b id="tp-done">0</b>/<b id="tp-total">0</b></span>
+        <span><span data-i18n="tp.counter">рисунки:</span> <b id="tp-done">0</b>/<b id="tp-total">0</b></span>
         <span id="tp-label"></span>
       </div>
       <div id="tp-bar-track"><div id="tp-bar-fill"></div></div>
       <div id="tp-btn-row">
-        <button class="win-btn" id="tp-cancel-btn">Отмена</button>
+        <button class="win-btn" id="tp-cancel-btn" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -722,23 +731,23 @@
   <div id="browser-import-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:330px">
       <div class="dlg-title">
-        <span>Импорт закладок из браузера</span>
+        <span data-i18n="bi.title">Импорт закладок из браузера</span>
         <button class="dlg-close" id="bi-x">×</button>
       </div>
       <div class="dlg-body" style="padding:8px 12px 4px">
-        <div class="bi-section">Обнаруженные браузеры:</div>
+        <div class="bi-section" data-i18n="bi.detected">Обнаруженные браузеры:</div>
         <div id="bi-list" class="dlg-listbox-wrap" style="min-height:60px;max-height:170px;overflow-y:auto"></div>
-        <div class="bi-section" style="margin-top:8px">Portable / другое:</div>
+        <div class="bi-section" style="margin-top:8px" data-i18n="bi.portable">Portable / другое:</div>
         <div style="display:flex;gap:4px;margin-top:3px">
-          <button class="win-btn" id="bi-pick-file"   style="flex:1">Файл закладок…</button>
-          <button class="win-btn" id="bi-pick-folder" style="flex:1">Папку профиля…</button>
+          <button class="win-btn" id="bi-pick-file"   style="flex:1" data-i18n="bi.pick_file">Файл закладок…</button>
+          <button class="win-btn" id="bi-pick-folder" style="flex:1" data-i18n="bi.pick_folder">Папку профиля…</button>
         </div>
         <div id="bi-sel-path" class="bi-sel-path"></div>
         <div id="bi-status" style="margin-top:4px;font-size:11px;color:#666;min-height:15px"></div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="bi-ok" disabled>Импортировать</button>
-        <button class="win-btn" id="bi-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="bi-ok" disabled data-i18n="common.import">Импортировать</button>
+        <button class="win-btn" id="bi-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -747,30 +756,30 @@
   <div id="browsers-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:360px">
       <div class="dlg-title">
-        <span>Список браузеров</span>
+        <span data-i18n="browsers.title">Список браузеров</span>
         <button class="dlg-close" id="dlg-x">×</button>
       </div>
       <div class="dlg-body">
         <div class="dlg-main-row">
           <div class="dlg-listbox-wrap" id="dlg-browser-list" style="min-height:120px"></div>
           <div class="dlg-side-btns">
-            <button class="win-btn" id="dlg-add">Добавить</button>
-            <button class="win-btn" id="dlg-portable" title="Выбрать exe portable браузера">Portable…</button>
-            <button class="win-btn" id="dlg-detect" title="Автоматически обнаружить установленные браузеры">Обнаружить</button>
+            <button class="win-btn" id="dlg-add" data-i18n="common.add">Добавить</button>
+            <button class="win-btn" id="dlg-portable" title="Выбрать exe portable браузера" data-i18n-title="browsers.portable_hint" data-i18n="browsers.portable">Portable…</button>
+            <button class="win-btn" id="dlg-detect" title="Автоматически обнаружить установленные браузеры" data-i18n-title="browsers.detect_hint" data-i18n="browsers.detect">Обнаружить</button>
             <div class="side-sep"></div>
-            <button class="win-btn" id="dlg-del" disabled>Удалить</button>
-            <button class="win-btn" id="dlg-props" disabled>Свойства</button>
+            <button class="win-btn" id="dlg-del" disabled data-i18n="common.delete">Удалить</button>
+            <button class="win-btn" id="dlg-props" disabled data-i18n="common.props">Свойства</button>
           </div>
         </div>
         <div id="dlg-detect-status" class="dlg-detect-status"></div>
         <div class="dlg-default-row">
-          <span class="dlg-label">По умолчанию:</span>
+          <span class="dlg-label" data-i18n="browsers.default">По умолчанию:</span>
           <select id="dlg-default-sel"></select>
         </div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="dlg-ok">OK</button>
-        <button class="win-btn" id="dlg-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="dlg-ok" data-i18n="common.ok">OK</button>
+        <button class="win-btn" id="dlg-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -779,16 +788,16 @@
   <div id="add-browser-overlay" class="dlg-overlay hidden">
     <div class="win-dlg" style="width:370px">
       <div class="dlg-title">
-        <span>Браузер</span>
+        <span data-i18n="browser.title">Браузер</span>
         <button class="dlg-close" id="add-browser-x">×</button>
       </div>
       <div class="dlg-body dlg-form">
         <div class="form-row">
-          <label class="form-label">Название</label>
+          <label class="form-label" data-i18n="form.title">Название</label>
           <input class="dlg-input form-field" id="add-browser-name" type="text" autocomplete="off">
         </div>
         <div class="form-row">
-          <label class="form-label">Программа</label>
+          <label class="form-label" data-i18n="browser.program">Программа</label>
           <div class="form-input-group">
             <input class="dlg-input" id="add-browser-path" type="text" autocomplete="off" style="flex:1;min-width:0">
             <button class="win-btn browse-btn" id="add-browser-browse">...</button>
@@ -796,8 +805,8 @@
         </div>
       </div>
       <div class="dlg-footer">
-        <button class="win-btn win-btn-default" id="add-browser-ok">OK</button>
-        <button class="win-btn" id="add-browser-cancel">Отмена</button>
+        <button class="win-btn win-btn-default" id="add-browser-ok" data-i18n="common.ok">OK</button>
+        <button class="win-btn" id="add-browser-cancel" data-i18n="common.cancel">Отмена</button>
       </div>
     </div>
   </div>

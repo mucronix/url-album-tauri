@@ -9,6 +9,11 @@
 
 #![allow(dead_code)]
 
+// db.rs пишет названия папок через t!; в примере словарь — вшитый русский.
+#[macro_use]
+#[path = "../src/i18n.rs"]
+mod i18n;
+fn read_settings_raw() -> String { String::new() }   // нужна i18n::init, здесь не зовётся
 #[path = "../src/importer.rs"]
 mod importer;
 #[path = "../src/db.rs"]

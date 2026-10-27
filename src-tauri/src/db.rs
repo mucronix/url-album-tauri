@@ -67,6 +67,13 @@ pub fn init(conn: &Connection) -> Result<()> {
     )?;
     // Открывать через: обработчик открытия для папки (NULL/ключ браузера/custom:путь)
     conn.execute("ALTER TABLE nodes ADD COLUMN opener TEXT", []).ok();
+    // Служебная папка («Новые ссылки») — по признаку, не по названию: название
+    // переводится и переименовывается. Признак один на базу — уникальный индекс.
+    conn.execute("ALTER TABLE nodes ADD COLUMN role TEXT", []).ok();
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_role ON nodes (role) WHERE role IS NOT NULL", [],
+    )?;
+    mark_legacy_inbox(conn)?;
 
     // Дата создания: единый формат «ГГГГ-ММ-ДД чч:мм:сс»,
     // местное время) — строковый порядок совпадает с порядком дат, на этом
@@ -78,6 +85,30 @@ pub fn init(conn: &Connection) -> Result<()> {
     // тест every_insert_path_sets_created это сторожит. Сборка с триггером
     // успела открыть часть баз — убираем его оттуда.
     conn.execute_batch("DROP TRIGGER IF EXISTS nodes_created_default;")?;
+    Ok(())
+}
+
+/// Значение `role` у служебной папки.
+pub const ROLE_INBOX: &str = "inbox";
+
+/// Название служебной папки в базах до колонки `role` — по нему такие базы
+/// отмечаются (`mark_legacy_inbox`). Не переводится: те базы заводились по-русски.
+const LEGACY_INBOX_TITLE: &str = "Новые ссылки";   // i18n: не переводится — легаси: так называлась служебная папка старых баз
+
+/// База до колонки `role`: служебной считалась живая корневая папка «Новые
+/// ссылки», первая по id (так искал find_or_create_inbox_folder). Ей и ставим
+/// признак — только если его нет ни у кого: иначе (служебную переименовали,
+/// перенесли, удалили в корзину) папка человека с тем же названием стала бы
+/// служебной при каждом открытии.
+fn mark_legacy_inbox(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE nodes SET role = ?1
+         WHERE NOT EXISTS (SELECT 1 FROM nodes WHERE role = ?1)
+           AND id = (SELECT MIN(id) FROM nodes
+                     WHERE kind = 'folder' AND title = ?2 AND parent IS NULL
+                       AND COALESCE(deleted, 0) = 0)",
+        params![ROLE_INBOX, LEGACY_INBOX_TITLE],
+    )?;
     Ok(())
 }
 
@@ -466,13 +497,13 @@ pub fn export_html(conn: &Connection, folder_id: i64) -> Result<String> {
     ))
 }
 
-fn txt_folder(nodes: &[ExportNode], parent: Option<i64>, depth: usize) -> String {
+fn txt_folder(nodes: &[ExportNode], parent: Option<i64>, depth: usize, note_label: &str) -> String {
     let prefix = "  ".repeat(depth);
     let mut out = String::new();
     for n in nodes.iter().filter(|n| n.parent == parent) {
         if n.kind == "folder" {
             out.push_str(&format!("{prefix}[{}]\n", n.title));
-            out.push_str(&txt_folder(nodes, Some(n.id), depth + 1));
+            out.push_str(&txt_folder(nodes, Some(n.id), depth + 1, note_label));
         } else if let Some(ref url) = n.url {
             out.push_str(&format!("{prefix}{} - {url}\n", n.title));
             if let Some(ref note) = n.note {
@@ -483,7 +514,7 @@ fn txt_folder(nodes: &[ExportNode], parent: Option<i64>, depth: usize) -> String
                 // сбрасывал контекст папок (последнее починено в `c8570f6`).
                 let mut parts = note.split('\n').map(|l| l.trim_end_matches('\r'));
                 if let Some(first) = parts.next() {
-                    out.push_str(&format!("{prefix}  Заметка: {first}\n"));
+                    out.push_str(&format!("{prefix}  {note_label} {first}\n"));
                     for cont in parts {
                         out.push_str(&format!("{prefix}    {cont}\n"));
                     }
@@ -494,10 +525,12 @@ fn txt_folder(nodes: &[ExportNode], parent: Option<i64>, depth: usize) -> String
     out
 }
 
-pub fn export_txt(conn: &Connection, folder_id: i64) -> Result<String> {
+/// `note_label` — метка заметки на языке интерфейса (`txt.note_label`);
+/// разбор узнаёт метки всех вшитых языков (`i18n::note_labels`).
+pub fn export_txt(conn: &Connection, folder_id: i64, note_label: &str) -> Result<String> {
     let nodes = get_subtree(conn, folder_id)?;
     let root = nodes.iter().find(|n| n.id == folder_id).map(|n| n.title.as_str()).unwrap_or("");
-    let body = txt_folder(&nodes, Some(folder_id), 0);
+    let body = txt_folder(&nodes, Some(folder_id), 0, note_label);
     Ok(format!("[{root}]\n{body}"))
 }
 
@@ -715,12 +748,37 @@ pub struct TxtImportResult {
 /// строкой (`[2001:db8::1]`) будет принят за наш формат. В списках ссылок так
 /// не пишут — адрес идёт со схемой, а `http://[2001:db8::1]/` начинается
 /// с `http`. Усложнять разбор ради этого случая дороже, чем он стоит.
+///
+/// Строка с меткой заметки — признак, только если стоит сразу под строкой
+/// «Название - URL» и глубже её: так пишет экспорт. Простой список ссылок
+/// со строкой «Note: проверить позже» иначе стал бы «нашим форматом» —
+/// первая строка ушла бы в имя папки, адреса — в «не разобрано».
 pub fn looks_like_our_txt(text: &str) -> bool {
     if let Some(first) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
         if first.starts_with('[') && first.ends_with(']') { return true; }
     }
-    text.lines().map(str::trim)
-        .any(|l| l.starts_with("Заметка: ") || (l.starts_with('[') && l.ends_with(']')))
+    let labels = crate::i18n::note_labels();
+    let mut link_indent: Option<usize> = None;   // отступ предыдущей строки «Название - URL»
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() { continue; }
+        let leading = line.len() - line.trim_start().len();
+        if t.starts_with('[') && t.ends_with(']') { return true; }
+        if link_indent.is_some_and(|li| leading > li) && strip_note_label(t, labels).is_some() { return true; }
+        link_indent = t.contains(" - ").then_some(leading);
+    }
+    false
+}
+
+/// Текст заметки, если строка начинается с одной из меток: за меткой —
+/// пробел или конец строки. Конец — это заметка с пустой первой строкой:
+/// экспорт пишет «метка + пробел», а строка приходит сюда уже обрезанной.
+/// Регистр точный: экспорт пишет метку ровно так.
+fn strip_note_label<'a>(trimmed: &'a str, labels: &[String]) -> Option<&'a str> {
+    labels.iter().find_map(|l| {
+        let rest = trimmed.strip_prefix(l.as_str())?;
+        if rest.is_empty() { Some(rest) } else { rest.strip_prefix(' ') }
+    })
 }
 
 /// Свободное имя папки в этом родителе: `ссылки`, `ссылки (2)`, `ссылки (3)`…
@@ -806,7 +864,9 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
 
     // Stack: (depth, folder_id). Sentinel depth=-1.
     let mut stack: Vec<(i64, i64)> = vec![(-1, root_id)];
-    let mut last_bm_id: Option<i64> = None;
+    // Последняя ссылка: (id, отступ её строки) — заметка приписывается ей.
+    let mut last_link: Option<(i64, usize)> = None;
+    let labels = crate::i18n::note_labels();
     // (id ссылки, отступ строки «Заметка: …», накопленный текст).
     let mut note_ctx: Option<(i64, usize, String)> = None;
 
@@ -843,9 +903,21 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
 
         // Вид строки определяется ДО того, как трогается стек: разделитель
         // ищется только там, где строка не папка и не заметка.
+        //
+        // Заметка — строка с меткой любого вшитого языка (файл с другого языка
+        // читается целиком) под ссылкой. Глубже ссылки — заметка всегда: так
+        // пишет экспорт, и « - » в её тексте ничего не значит. На глубине
+        // ссылки — только без « - »: «Note: итоги - https://…» — это ссылка
+        // с таким названием, а не заметка (раньше ссылка пропадала).
+        // Метка раньше первой ссылки заметкой не считается — приписать некому.
         let is_folder = trimmed.starts_with('[') && trimmed.ends_with(']');
-        let is_note   = trimmed.starts_with("Заметка: ");
-        let sep       = if is_folder || is_note { None } else { trimmed.rfind(" - ") };
+        let note = if is_folder { None } else {
+            last_link.and_then(|(_, li)| {
+                let text = strip_note_label(trimmed, labels)?;
+                (leading > li || (leading == li && !trimmed.contains(" - "))).then_some(text)
+            })
+        };
+        let sep = if is_folder || note.is_some() { None } else { trimmed.rfind(" - ") };
 
         // Стек выталкивают ТОЛЬКО структурные строки — папка и ссылка.
         // Раньше это делала каждая непустая строка, до разбора: любая строка,
@@ -871,15 +943,11 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
             )?;
             res.folders += 1;
             stack.push((depth, conn.last_insert_rowid()));
-            last_bm_id = None;
-        } else if let Some(note) = trimmed.strip_prefix("Заметка: ") {
-            match last_bm_id {
-                // Не пишем сразу: заметка может продолжаться следующими
-                // строками, и запись идёт одним UPDATE при её закрытии.
-                Some(bid) => note_ctx = Some((bid, leading, note.to_string())),
-                // Заметка раньше первой ссылки — приписать её некому.
-                None => res.skipped += 1,
-            }
+            last_link = None;
+        } else if let (Some(note), Some((bid, _))) = (note, last_link) {
+            // Не пишем сразу: заметка может продолжаться следующими
+            // строками, и запись идёт одним UPDATE при её закрытии.
+            note_ctx = Some((bid, leading, note.to_string()));
         } else if let Some(sep) = sep {
             let title = trimmed[..sep].trim();
             let url = trimmed[sep + 3..].trim();
@@ -890,7 +958,7 @@ pub fn import_txt(conn: &Connection, text: &str, dest_parent: Option<i64>) -> Re
                 params![parent_id, title, url, si],
             )?;
             res.links += 1;
-            last_bm_id = Some(conn.last_insert_rowid());
+            last_link = Some((conn.last_insert_rowid(), leading));
         } else {
             // Финального `else` тут не было, и строка, не похожая ни на папку,
             // ни на заметку, ни на «Название - URL», исчезала бесследно: возврат
@@ -922,7 +990,8 @@ fn chromium_node(
 ) -> Result<()> {
     match node["type"].as_str() {
         Some("folder") => {
-            let name = node["name"].as_str().unwrap_or("Папка");
+            let untitled = t!("folder.untitled");
+            let name = node["name"].as_str().unwrap_or(&untitled);
             conn.execute(
                 "INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3,
                      COALESCE(datetime(?4, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
@@ -1052,7 +1121,8 @@ pub fn import_firefox(conn: &Connection, places_path: &str, browser_name: &str) 
         let Some(&parent_db) = id_map.get(&node.parent) else { continue };
         match node.bk_type {
             2 => {
-                let title = node.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("Закладки");
+                let untitled = t!("folder.bookmarks");
+                let title = node.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(&untitled);
                 conn.execute("INSERT INTO nodes (parent, kind, title, sort_idx, created) VALUES (?1,'folder',?2,?3,
                      COALESCE(datetime(?4, 'unixepoch', 'localtime'), datetime('now', 'localtime')))",
                     params![parent_db, title, node.pos, firefox_date(node.added)])?;
@@ -2005,7 +2075,7 @@ mod tests {
             params!["здесь будет описание ссылки!", "235.png", bm],
         ).unwrap();
 
-        let txt = export_txt(&c, root).unwrap();
+        let txt = export_txt(&c, root, "Заметка:").unwrap();
         println!("--- export_txt ---\n{txt}");
         assert!(txt.contains("Заметка: здесь будет описание ссылки!"),
                 "заметка потерялась или подменена: {txt}");
@@ -2221,7 +2291,7 @@ mod tests {
         src.execute("UPDATE nodes SET note = ?1 WHERE id = ?2",
                     params!["первая строка\nвторая строка", a]).unwrap();
 
-        let txt = export_txt(&src, root).unwrap();
+        let txt = export_txt(&src, root, "Заметка:").unwrap();
         let dest = Connection::open_in_memory().unwrap();
         init(&dest).unwrap();
         let res = import_txt(&dest, &txt, None).unwrap();
@@ -2248,7 +2318,7 @@ mod tests {
         src.execute("UPDATE nodes SET note = ?1 WHERE id = ?2",
             params!["первая строка\nцена - 100 рублей\n[в скобках]", a]).unwrap();
 
-        let txt = export_txt(&src, root).unwrap();
+        let txt = export_txt(&src, root, "Заметка:").unwrap();
         let dest = Connection::open_in_memory().unwrap();
         init(&dest).unwrap();
         let res = import_txt(&dest, &txt, None).unwrap();
@@ -2347,6 +2417,141 @@ mod tests {
         assert_eq!(res.skipped, 1, "хвост старого формата не восстановить");
     }
 
+    /// Круг экспорт → импорт на метке каждого вшитого языка: экспорт пишет
+    /// метку языка интерфейса, разбор узнаёт любую вшитую — файл, выгруженный
+    /// на английском, читается на русском и наоборот.
+    #[test]
+    fn txt_roundtrip_with_every_embedded_label() {
+        for label in ["Заметка:", "Note:", "Нотатка:"] {
+            let src = Connection::open_in_memory().unwrap();
+            init(&src).unwrap();
+            let root = folder(&src, None, "Закладки", 0);
+            let work = folder(&src, Some(root), "Работа", 0);
+            let a = link(&src, Some(work), "Ventoy", "https://ventoy.net/", 0);
+            link(&src, Some(work), "Rust", "https://rust-lang.org/", 1);
+            src.execute("UPDATE nodes SET note = ?1 WHERE id = ?2",
+                        params!["первая\nвторая - не ссылка\n[не папка]", a]).unwrap();
+
+            let txt = export_txt(&src, root, label).unwrap();
+            assert!(txt.contains(&format!("    {label} первая\n")), "{label}: метка не та:\n{txt}");
+
+            let dest = Connection::open_in_memory().unwrap();
+            init(&dest).unwrap();
+            let res = import_txt(&dest, &txt, None).unwrap();
+            assert_eq!((res.folders, res.links, res.skipped), (2, 2, 0), "{label}");
+            assert_eq!(note_of(&dest, "Ventoy"), "первая\nвторая - не ссылка\n[не папка]", "{label}");
+            assert_eq!(titles(&children(&dest, Some(id_of(&dest, "Работа")))), vec!["Ventoy", "Rust"], "{label}");
+        }
+    }
+
+    /// Заметка с пустой первой строкой: экспорт пишет «Заметка: » с пробелом
+    /// в конце, разбор срезает его — и строка «Заметка:» без пробела раньше
+    /// не узнавалась: она уходила в «не разобрано», продолжение — следом.
+    #[test]
+    fn note_with_empty_first_line_survives_roundtrip() {
+        for label in ["Заметка:", "Note:", "Нотатка:"] {
+            let src = Connection::open_in_memory().unwrap();
+            init(&src).unwrap();
+            let root = folder(&src, None, "Закладки", 0);
+            let a = link(&src, Some(root), "Ventoy", "https://ventoy.net/", 0);
+            link(&src, Some(root), "Rust", "https://rust-lang.org/", 1);
+            src.execute("UPDATE nodes SET note = ?1 WHERE id = ?2", params!["\nвторая\nтретья", a]).unwrap();
+
+            let txt = export_txt(&src, root, label).unwrap();
+            let dest = Connection::open_in_memory().unwrap();
+            init(&dest).unwrap();
+            let res = import_txt(&dest, &txt, None).unwrap();
+            assert_eq!((res.links, res.skipped), (2, 0), "{label}:\n{txt}");
+            // Пустая первая строка доезжает: с неё начинается заметка, а не
+            // разрыв внутри (пустые строки внутри не сохраняются — 18.08.2026).
+            assert_eq!(note_of(&dest, "Ventoy"), "\nвторая\nтретья", "{label}");
+            assert!(looks_like_our_txt(&format!("Ventoy - https://ventoy.net/\n  {label}\n    вторая\n")), "{label}");
+        }
+    }
+
+    /// Русский экспорт побайтно прежний: метка `Заметка:` и раскладка те же,
+    /// что писали 2.3.4 и раньше. ⚠️ Сторож: зелёный и до правки.
+    #[test]
+    fn ru_txt_export_is_byte_identical() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let root = folder(&c, None, "Закладки", 0);
+        let a = link(&c, Some(root), "Ventoy", "https://ventoy.net/", 0);
+        c.execute("UPDATE nodes SET note = 'раз\nдва' WHERE id = ?1", params![a]).unwrap();
+        assert_eq!(export_txt(&c, root, "Заметка:").unwrap(),
+                   "[Закладки]\nVentoy - https://ventoy.net/\n  Заметка: раз\n    два\n");
+    }
+
+    /// Файл с «Note:» читается, каким бы ни был язык интерфейса: метки
+    /// разбора — все вшитые, а не только текущего языка.
+    #[test]
+    fn note_label_of_another_language_is_read() {
+        for label in ["Note:", "Нотатка:"] {
+            let c = Connection::open_in_memory().unwrap();
+            init(&c).unwrap();
+            let text = format!("[Закладки]\nVentoy - https://ventoy.net/\n  {label} описание\n    дальше\n");
+            let res = import_txt(&c, &text, None).unwrap();
+            assert_eq!((res.links, res.skipped), (1, 0), "{label}");
+            assert_eq!(note_of(&c, "Ventoy"), "описание\nдальше", "{label}");
+        }
+    }
+
+    /// Старый файл с «Заметка:» читается и при английском интерфейсе.
+    /// ⚠️ Сторож нового кода: нынешний разбор от языка не зависит и зелёный
+    /// и до правки; красным его делает порча «узнавать только метку текущего
+    /// языка» (проверено при коммите).
+    #[test]
+    fn legacy_note_label_is_read_on_any_ui_language() {
+        assert!(crate::i18n::note_labels().iter().any(|l| l == "Заметка:"));
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let res = import_txt(&c, "[Закладки]\nVentoy - https://ventoy.net/\n  Заметка: описание\n", None).unwrap();
+        assert_eq!((res.links, res.skipped), (1, 0));
+        assert_eq!(note_of(&c, "Ventoy"), "описание");
+    }
+
+    /// Строка, начинающаяся с метки, в простом списке ссылок не делает его
+    /// «нашим форматом»: метка — признак, только под строкой «Название - URL»
+    /// и глубже её, как пишет экспорт. Иначе первая строка списка стала бы
+    /// именем папки, а адреса ушли бы в «не разобрано».
+    #[test]
+    fn plain_list_with_label_line_stays_plain() {
+        for label in ["Заметка:", "Note:", "Нотатка:"] {
+            let text = format!("https://a.example/\n{label} проверить позже\n  {label} и это\nhttps://b.example/\n");
+            assert!(!looks_like_our_txt(&text), "{label}");
+        }
+    }
+
+    /// Файл без первой строки `[…]`: ссылка и заметка под ней с любой
+    /// вшитой меткой — наш формат.
+    #[test]
+    fn cut_file_with_link_and_note_is_ours_for_every_label() {
+        for label in ["Заметка:", "Note:", "Нотатка:"] {
+            assert!(looks_like_our_txt(&format!("Ventoy - https://ventoy.net/\n  {label} описание\n")), "{label}");
+        }
+    }
+
+    /// Ссылка, название которой начинается с метки, остаётся ссылкой: на
+    /// глубине ссылки строка с « - » — ссылка. С «Note:» такие названия
+    /// обычны («Note: …» у английских страниц), раньше ссылка пропадала.
+    #[test]
+    fn link_titled_like_a_note_stays_a_link() {
+        let c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let text = concat!(
+            "[Закладки]\n",
+            "Ventoy - https://ventoy.net/\n",
+            "Note: итоги - https://n.example/\n",
+            "Заметка: план - https://z.example/\n",
+            "  Note: заметка к плану\n",
+        );
+        let res = import_txt(&c, text, None).unwrap();
+        assert_eq!((res.links, res.skipped), (3, 0));
+        assert_eq!(titles(&children(&c, Some(id_of(&c, "Закладки")))),
+                   vec!["Ventoy", "Note: итоги", "Заметка: план"]);
+        assert_eq!(note_of(&c, "Заметка: план"), "заметка к плану");
+    }
+
     #[test]
     fn format_detection_both_ways_and_its_known_limit() {
         // Наш экспорт — по первой строке в скобках.
@@ -2392,7 +2597,7 @@ mod tests {
         src.execute("UPDATE nodes SET note='здесь будет описание' WHERE id=?1", params![a]).unwrap();
         src.execute("UPDATE nodes SET note='проверка заметки 12345' WHERE id=?1", params![b]).unwrap();
 
-        let txt = export_txt(&src, root).unwrap();
+        let txt = export_txt(&src, root, "Заметка:").unwrap();
         println!("--- export_txt ---\n{txt}");
 
         let dest = Connection::open_in_memory().unwrap();

@@ -47,15 +47,15 @@ pub fn read_text() -> Result<Option<String>, String> {
             std::thread::sleep(std::time::Duration::from_millis(OPEN_PAUSE_MS));
         }
     }
-    if !opened { return Err("буфер обмена занят другой программой".into()); }
+    if !opened { return Err(t!("clip.busy")); }
     let _guard = Opened;
 
     unsafe {
         if IsClipboardFormatAvailable(CF_UNICODETEXT) == 0 { return Ok(None); }
         let handle = GetClipboardData(CF_UNICODETEXT);
-        if handle.is_null() { return Err("не удалось получить текст из буфера обмена".into()); }
+        if handle.is_null() { return Err(t!("clip.no_data")); }
         let ptr = GlobalLock(handle) as *const u16;
-        if ptr.is_null() { return Err("не удалось прочитать текст из буфера обмена".into()); }
+        if ptr.is_null() { return Err(t!("clip.read_failed")); }
         let units = std::slice::from_raw_parts(ptr, GlobalSize(handle) / 2);
         let text = utf16_until_nul(units);
         GlobalUnlock(handle);

@@ -12,11 +12,12 @@
       {
         "label": "main",
         "title": "URL Album",
-        "width": 1200,
-        "height": 750,
+        "width": 1000,
+        "height": 650,
         "minWidth": 500,
         "minHeight": 400,
         "center": true,
+        "visible": false,
         "dragDropEnabled": false
       }
     ],

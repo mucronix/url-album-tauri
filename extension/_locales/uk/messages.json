@@ -1,0 +1,50 @@
+{
+  "ext_description": {
+    "message": "Зберегти поточну вкладку в URL Album"
+  },
+  "action_title": {
+    "message": "Зберегти в URL Album"
+  },
+  "btn_add": {
+    "message": "Додати в URL Album"
+  },
+  "st_no_app": {
+    "message": "URL Album не запущено"
+  },
+  "st_reconnected": {
+    "message": "Програму перезапущено, підключення оновлено — натисніть «Додати»"
+  },
+  "st_no_folders": {
+    "message": "Список папок недоступний — закладка піде в «Нові посилання»"
+  },
+  "st_no_auth": {
+    "message": "Закладку не збережено. Закрийте й відкрийте це вікно"
+  },
+  "st_saving": {
+    "message": "Зберігаю…"
+  },
+  "st_error": {
+    "message": "Помилка $CODE$",
+    "placeholders": {
+      "code": {
+        "content": "$1",
+        "example": "500"
+      }
+    }
+  },
+  "st_exists_in": {
+    "message": "Уже є в папці «$FOLDER$»",
+    "placeholders": {
+      "folder": {
+        "content": "$1",
+        "example": "Новые ссылки"
+      }
+    }
+  },
+  "st_exists_root": {
+    "message": "Уже є в корені"
+  },
+  "st_added": {
+    "message": "Додано ✓"
+  }
+}

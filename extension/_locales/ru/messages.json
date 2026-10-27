@@ -1,0 +1,50 @@
+{
+  "ext_description": {
+    "message": "Сохранить текущую вкладку в URL Album"
+  },
+  "action_title": {
+    "message": "Сохранить в URL Album"
+  },
+  "btn_add": {
+    "message": "Добавить в URL Album"
+  },
+  "st_no_app": {
+    "message": "URL Album не запущен"
+  },
+  "st_reconnected": {
+    "message": "Программа перезапущена, подключение обновлено — нажмите «Добавить»"
+  },
+  "st_no_folders": {
+    "message": "Список папок недоступен — закладка уйдёт в «Новые ссылки»"
+  },
+  "st_no_auth": {
+    "message": "Закладка не сохранена. Закройте и откройте это окно"
+  },
+  "st_saving": {
+    "message": "Сохраняю…"
+  },
+  "st_error": {
+    "message": "Ошибка $CODE$",
+    "placeholders": {
+      "code": {
+        "content": "$1",
+        "example": "500"
+      }
+    }
+  },
+  "st_exists_in": {
+    "message": "Уже есть в папке «$FOLDER$»",
+    "placeholders": {
+      "folder": {
+        "content": "$1",
+        "example": "Новые ссылки"
+      }
+    }
+  },
+  "st_exists_root": {
+    "message": "Уже есть в корне"
+  },
+  "st_added": {
+    "message": "Добавлено ✓"
+  }
+}

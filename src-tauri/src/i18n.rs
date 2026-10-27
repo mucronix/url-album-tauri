@@ -1,0 +1,680 @@
+// ── Словари интерфейса ───────────────────────────────────────────────────────
+//
+// Словари вшиты в exe (`include_str!`); базовый — русский, в нём есть все
+// ключи. Необязательная папка `lang\` рядом с exe подменяет вшитый язык
+// (`lang\ru.json`) или добавляет новый (`lang\de.json`). Язык выбирается один
+// раз при запуске: смена языка — после перезапуска.
+//
+// Формат: плоский объект «ключ → строка». Подстановки — `{имя}`. Фраза с
+// числом — объект категорий `Intl.PluralRules` (`one`, `few`, `many`, `other`),
+// число в ней — `{n}`; склоняет только JS, Rust числа не склоняет.
+//
+// Недостающий ключ берётся по цепочке: `lang\<язык>.json` → вшитый `<язык>` →
+// вшитый `en` → вшитый `ru`. Испорченный ключ (не того вида, чужие `{…}`)
+// считается недостающим. Битый файл (не разобран JSON) не читается целиком;
+// JS показывает об этом окно (`broken`).
+//
+// Журнал не переводится: `t_log!` всегда берёт вшитый русский словарь.
+
+use std::collections::BTreeSet;
+use std::fmt::Display;
+use std::path::Path;
+use std::sync::OnceLock;
+use serde_json::{Map, Value};
+
+/// Базовый язык: в его словаре есть все ключи.
+pub const BASE_LANG: &str = "ru";
+
+/// Вшитые словари. Новый язык — строкой сюда и файлом в `lang/`.
+const EMBEDDED: &[(&str, &str)] = &[
+    ("ru", include_str!("../lang/ru.json")),
+    ("en", include_str!("../lang/en.json")),
+    ("uk", include_str!("../lang/uk.json")),
+];
+
+/// Категории `Intl.PluralRules`, допустимые в объекте фразы с числом.
+const PLURAL_CATEGORIES: [&str; 6] = ["zero", "one", "two", "few", "many", "other"];
+
+/// Выбранный язык и итоговый словарь.
+pub struct Dict {
+    pub lang:    String,
+    /// Слитый словарь: каждый ключ базового есть и здесь.
+    pub strings: Map<String, Value>,
+    /// Файлы `lang\`, которые не разобрались, — для окна в JS.
+    pub broken:  Vec<String>,
+    /// Строки для журнала: пишутся в setup, после шапки запуска.
+    pub notes:   Vec<String>,
+}
+
+/// Текст фразы для интерфейса — на выбранном языке.
+/// `t!("ключ")`, `t!("ключ", имя = значение, …)`, `t!("ключ", имя)` (= `имя = имя`).
+#[macro_export]
+macro_rules! t {
+    ($key:literal $(, $name:ident $(= $val:expr)?)* $(,)?) => {
+        $crate::i18n::tr($key, &[$((stringify!($name), $crate::i18n_arg!($name $(= $val)?))),*])
+    };
+}
+
+/// То же для журнала — всегда по вшитому русскому словарю.
+#[macro_export]
+macro_rules! t_log {
+    ($key:literal $(, $name:ident $(= $val:expr)?)* $(,)?) => {
+        $crate::i18n::tr_log($key, &[$((stringify!($name), $crate::i18n_arg!($name $(= $val)?))),*])
+    };
+}
+
+/// Фраза для интерфейса и журнала сразу — `Msg { ui, log }`.
+#[macro_export]
+macro_rules! t_msg {
+    ($($all:tt)*) => {
+        $crate::i18n::Msg { ui: $crate::t!($($all)*), log: $crate::t_log!($($all)*) }
+    };
+}
+
+#[macro_export]
+macro_rules! i18n_arg {
+    ($name:ident = $val:expr) => { &$val as &dyn std::fmt::Display };
+    ($name:ident)             => { &$name as &dyn std::fmt::Display };
+}
+
+/// Фраза, которая уходит и в интерфейс, и в журнал (причина отказа открытия,
+/// снимка, запасного браузера): `ui` — на языке интерфейса, `log` — по
+/// вшитому русскому. `t_msg!` — как `t!`, аргументы вычисляются дважды.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Msg {
+    pub ui:  String,
+    pub log: String,
+}
+
+static CURRENT: OnceLock<Dict> = OnceLock::new();
+static BASE: OnceLock<Map<String, Value>> = OnceLock::new();
+
+/// Разобрать словарь: объект JSON, BOM срезается (файл, сохранённый Блокнотом).
+fn parse(text: &str) -> Result<Map<String, Value>, String> {
+    match serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')) {
+        Ok(Value::Object(m)) => Ok(m),
+        Ok(_)  => Err("не объект JSON".to_string()),   // i18n: не переводится — журнал
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn embedded(lang: &str) -> Option<&'static str> {
+    EMBEDDED.iter().find(|(l, _)| *l == lang).map(|(_, text)| *text)
+}
+
+/// Вшитый русский словарь. Что он разбирается — сторожит тест.
+pub fn base() -> &'static Map<String, Value> {
+    BASE.get_or_init(|| parse(embedded(BASE_LANG).unwrap_or("{}")).unwrap_or_default())
+}
+
+/// Код языка из настройки, системы или имени файла: основной подтег,
+/// строчными («en-US» → «en»). Не буквы — None (в том числе «..\x»).
+pub fn normalize_code(s: &str) -> Option<String> {
+    let primary = s.trim().split(['-', '_']).next()?.to_ascii_lowercase();
+    let ok = (2..=3).contains(&primary.len()) && primary.bytes().all(|b| b.is_ascii_lowercase());
+    ok.then_some(primary)
+}
+
+/// Имена подстановок `{имя}` в строке.
+fn placeholders(s: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut rest = s;
+    while let Some(start) = rest.find('{') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find('}') else { break };
+        let name = &rest[..end];
+        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            out.insert(name.to_string());
+            rest = &rest[end + 1..];
+        }
+    }
+    out
+}
+
+fn plural_placeholders(m: &Map<String, Value>) -> Option<BTreeSet<String>> {
+    let mut all = BTreeSet::new();
+    for (cat, v) in m {
+        if !PLURAL_CATEGORIES.contains(&cat.as_str()) { return None; }
+        all.extend(placeholders(v.as_str()?));
+    }
+    Some(all)
+}
+
+/// Годится ли перевод `v` на место базового `base_v`: тот же вид (строка или
+/// фраза с числом), в строке — те же подстановки, в фразе с числом — не
+/// больше, чем в базовой (форма «one» может обойтись без `{n}`), и есть `other`.
+fn value_ok(base_v: &Value, v: &Value) -> bool {
+    match (base_v, v) {
+        (Value::String(b), Value::String(s)) => placeholders(b) == placeholders(s),
+        (Value::Object(b), Value::Object(m)) => {
+            let (Some(bp), Some(mp)) = (plural_placeholders(b), plural_placeholders(m)) else { return false };
+            m.contains_key("other") && mp.is_subset(&bp)
+        }
+        _ => false,
+    }
+}
+
+/// Наложить словарь `from` на `into`: только ключи базового и только годные
+/// значения; из файла `lang\` (`from_file`) — без ключей формата. Отвергнутые
+/// ключи — в `rejected`.
+fn overlay(into: &mut Map<String, Value>, from: &Map<String, Value>,
+           base: &Map<String, Value>, from_file: bool, rejected: &mut Vec<String>) {
+    for (k, v) in from {
+        if k == "_meta" { continue; }
+        match base.get(k) {
+            Some(_) if from_file && FORMAT_KEYS.contains(&k.as_str()) => rejected.push(k.clone()),
+            Some(bv) if value_ok(bv, v) => { into.insert(k.clone(), v.clone()); }
+            _ => rejected.push(k.clone()),
+        }
+    }
+}
+
+/// Порядок кандидатов: настройка, язык системы, английский, базовый.
+fn candidates(settings: Option<&str>, system: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for c in [settings.and_then(normalize_code), system.and_then(normalize_code),
+              Some("en".to_string()), Some(BASE_LANG.to_string())].into_iter().flatten() {
+        if !out.contains(&c) { out.push(c); }
+    }
+    out
+}
+
+/// Выбрать язык и собрать словарь. `base_text` и `embedded` — параметры ради
+/// тестов; в программе — вшитые.
+fn load_with(base_text: &str, embedded: &dyn Fn(&str) -> Option<&'static str>,
+             lang_dir: Option<&Path>, settings: Option<&str>, system: Option<&str>) -> Dict {
+    let base = parse(base_text).unwrap_or_default();
+    let mut broken = Vec::new();
+    let mut notes  = Vec::new();
+
+    // Файл lang\<код>.json: нет — None; не разобрался — в broken, тоже None.
+    let mut read_file = |code: &str| -> Option<Map<String, Value>> {
+        let name = format!("{code}.json");
+        let text = std::fs::read_to_string(lang_dir?.join(&name)).ok()?;
+        match parse(&text) {
+            Ok(m)  => Some(m),
+            Err(e) => {
+                notes.push(format!("язык: lang\\{name} не разобран ({e}) — не используется"));   // i18n: не переводится — журнал
+                broken.push(name);
+                None
+            }
+        }
+    };
+
+    let mut lang = BASE_LANG.to_string();
+    let mut file = None;
+    for code in candidates(settings, system) {
+        let f = read_file(&code);
+        if f.is_some() || embedded(&code).is_some() {
+            lang = code;
+            file = f;
+            break;
+        }
+    }
+
+    let mut strings = base.clone();
+    let layers = [
+        ("вшитый en".to_string(),      embedded("en").filter(|_| lang != "en" && lang != BASE_LANG).and_then(|t| parse(t).ok()), false),   // i18n: не переводится — журнал
+        (format!("вшитый {lang}"),  embedded(&lang).filter(|_| lang != BASE_LANG).and_then(|t| parse(t).ok()), false),   // i18n: не переводится — журнал
+        (format!("lang\\{lang}.json"), file, true),
+    ];
+    for (name, layer, from_file) in layers {
+        let Some(layer) = layer else { continue };
+        let mut rejected = Vec::new();
+        overlay(&mut strings, &layer, &base, from_file, &mut rejected);
+        if !rejected.is_empty() {
+            notes.push(format!("язык: {name} — ключи пропущены (неизвестные или неверные): {}",   // i18n: не переводится — журнал
+                               rejected.join(", ")));
+        }
+    }
+    Dict { lang, strings, broken, notes }
+}
+
+/// Ключи формата файлов: `lang\` их не подменяет. Файл, записанный с меткой
+/// из `lang\`, не прочитал бы никто без того же `lang\`; язык только из
+/// `lang\` получает метку по цепочке — вшитую английскую.
+const FORMAT_KEYS: &[&str] = &["txt.note_label"];
+
+/// Метка заметки в TXT старых версий (2.3.4 и раньше знают только её).
+/// В коде, а не в ru.json: правка словаря не должна ломать чтение старых файлов.
+pub const LEGACY_NOTE_LABEL: &str = "Заметка:";   // i18n: не переводится — метка TXT старых версий
+
+/// Метки заметки, которые узнаёт разбор TXT: старая и `txt.note_label`
+/// всех вшитых словарей, без повторов. От языка интерфейса не зависит —
+/// файл с другого языка читается целиком.
+pub fn note_labels() -> &'static [String] {
+    static LABELS: OnceLock<Vec<String>> = OnceLock::new();
+    LABELS.get_or_init(|| {
+        let mut out = vec![LEGACY_NOTE_LABEL.to_string()];
+        for (_, text) in EMBEDDED {
+            let label = parse(text).ok()
+                .and_then(|m| m.get("txt.note_label").and_then(Value::as_str).map(str::to_string));
+            if let Some(l) = label.filter(|l| !l.is_empty() && !out.contains(l)) { out.push(l); }
+        }
+        out
+    })
+}
+
+/// Язык в списке «Настроек»: код и название на самом языке (`_meta.name`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LangInfo {
+    pub code: String,
+    pub name: String,
+}
+
+/// Список языков для «Настроек» и язык пункта «Авто».
+#[derive(Debug, serde::Serialize)]
+pub struct LangList {
+    pub languages: Vec<LangInfo>,
+    /// Язык, который выбрался бы без настройки `language`.
+    pub auto: String,
+}
+
+fn meta_name(m: &Map<String, Value>) -> Option<String> {
+    let name = m.get("_meta")?.get("name")?.as_str()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Вшитые языки и `lang\*.json`, по названию. Битый файл в список не входит —
+/// при запуске он тоже не читается; файл, которого загрузчик не найдёт по
+/// коду («pt-BR.json» — ищется «pt.json»), тоже. Название из файла важнее
+/// вшитого; нет ни того, ни другого — код. `auto` — по тому же порядку, что
+/// при запуске без настройки.
+fn list_with(codes: &[&str], embedded: &dyn Fn(&str) -> Option<&'static str>,
+             lang_dir: Option<&Path>, system: Option<&str>) -> LangList {
+    let mut found: Vec<(String, Option<String>)> = codes.iter()
+        .map(|c| (c.to_string(), embedded(c).and_then(|t| parse(t).ok()).and_then(|m| meta_name(&m))))
+        .collect();
+    for entry in lang_dir.and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("json") { continue; }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let code = stem.to_ascii_lowercase();
+        if normalize_code(stem).as_deref() != Some(code.as_str()) { continue; }
+        let Ok(m) = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| parse(&t)) else { continue };
+        let name = meta_name(&m);
+        match found.iter_mut().find(|(c, _)| *c == code) {
+            Some(slot) => if name.is_some() { slot.1 = name; },
+            None => found.push((code, name)),
+        }
+    }
+    let auto = candidates(None, system).into_iter()
+        .find(|c| found.iter().any(|(f, _)| f == c))
+        .unwrap_or_else(|| BASE_LANG.to_string());
+    let mut languages: Vec<LangInfo> = found.into_iter()
+        .map(|(code, name)| LangInfo { name: name.unwrap_or_else(|| code.clone()), code })
+        .collect();
+    languages.sort_by_cached_key(|l| l.name.to_lowercase());
+    LangList { languages, auto }
+}
+
+/// Список языков для «Настроек» — читается при каждом открытии окна:
+/// файл, положенный в `lang\` при открытой программе, виден сразу.
+pub fn list_languages() -> LangList {
+    let codes: Vec<&str> = EMBEDDED.iter().map(|(c, _)| *c).collect();
+    list_with(&codes, &embedded, lang_dir().as_deref(), system_language().as_deref())
+}
+
+/// Папка `lang\` рядом с exe.
+fn lang_dir() -> Option<std::path::PathBuf> {
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("lang")))
+}
+
+/// Язык интерфейса Windows: «ru-RU», «en-US». None — не узнать.
+#[cfg(windows)]
+fn system_language() -> Option<String> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetUserDefaultUILanguage() -> u16;
+        fn LCIDToLocaleName(locale: u32, name: *mut u16, cch: i32, flags: u32) -> i32;
+    }
+    let mut buf = [0u16; 85];   // LOCALE_NAME_MAX_LENGTH
+    let n = unsafe { LCIDToLocaleName(GetUserDefaultUILanguage() as u32, buf.as_mut_ptr(), buf.len() as i32, 0) };
+    (n > 1).then(|| String::from_utf16_lossy(&buf[..n as usize - 1]))
+}
+#[cfg(not(windows))]
+fn system_language() -> Option<String> { None }
+
+/// Выбор языка при запуске: `language` из settings.json, язык системы, `lang\`
+/// рядом с exe. Зовётся из main() до Builder: меню трея строится в setup.
+/// Выбранный язык в settings.json не пишется: появится `en.json` — английская
+/// Windows получит его сама, а не застрянет на записанном когда-то `ru`.
+pub fn init() {
+    let settings = serde_json::from_str::<Value>(&crate::read_settings_raw()).ok()
+        .and_then(|v| v.get("language").and_then(|x| x.as_str()).map(str::to_string));
+    let system = system_language();
+    let dir = lang_dir();
+    let mut d = load_with(embedded(BASE_LANG).unwrap_or("{}"), &embedded, dir.as_deref(),
+                          settings.as_deref(), system.as_deref());
+    d.notes.insert(0, format!("язык: {} (настройка: {}, система: {})", d.lang,   // i18n: не переводится — журнал
+                              settings.as_deref().unwrap_or("нет"), system.as_deref().unwrap_or("не определён")));   // i18n: не переводится — журнал
+    let _ = CURRENT.set(d);
+}
+
+/// Текущий словарь; до init() (и в тестах) — базовый.
+pub fn current() -> &'static Dict {
+    CURRENT.get_or_init(|| Dict {
+        lang: BASE_LANG.to_string(), strings: base().clone(), broken: Vec::new(), notes: Vec::new(),
+    })
+}
+
+/// Подставить аргументы в строку словаря. Нет ключа или это фраза с числом
+/// (её склоняет JS) — заметная метка `⟦ключ⟧`, не пустота.
+fn render(map: &Map<String, Value>, key: &str, args: &[(&str, &dyn Display)]) -> String {
+    let Some(text) = map.get(key).and_then(Value::as_str) else { return format!("⟦{key}⟧") };
+    let mut out = text.to_string();
+    for (name, val) in args {
+        out = out.replace(&format!("{{{name}}}"), &val.to_string());
+    }
+    out
+}
+
+pub fn tr(key: &str, args: &[(&str, &dyn Display)]) -> String {
+    render(&current().strings, key, args)
+}
+
+pub fn tr_log(key: &str, args: &[(&str, &dyn Display)]) -> String {
+    render(base(), key, args)
+}
+
+/// Скрипт для WebView2: словарь — в `window.__UA_I18N__` до загрузки app.js,
+/// чтобы `t()` работал и в константах верхнего уровня, и в разметке до
+/// первой отрисовки.
+pub fn init_script() -> String {
+    let d = current();
+    let data = serde_json::json!({ "lang": d.lang, "strings": d.strings, "broken": d.broken });
+    format!("window.__UA_I18N__ = {data};")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn no_embedded(_: &str) -> Option<&'static str> { None }
+
+    struct TmpDir(std::path::PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let p = std::env::temp_dir().join(format!("ua_i18n_test_{tag}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            TmpDir(p)
+        }
+        fn write(&self, name: &str, text: &str) { std::fs::write(self.0.join(name), text).unwrap(); }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    const BASE_T: &str = r#"{
+        "_meta": { "lang": "ru" },
+        "a": "Файл {path}",
+        "b": "Готово",
+        "txt.note_label": "Заметка:",
+        "n": { "one": "{n} ссылка", "few": "{n} ссылки", "many": "{n} ссылок", "other": "{n} ссылки" }
+    }"#;
+
+    fn s<'a>(d: &'a Dict, k: &str) -> &'a Value { d.strings.get(k).unwrap() }
+
+    /// Вшитый ru.json разбирается, и у каждой фразы с числом есть все категории
+    /// русского: иначе цепочка у вшитых словарей дошла бы до ⟦ключ⟧.
+    #[test]
+    fn embedded_ru_parses_and_plurals_complete() {
+        let m = parse(embedded(BASE_LANG).unwrap()).expect("вшитый ru.json не разобрался");
+        for (k, v) in &m {
+            if k == "_meta" { continue; }
+            match v {
+                Value::String(_) => {}
+                Value::Object(o) => for cat in ["one", "few", "many", "other"] {
+                    assert!(o.get(cat).is_some_and(Value::is_string), "{k}: нет категории {cat}");
+                },
+                _ => panic!("{k}: не строка и не фраза с числом"),
+            }
+        }
+    }
+
+    /// Категории `Intl.PluralRules` по языкам вшитых словарей. Сверено с
+    /// `new Intl.PluralRules(код).resolvedOptions().pluralCategories` в Node 24
+    /// и в WebView2 (27.10.2026). Новый вшитый язык — строкой сюда.
+    const PLURAL_BY_LANG: &[(&str, &[&str])] = &[
+        ("ru", &["few", "many", "one", "other"]),
+        ("uk", &["few", "many", "one", "other"]),
+        ("en", &["one", "other"]),
+    ];
+
+    /// Вшитые переводы полны: ключи как в ru, подстановки те же, у фраз с
+    /// числом — ровно категории своего языка (лишняя «few» в английском — знак
+    /// фразы, скопированной не глядя), `_meta` с кодом и названием. Частичные
+    /// файлы `lang\` по-прежнему разрешены — тест только про вшитые.
+    #[test]
+    fn embedded_translations_complete() {
+        let langs: Vec<&str> = EMBEDDED.iter().map(|(l, _)| *l).collect();
+        for need in ["en", "uk"] {
+            assert!(langs.contains(&need), "нет вшитого {need}.json");
+        }
+        let base = parse(embedded(BASE_LANG).unwrap()).unwrap();
+        let mut errors = Vec::new();
+        for &lang in langs.iter().filter(|l| **l != BASE_LANG) {
+            let m = match parse(embedded(lang).unwrap()) {
+                Ok(m) => m,
+                Err(e) => { errors.push(format!("{lang}: не разобран: {e}")); continue; }
+            };
+            let Some(&(_, cats)) = PLURAL_BY_LANG.iter().find(|(l, _)| *l == lang) else {
+                errors.push(format!("{lang}: добавь категории в PLURAL_BY_LANG"));
+                continue;
+            };
+            if m.get("_meta").and_then(|x| x.get("lang")).and_then(Value::as_str) != Some(lang) || meta_name(&m).is_none() {
+                errors.push(format!("{lang}: _meta без lang = \"{lang}\" или name"));
+            }
+            for k in base.keys().filter(|k| *k != "_meta" && !m.contains_key(*k)) {
+                errors.push(format!("{lang}: нет ключа {k}"));
+            }
+            for (k, v) in m.iter().filter(|(k, _)| *k != "_meta") {
+                let Some(bv) = base.get(k) else { errors.push(format!("{lang}: лишний ключ {k}")); continue };
+                match (bv, v) {
+                    (Value::String(b), Value::String(s)) => if placeholders(b) != placeholders(s) {
+                        errors.push(format!("{lang}: {k}: подстановки {:?} ≠ {:?}", placeholders(s), placeholders(b)));
+                    },
+                    (Value::Object(_), Value::Object(o)) => {
+                        let mut have: Vec<&str> = o.keys().map(String::as_str).collect();
+                        have.sort();
+                        if have != cats { errors.push(format!("{lang}: {k}: категории {have:?}, нужны {cats:?}")); }
+                        if !o.get("other").and_then(Value::as_str).is_some_and(|s| s.contains("{n}")) {
+                            errors.push(format!("{lang}: {k}: в other нет {{n}}"));
+                        }
+                        if !value_ok(bv, v) { errors.push(format!("{lang}: {k}: не строки или чужие подстановки")); }
+                    }
+                    _ => errors.push(format!("{lang}: {k}: не тот вид (строка / фраза с числом)")),
+                }
+            }
+            let d = load_with(embedded(BASE_LANG).unwrap(), &embedded, None, Some(lang), None);
+            if d.lang != lang || !d.notes.is_empty() { errors.push(format!("{lang}: загрузка: {} {:?}", d.lang, d.notes)); }
+        }
+        assert!(errors.is_empty(), "\n{}", errors.join("\n"));
+    }
+
+    /// Метки заметки в формате TXT у вшитых языков: годятся для разбора
+    /// (непустая, без пробелов по краям, кончается на «:», не похожа на папку
+    /// или ссылку) и различны — иначе два языка незаметно разъедутся.
+    #[test]
+    fn embedded_note_labels_valid_and_distinct() {
+        let mut seen: Vec<(&str, String)> = Vec::new();
+        for (lang, text) in EMBEDDED {
+            let m = parse(text).unwrap();
+            let l = m.get("txt.note_label").and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("{lang}: нет txt.note_label")).to_string();
+            assert!(!l.is_empty() && l.trim() == l && l.ends_with(':') && !l.starts_with('[') && !l.contains(" - "),
+                    "{lang}: метка «{l}» не годится");
+            if let Some((other, _)) = seen.iter().find(|(_, x)| *x == l) { panic!("{lang} и {other}: одна метка «{l}»"); }
+            seen.push((lang, l));
+        }
+    }
+
+    /// Разбор узнаёт метки всех вшитых языков и старую «Заметка:» — от языка
+    /// интерфейса это не зависит.
+    #[test]
+    fn note_labels_all_embedded_and_legacy() {
+        let l = note_labels();
+        for want in ["Заметка:", "Note:", "Нотатка:"] {
+            assert!(l.iter().any(|x| x == want), "нет {want}: {l:?}");
+        }
+        assert_eq!(l.iter().filter(|x| *x == "Заметка:").count(), 1, "без повторов: {l:?}");
+    }
+
+    /// Метку формата TXT `lang\` не подменяет: файл с такой меткой не прочитал
+    /// бы никто без того же `lang\`. Остальные ключи файла берутся.
+    #[test]
+    fn lang_file_cannot_override_format_key() {
+        let d = TmpDir::new("format_key");
+        d.write("ru.json", r#"{"txt.note_label": "Примечание:", "b": "Сделано"}"#);
+        let r = load_with(BASE_T, &no_embedded, Some(&d.0), None, None);
+        assert_eq!(s(&r, "txt.note_label"), "Заметка:");
+        assert_eq!(s(&r, "b"), "Сделано");
+        assert!(r.notes.iter().any(|n| n.contains("txt.note_label")), "{:?}", r.notes);
+    }
+
+    #[test]
+    fn normalize_code_takes_primary_subtag() {
+        assert_eq!(normalize_code("en-US").as_deref(), Some("en"));
+        assert_eq!(normalize_code("UK").as_deref(), Some("uk"));
+        assert_eq!(normalize_code("pt_BR").as_deref(), Some("pt"));
+        assert_eq!(normalize_code(""), None);
+        assert_eq!(normalize_code("..\\x"), None);
+        assert_eq!(normalize_code("e1"), None);
+    }
+
+    #[test]
+    fn language_order_settings_system_en_ru() {
+        let d = TmpDir::new("order");
+        d.write("de.json", r#"{"b": "Fertig"}"#);
+        d.write("fr.json", r#"{"b": "Prêt"}"#);
+        let pick = |set: Option<&str>, sys: Option<&str>|
+            load_with(BASE_T, &no_embedded, Some(&d.0), set, sys).lang;
+        assert_eq!(pick(Some("de"), Some("fr-FR")), "de", "настройка — первой");
+        assert_eq!(pick(Some("xx"), Some("fr-FR")), "fr", "настройки нет в словарях — язык системы");
+        assert_eq!(pick(None, Some("en-US")), "ru", "английского нет — базовый");
+        let en_only = |l: &str| (l == "en").then_some(r#"{"b": "Done"}"#);
+        assert_eq!(load_with(BASE_T, &en_only, Some(&d.0), None, Some("ja-JP")).lang, "en",
+                   "ни настройки, ни системы — английский");
+    }
+
+    #[test]
+    fn partial_file_falls_back_to_base() {
+        let d = TmpDir::new("partial");
+        d.write("ru.json", r#"{"b": "Сделано"}"#);
+        let r = load_with(BASE_T, &no_embedded, Some(&d.0), None, None);
+        assert_eq!(r.lang, "ru");
+        assert_eq!(s(&r, "b"), "Сделано", "lang\\ru.json подменяет вшитое");
+        assert_eq!(s(&r, "a"), "Файл {path}", "недостающий ключ — из базового");
+        assert!(r.broken.is_empty() && r.notes.is_empty());
+    }
+
+    #[test]
+    fn broken_file_is_ignored_and_reported() {
+        let d = TmpDir::new("broken");
+        d.write("ru.json", "{ \"b\": ");
+        let r = load_with(BASE_T, &no_embedded, Some(&d.0), None, None);
+        assert_eq!(s(&r, "b"), "Готово");
+        assert_eq!(r.broken, vec!["ru.json".to_string()]);
+        assert!(r.notes.iter().any(|n| n.contains("lang\\ru.json")), "{:?}", r.notes);
+    }
+
+    #[test]
+    fn broken_new_language_falls_through() {
+        let d = TmpDir::new("broken_new");
+        d.write("de.json", "[1, 2");
+        let r = load_with(BASE_T, &no_embedded, Some(&d.0), Some("de"), None);
+        assert_eq!(r.lang, "ru", "битый de.json — языка нет, дальше по порядку");
+        assert_eq!(r.broken, vec!["de.json".to_string()]);
+    }
+
+    #[test]
+    fn bad_values_are_rejected() {
+        let d = TmpDir::new("bad");
+        d.write("de.json", r#"{
+            "a": "Datei {pfad}",
+            "b": { "one": "x", "other": "y" },
+            "n": { "one": "ein Link", "other": "{n} Links {x}" },
+            "zzz": "unbekannt",
+            "_meta": { "lang": "de" }
+        }"#);
+        let r = load_with(BASE_T, &no_embedded, Some(&d.0), Some("de"), None);
+        assert_eq!(r.lang, "de");
+        assert_eq!(s(&r, "a"), "Файл {path}", "чужая подстановка — ключ из базового");
+        assert_eq!(s(&r, "b"), "Готово", "фраза с числом на месте строки — из базового");
+        assert!(s(&r, "n").get("many").is_some(), "чужая подстановка в фразе с числом — из базового");
+        assert!(!r.strings.contains_key("zzz"), "неизвестный ключ не добавляется");
+        let note = r.notes.join("\n");
+        for k in ["a", "b", "n", "zzz"] { assert!(note.contains(k), "{k} не в журнале: {note}"); }
+        assert!(!note.contains("_meta"));
+    }
+
+    #[test]
+    fn plural_may_drop_n_in_one() {
+        let d = TmpDir::new("plural");
+        d.write("de.json", r#"{ "n": { "one": "ein Link", "other": "{n} Links" } }"#);
+        let r = load_with(BASE_T, &no_embedded, Some(&d.0), Some("de"), None);
+        assert_eq!(s(&r, "n").get("one").unwrap(), "ein Link");
+        let d2 = TmpDir::new("plural_no_other");
+        d2.write("de.json", r#"{ "n": { "one": "ein Link" } }"#);
+        let r2 = load_with(BASE_T, &no_embedded, Some(&d2.0), Some("de"), None);
+        assert!(s(&r2, "n").get("many").is_some(), "без other — из базового");
+    }
+
+    fn names(l: &LangList) -> Vec<(&str, &str)> {
+        l.languages.iter().map(|x| (x.code.as_str(), x.name.as_str())).collect()
+    }
+
+    #[test]
+    fn language_list_embedded_sorted_by_name() {
+        let emb = |l: &str| match l {
+            "ru" => Some(r#"{"_meta": {"lang": "ru", "name": "Русский"}}"#),
+            "en" => Some(r#"{"_meta": {"lang": "en", "name": "English"}}"#),
+            "uk" => Some(r#"{"_meta": {"lang": "uk", "name": "Українська"}}"#),
+            _ => None,
+        };
+        let l = list_with(&["ru", "en", "uk"], &emb, None, Some("uk-UA"));
+        assert_eq!(names(&l), [("en", "English"), ("ru", "Русский"), ("uk", "Українська")]);
+        assert_eq!(l.auto, "uk");
+        assert_eq!(list_with(&["ru", "en", "uk"], &emb, None, Some("ja-JP")).auto, "en",
+                   "языка системы нет — английский");
+        assert_eq!(list_with(&["ru"], &emb, None, None).auto, "ru");
+    }
+
+    #[test]
+    fn language_list_reads_lang_dir() {
+        let d = TmpDir::new("list");
+        d.write("de.json", "\u{feff}{\"_meta\": {\"name\": \"Deutsch\"}, \"b\": \"Fertig\"}");
+        d.write("ru.json", r#"{"_meta": {"name": "Русский (мой)"}}"#);
+        d.write("pl.json", r#"{"b": "Gotowe"}"#);
+        d.write("fr.json", "{ \"b\": ");
+        d.write("pt-BR.json", r#"{"_meta": {"name": "Português"}}"#);
+        d.write("FI.json", r#"{"_meta": {"name": "Suomi"}}"#);
+        d.write("notes.txt", "x");
+        let emb = |l: &str| (l == "ru").then_some(r#"{"_meta": {"name": "Русский"}}"#);
+        let l = list_with(&["ru"], &emb, Some(&d.0), Some("de-AT"));
+        assert_eq!(names(&l), [("de", "Deutsch"), ("pl", "pl"), ("fi", "Suomi"), ("ru", "Русский (мой)")],
+                   "битый fr и pt-BR (загрузчик ищет pt.json) — не в списке; без _meta.name — код");
+        assert_eq!(l.auto, "de");
+        assert_eq!(list_with(&["ru"], &emb, Some(&d.0), Some("fr-FR")).auto, "ru",
+                   "битый файл языка системы — как при запуске, дальше по порядку");
+    }
+
+    #[test]
+    fn render_substitutes_and_marks_missing() {
+        let m = parse(BASE_T).unwrap();
+        let path = "C:\\x";
+        assert_eq!(render(&m, "a", &[("path", &path)]), "Файл C:\\x");
+        assert_eq!(render(&m, "нет", &[]), "⟦нет⟧");
+        assert_eq!(render(&m, "n", &[]), "⟦n⟧", "фразу с числом склоняет JS");
+    }
+
+    #[test]
+    fn macros_pass_named_and_shorthand_args() {
+        // Сторож на будущее: ключа нет в словаре — проверяется только, что
+        // макросы собираются с обеими формами аргументов.
+        let who = "x";
+        assert_eq!(t!("нет.такого", who, n = 1 + 1), "⟦нет.такого⟧");
+        assert_eq!(t_log!("нет.такого"), "⟦нет.такого⟧");
+    }
+}

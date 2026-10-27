@@ -7,6 +7,34 @@ const { convertFileSrc } = window.__TAURI__.core;
 const MAX_FAVICON_CONCURRENCY = 5; // intentional per-domain rate limiting
 const APP_VERSION = '2.3.4-beta';
 
+// ── Словарь интерфейса ─────────────────────────────────────────────────────
+// Словарь кладёт Rust скриптом инициализации до загрузки app.js
+// (i18n::init_script): { lang, strings, broken }. Поэтому t() работает и в
+// константах ниже, и разметка переводится до первой отрисовки.
+// Ключ — всегда литерал: по нему тесты сверяют вызовы со словарём.
+// Локальные переменные с именем t не заводить — затенят функцию.
+const I18N = window.__UA_I18N__ || { lang: 'ru', strings: {}, broken: [] };
+const _pluralRules = new Intl.PluralRules(I18N.lang);
+
+// Фраза с числом — объект категорий Intl.PluralRules, число в ней — {n}.
+// Нет ключа — заметная метка ⟦ключ⟧, не пустота.
+function t(key, params) {
+  let v = I18N.strings[key];
+  if (v == null) return `⟦${key}⟧`;
+  if (typeof v === 'object') v = v[_pluralRules.select(params?.n ?? 0)] ?? v.other ?? '';
+  return params ? v.replace(/\{(\w+)\}/g, (m, k) => (k in params ? String(params[k]) : m)) : v;
+}
+
+// Разметка: data-i18n — текст элемента, data-i18n-title — подсказка.
+function applyI18nDom(root = document) {
+  root.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });     // i18n: ключ из разметки
+  root.querySelectorAll('[data-i18n-title]').forEach(el => { el.title = t(el.dataset.i18nTitle); }); // i18n: ключ из разметки
+}
+document.documentElement.lang = I18N.lang;
+applyI18nDom();
+// Разметка переведена — показать окно (style.css скрывает его до этой метки)
+document.documentElement.dataset.i18nReady = '1';
+
 // Записать строку в журнал программы. console.error в release-сборке
 // недоступен (DevTools отключены), поэтому причины отказов уходят сюда.
 function logUi(message) {
@@ -33,10 +61,10 @@ function logTiming(what, t0, t1, t2, t3) {
 // ── Link checker ─────────────────────────────────────────────────────────
 // Column config: id → CSS-var suffix, label, default width
 const CHK_COLS = [
-  { id: "url",  label: "URL",    cls: "cl-url",  var: "--cw-url",  w: 240, num: false },
-  { id: "st",   label: "Статус", cls: "cl-st",   var: "--cw-st",   w: 58,  num: false },
-  { id: "code", label: "HTTP",   cls: "cl-code", var: "--cw-code", w: 42,  num: true  },
-  { id: "ms",   label: "Время",  cls: "cl-ms",   var: "--cw-ms",   w: 52,  num: true  },
+  { id: "url",  label: t('chk.col.url'),    cls: "cl-url",  var: "--cw-url",  w: 240, num: false },
+  { id: "st",   label: t('chk.col.status'), cls: "cl-st",   var: "--cw-st",   w: 58,  num: false },
+  { id: "code", label: t('chk.col.http'),   cls: "cl-code", var: "--cw-code", w: 42,  num: true  },
+  { id: "ms",   label: t('chk.col.time'),   cls: "cl-ms",   var: "--cw-ms",   w: 52,  num: true  },
 ];
 let chkSort    = { col: null, asc: true };
 let chkResults = [];   // all results for sort/re-render
@@ -97,15 +125,15 @@ function buildChkHeader() {
 function makeChkRow(r) {
   const row = document.createElement("div");
   let cls, st;
-  if (r.skipped)        { cls = "cl-skip"; st = "не проверяется"; }
-  else if (r.timed_out) { cls = "cl-err";  st = "Timeout"; }
-  else if (r.redirect)  { cls = "cl-warn"; st = "Redirect"; }
-  else if (r.ok)        { cls = "cl-ok";   st = "OK"; }
-  else                  { cls = "cl-err";  st = "Ошибка"; }
+  if (r.skipped)        { cls = "cl-skip"; st = t('chk.st.skipped'); }
+  else if (r.timed_out) { cls = "cl-err";  st = t('chk.st.timeout'); }
+  else if (r.redirect)  { cls = "cl-warn"; st = t('chk.st.redirect'); }
+  else if (r.ok)        { cls = "cl-ok";   st = t('chk.st.ok'); }
+  else                  { cls = "cl-err";  st = t('chk.st.error'); }
   const rowCls = r.skipped ? "" : ((!r.ok || r.redirect) ? (r.redirect ? "cl-warn" : "cl-err") : "");
   row.className = "cl-row " + rowCls;
-  const ms   = r.ms < 1000 ? `${r.ms}ms` : `${(r.ms/1000).toFixed(1)}s`;
-  const code = r.skipped ? "—" : (r.status || (r.timed_out ? "T/O" : "—"));
+  const ms   = r.ms < 1000 ? t('unit.ms', { n: r.ms }) : t('unit.s', { n: (r.ms/1000).toFixed(1) });
+  const code = r.skipped ? "—" : (r.status || (r.timed_out ? t('chk.st.timeout_short') : "—"));
   const urlStr = r.url.replace(/^https?:\/\/(www\.)?/, "");
   row.innerHTML =
     `<div class="cl-url" title="${r.url}">${urlStr}</div>` +
@@ -127,7 +155,7 @@ function renderChkTable() {
       let va, vb;
       if (col.id === "ms")   { va = a.ms    || 0; vb = b.ms    || 0; }
       else if (col.id === "code") { va = a.status || 0; vb = b.status || 0; }
-      else if (col.id === "st")   { va = a.ok ? "OK" : "Ошибка"; vb = b.ok ? "OK" : "Ошибка"; }
+      else if (col.id === "st")   { va = a.ok ? t('chk.st.ok') : t('chk.st.error'); vb = b.ok ? t('chk.st.ok') : t('chk.st.error'); }
       else { va = a.url || ""; vb = b.url || ""; }
       if (col.num || col.id === "ms" || col.id === "code") {
         return chkSort.asc ? va - vb : vb - va;
@@ -227,11 +255,22 @@ function startInlineRename(folderId) {
   labelEl.replaceWith(input);
   input.select();
 
+  // Поле стоит внутри строки дерева: щелчок всплывал до неё, строка забирала
+  // фокус — и правка закрывалась с сохранением; двойной щелчок раскрывал
+  // папку. Мышь внутри поля — только полю. Строка на время правки не
+  // перетаскивается, иначе протяжка мышью тащит её вместо выделения текста.
+  for (const type of ['mousedown', 'click', 'dblclick']) {
+    input.addEventListener(type, e => e.stopPropagation());
+  }
+  const wasDraggable = item.draggable;
+  item.draggable = false;
+
   let committed = false;
 
   async function commit() {
     if (committed) return;
     committed = true;
+    item.draggable = wasDraggable;
     const newName = input.value.trim() || orig;
     const span = document.createElement('span');
     span.className = 'label';
@@ -251,6 +290,7 @@ function startInlineRename(folderId) {
   function cancel() {
     if (committed) return;
     committed = true;
+    item.draggable = wasDraggable;
     const span = document.createElement('span');
     span.className = 'label';
     span.textContent = orig;
@@ -299,7 +339,7 @@ function _refreshBreadcrumbIfOnPath(id) {
 async function createFolderAndRename(parentId) {
   try {
     const t0 = performance.now();
-    const newId = await invoke('create_folder', { parentId, title: 'Новая папка' });
+    const newId = await invoke('create_folder', { parentId, title: t('folder.new_name') });
     const t1 = performance.now();
     const [node] = _applyNodeRows(await invoke('get_nodes', { ids: [newId] }));
     const t2 = performance.now();
@@ -347,7 +387,7 @@ function openCheckerPanel(folderNode, bookmarkListOverride) {
   CC.redirects.textContent = "0";
   CC.timeouts.textContent  = "0";
   chkBarFill.style.width   = "0%";
-  chkStatusText.textContent = "Готов к проверке";
+  chkStatusText.textContent = t('chk.ready');
   chkResults = [];
   chkSort    = { col: null, asc: true };
   buildChkHeader();
@@ -384,7 +424,7 @@ async function runChecker() {
     const batch = _ck.bookmarks.slice(i, i + BATCH);
     await Promise.all(batch.map(async (b) => {
       if (_ck.cancelled) return;
-      chkStatusText.textContent = "Проверяется: " + b.url;
+      chkStatusText.textContent = t('chk.checking', { url: b.url });
 
       const r = await invoke("check_url", { url: b.url }).catch(err => {
         // Отказ САМОГО вызова, а не ответ сервера: команда до своих записей
@@ -423,8 +463,8 @@ async function runChecker() {
   chkStopBtn.disabled  = true;
   chkStartBtn.disabled = _ck.done >= total;
   chkStatusText.textContent = _ck.cancelled
-    ? `Остановлено. Проверено: ${_ck.done}, ошибок: ${_ck.errors}`
-    : `Завершено. Всего: ${total}, ошибок: ${_ck.errors}, redirect: ${_ck.redirects}`;
+    ? t('chk.stopped', { done: _ck.done, errors: _ck.errors })
+    : t('chk.finished', { total, errors: _ck.errors, redirects: _ck.redirects });
   chkBarFill.style.width = _ck.cancelled ? chkBarFill.style.width : "100%";
 }
 
@@ -457,8 +497,8 @@ async function runChecker() {
 chkStartBtn.onclick   = () => { if (!_ck.running) runChecker(); };
 chkPauseBtn.onclick   = () => {
   _ck.paused = !_ck.paused;
-  chkPauseBtn.textContent = _ck.paused ? "Продолжить" : "Пауза";
-  chkStatusText.textContent = _ck.paused ? "Пауза…" : chkStatusText.textContent;
+  chkPauseBtn.textContent = _ck.paused ? t('chk.resume') : t('chk.pause');
+  chkStatusText.textContent = _ck.paused ? t('chk.paused') : chkStatusText.textContent;
 };
 chkStopBtn.onclick    = () => { _ck.cancelled = true; _ck.paused = false; };
 document.getElementById("chk-close2").onclick  = () => checkerPanel.classList.add("hidden");
@@ -481,14 +521,14 @@ function showFaviconPanel(total) {
   document.getElementById('fv-bar-fill').style.width = '0%';
   document.getElementById('fv-domain').textContent   = '';
   document.getElementById('favicon-panel').classList.remove('hidden');
-  setStatus(`Загрузка favicon 0/${total}`, { sticky: true });
+  setStatus(t('status.favicon_progress', { done: 0, total }), { sticky: true });
 }
 
 function _updateFaviconPanelProgress() {
   document.getElementById('fv-done').textContent = _faviconDone;
   const pct = _faviconTotal > 0 ? Math.round(_faviconDone / _faviconTotal * 100) : 0;
   document.getElementById('fv-bar-fill').style.width = pct + '%';
-  setStatus(`Загрузка favicon ${_faviconDone}/${_faviconTotal}`, { sticky: true });
+  setStatus(t('status.favicon_progress', { done: _faviconDone, total: _faviconTotal }), { sticky: true });
 }
 
 function hideFaviconPanel() {
@@ -496,9 +536,9 @@ function hideFaviconPanel() {
 }
 
 function _finishFaviconBatch() {
-  document.getElementById('fv-domain').textContent = 'Готово';
+  document.getElementById('fv-domain').textContent = t('panel.done');
   // _faviconDone — пройдено доменов, вместе с неудачами; итог — как в журнале.
-  setStatus(`Favicon: удалось ${_faviconDone - _faviconFailed}, не удалось ${_faviconFailed}`);
+  setStatus(t('status.favicon_done', { ok: _faviconDone - _faviconFailed, failed: _faviconFailed }));
   // Одна строка на весь пакет: для «у меня половина иконок не грузится»
   // сводка полезнее, чем сотня отдельных записей.
   logUi(`favicon, итог пакета: всего ${_faviconTotal}, удалось ${_faviconDone - _faviconFailed}, `
@@ -535,14 +575,14 @@ function showThumbPanel(total) {
   document.getElementById('tp-bar-fill').style.width = '0%';
   document.getElementById('tp-label').textContent   = '';
   document.getElementById('thumb-panel').classList.remove('hidden');
-  setStatus(`Загрузка рисунков 0/${total}`, { sticky: true });
+  setStatus(t('status.thumb_progress', { done: 0, total }), { sticky: true });
 }
 
 function _updateThumbPanelProgress() {
   document.getElementById('tp-done').textContent = _thumbDone;
   const pct = _thumbTotal > 0 ? Math.round(_thumbDone / _thumbTotal * 100) : 0;
   document.getElementById('tp-bar-fill').style.width = pct + '%';
-  setStatus(`Загрузка рисунков ${_thumbDone}/${_thumbTotal}`, { sticky: true });
+  setStatus(t('status.thumb_progress', { done: _thumbDone, total: _thumbTotal }), { sticky: true });
 }
 
 function hideThumbPanel() {
@@ -550,15 +590,19 @@ function hideThumbPanel() {
 }
 
 function _finishThumbBatch() {
-  document.getElementById('tp-label').textContent = 'Готово';
+  document.getElementById('tp-label').textContent = t('panel.done');
   const browsersUsed = [..._thumbBrowsers].map(([b, n]) => `${b} ${n}`).join(', ');
   // _thumbDone — пройдено ссылок, вместе с неудачами и пропущенными; итог — как в журнале.
   const ok = _thumbDone - _thumbFailed - _thumbSkipped;
-  const skipped = _thumbSkipped ? `, пропущено ${_thumbSkipped}` : '';
-  setStatus(`Рисунки: удалось ${ok}, не удалось ${_thumbFailed}${skipped}`
-      + (_thumbFallback ? ` — снято в ${[..._thumbBrowsers.keys()].join(', ')}: ${_thumbFallback}` : ''));
+  const result = _thumbSkipped
+    ? t('status.thumbs_done_skipped', { ok, failed: _thumbFailed, skipped: _thumbSkipped })
+    : t('status.thumbs_done', { ok, failed: _thumbFailed });
+  setStatus(_thumbFallback
+    ? t('status.thumbs_done_fallback', { result, browsers: [..._thumbBrowsers.keys()].join(', '), reason: _thumbFallback })
+    : result);
   logUi(`скриншоты, итог пакета: всего ${_thumbTotal}, удалось ${ok}, `
-      + `не удалось ${_thumbFailed}${skipped}, ${Math.round((Date.now() - _thumbStarted) / 1000)}с`
+      + `не удалось ${_thumbFailed}${_thumbSkipped ? `, пропущено ${_thumbSkipped}` : ''}, `
+      + `${Math.round((Date.now() - _thumbStarted) / 1000)}с`
       + (browsersUsed ? `; снято: ${browsersUsed}` : '')
       + (_thumbFallback ? `; запасной: ${_thumbFallback}` : ''));
   setTimeout(hideThumbPanel, 2000);
@@ -617,18 +661,18 @@ function findDuplicates() {
 }
 
 function _dSummary() {
-  if (!_dGroups.length) { dupesSummaryEl.textContent = "Дубликаты не найдены."; return; }
+  if (!_dGroups.length) { dupesSummaryEl.textContent = t('dupes.none_found'); return; }
   const total = _dGroups.reduce((s, g) => s + g.nodes.length, 0);
   const extra = _dGroups.reduce((s, g) => s + g.nodes.length - 1, 0);
   dupesSummaryEl.textContent =
-    `Групп: ${_dGroups.length}  ·  Копий: ${total}  ·  Лишних: ${extra}`;
+    t('dupes.summary', { groups: _dGroups.length, total, extra });
 }
 
 function _dRenderGroups() {
   const el = document.getElementById('dupes-groups');
   el.innerHTML = '';
   if (!_dGroups.length) {
-    el.innerHTML = '<div class="dup-empty">Нет дубликатов.</div>'; return;
+    el.innerHTML = `<div class="dup-empty">${t('dupes.empty')}</div>`; return;
   }
   _dGroups.forEach((g, i) => {
     const item = document.createElement('div');
@@ -665,7 +709,7 @@ function _dRenderTable(nodes) {
   const tbody = document.getElementById('dupes-tbody');
   tbody.innerHTML = '';
   if (!_dRows.length) {
-    tbody.innerHTML = `<tr><td colspan="4" class="dupes-td" style="text-align:center;color:#888;padding:16px">Нет данных</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="dupes-td" style="text-align:center;color:#888;padding:16px">${t('dupes.no_data')}</td></tr>`;
     return;
   }
   _dRows.forEach((node, i) => {
@@ -698,7 +742,7 @@ function _dSelectGroup(idx) {
   _dRenderGroups();
   const g = _dGroups[idx];
   document.getElementById('dupes-right-hdr').textContent =
-    g ? `Дубликаты (${g.nodes.length}): ${g.url.replace(/^https?:\/\/(www\.)?/,'').substring(0,60)}` : 'Дубликаты';
+    g ? t('dupes.header_group', { n: g.nodes.length, url: g.url.replace(/^https?:\/\/(www\.)?/,'').substring(0,60) }) : t('dupes.header');
   _dRenderTable(g?.nodes || []);
   _dUpdateBtns();
 }
@@ -751,7 +795,7 @@ document.getElementById('dupes-del-one').addEventListener('click', () => {
   if (_dRowIdx < 0 || _dGroupIdx < 0) return;
   const node = _dRows[_dRowIdx];
   const g    = _dGroups[_dGroupIdx];
-  deleteConfirm(`Удалить «${node.title}»?`, async () => {
+  deleteConfirm(t('confirm.delete_link', { title: node.title }), async () => {
     await invoke('delete_node', { id: node.id });
     const ai = allNodes.findIndex(n => n.id === node.id);
     if (ai >= 0) allNodes.splice(ai, 1);
@@ -776,7 +820,7 @@ document.getElementById('dupes-keep-one').addEventListener('click', () => {
   const g = _dGroups[_dGroupIdx];
   if (!g || g.nodes.length < 2) return;
   const toDelete = g.nodes.slice(1);
-  deleteConfirm(`Удалить ${toDelete.length} ${plural(toDelete.length, 'дубликат', 'дубликата', 'дубликатов')}?`, async () => {
+  deleteConfirm(t('confirm.delete_dupes', { dupes: t('count.dupes', { n: toDelete.length }) }), async () => {
     for (const node of toDelete) {
       await invoke('delete_node', { id: node.id });
       const ai = allNodes.findIndex(n => n.id === node.id);
@@ -1097,8 +1141,9 @@ function deleteFolder(node) {
   if (!node || node.id === -1) return;
   const ids     = collectSubtreeIds(node.id);
   const total   = ids.size - 1;   // exclude the folder itself
-  const detail  = total > 0 ? ` и всё содержимое (${total} эл.)` : "";
-  deleteConfirm(`Удалить папку «${node.title}»${detail}?`, async () => {
+  deleteConfirm(total > 0
+      ? t('confirm.delete_folder_content', { title: node.title, n: total })
+      : t('confirm.delete_folder', { title: node.title }), async () => {
     const nextEl = findNextAfterDelete(node.id);
 
     await invoke("delete_folder", { id: node.id }).catch(console.error);
@@ -1222,17 +1267,17 @@ function buildExportSubmenu(folderNode) {
   const doExport = (cmd) => {
     hideContextMenu();
     invoke(cmd, { folderId: folderNode.id })
-      .then(() => setStatus('Экспорт завершён'))
-      .catch(err => { if (err !== "Отменено") {
+      .then(saved => { if (saved) setStatus(t('status.export_done')); })   // false — окно закрыли
+      .catch(err => {
         // console.error в release недоступен — причина (нет прав, диск полон)
         // терялась целиком, пользователь видел только «Ошибка экспорта».
         logUi(`экспорт (${cmd}) не удался: ${err}`);
-        setStatus('Ошибка экспорта');
-      } });
+        setStatus(t('status.export_failed'));
+      });
   };
 
-  sub.appendChild(ctxItem("import", "HTML файл",       null, () => doExport("export_folder_html")));
-  sub.appendChild(ctxItem("props",  "Текстовый файл",  null, () => doExport("export_folder_txt")));
+  sub.appendChild(ctxItem("import", t('menu.transfer.to_html'), null, () => doExport("export_folder_html")));
+  sub.appendChild(ctxItem("props",  t('menu.transfer.to_txt'),  null, () => doExport("export_folder_txt")));
 
   return sub;
 }
@@ -1249,7 +1294,7 @@ function buildOpenerSubmenu(folderNode) {
   };
 
   // Браузер по умолчанию (сброс opener в NULL) — галочка, если opener не задан
-  sub.appendChild(ctxItem(cur ? null : "check", "Браузер по умолчанию", null, () => setOpener(null)));
+  sub.appendChild(ctxItem(cur ? null : "check", DEFAULT_BROWSER_LABEL, null, () => setOpener(null)));
   sub.appendChild(ctxSep());
 
   // Браузеры из списка (кроме элемента "default") — галочка у текущего
@@ -1259,7 +1304,7 @@ function buildOpenerSubmenu(folderNode) {
   sub.appendChild(ctxSep());
 
   // Обзор… — выбрать exe вручную
-  sub.appendChild(ctxItem("openwith", "Обзор…", null, async () => {
+  sub.appendChild(ctxItem("openwith", t('ctx.opener.browse'), null, async () => {
     const p = await invoke("pick_browser_file").catch(() => null);
     if (p) await setOpener(p);
   }));
@@ -1294,6 +1339,7 @@ function wireMainContextFloat(trigger, buildSubFn) {
     const sw = sub.offsetWidth, sh = sub.offsetHeight;
     let left = mr.right - 1, top = tr.top;
     if (left + sw > window.innerWidth  - 4) left = mr.left - sw + 1;
+    if (left < 4) left = 4;   // узкое окно: ни справа, ни слева не влезло — поверх меню
     if (top  + sh > window.innerHeight - 4) top  = window.innerHeight - sh - 4;
     sub.style.left = left + "px";
     sub.style.top  = top  + "px";
@@ -1326,11 +1372,11 @@ function buildSortSubmenu(folderNode) {
     });
   };
 
-  sub.appendChild(S("По имени",         "title"));
+  sub.appendChild(S(t('ctx.sort.by_title'),   "title"));
   sub.appendChild(ctxSep());
-  sub.appendChild(S("По дате добавления", "created"));
+  sub.appendChild(S(t('ctx.sort.by_created'), "created"));
   sub.appendChild(ctxSep());
-  sub.appendChild(S("По URL",           "url"));
+  sub.appendChild(S(t('ctx.sort.by_url'),     "url"));
   return sub;
 }
 
@@ -1345,12 +1391,12 @@ function buildFolderImportSubmenu(folderNode) {
     }));
   };
 
-  addItem("browser", "Из браузера...",     "import-from-browser");
+  addItem("browser", t('menu.transfer.from_browser'), "import-from-browser");
   sub.appendChild(ctxSep());
-  addItem("import",  "Из файла HTML",      "import-html");
-  addItem("import",  "Из файла TXT",       "import-txt-lines");
+  addItem("import",  t('menu.transfer.from_html'),    "import-html");
+  addItem("import",  t('menu.transfer.from_txt'),     "import-txt-lines");
   sub.appendChild(ctxSep());
-  addItem("folder",  "Из ua.dat...",       "import-folder");
+  addItem("folder",  t('menu.transfer.from_uadat'),   "import-folder");
 
   return sub;
 }
@@ -1363,7 +1409,7 @@ async function invokeFolderImport(action, parentId) {
         openBrowserImportDialog();
         return;
       case 'import-html':
-        count = await invoke('import_html', { parentId });
+        count = (await invoke('import_html', { parentId })) ?? 0;   // null — окно закрыли
         break;
       // Один пункт на два формата: что за файл — решает Rust по содержимому.
       // Ошибку ловим здесь, а не общим `catch` ниже: у этой команды есть
@@ -1374,15 +1420,16 @@ async function invokeFolderImport(action, parentId) {
         try {
           res = await invoke('import_txt_file', { parentId });
         } catch (e) {
-          if (e !== 'Отменено') showNotice('Импорт из TXT', String(e));
+          showNotice(t('notice.txt_import'), String(e));
           return;
         }
+        if (!res) return;   // окно закрыли
         reportTxtImport(res);
         count = res.links + res.folders;
         break;
       }
       case 'import-folder':
-        count = await invoke('import_uadat_pick', { parentId });
+        count = (await invoke('import_uadat_pick', { parentId })) ?? 0;
         break;
     }
     if (count > 0) {
@@ -1392,7 +1439,7 @@ async function invokeFolderImport(action, parentId) {
       selectFolder(parentId);
     }
   } catch(e) {
-    if (e !== 'Отменено') console.error('invokeFolderImport:', e);
+    console.error('invokeFolderImport:', e);
   }
 }
 
@@ -1413,9 +1460,9 @@ function showFolderContextMenu(e, folderNode) {
   ctxMenuEl.innerHTML = "";
 
   if (folderNode.id === -1) {
-    ctxMenuEl.appendChild(ctxItem("trash-bin", "Очистить корзину", null, () => {
+    ctxMenuEl.appendChild(ctxItem("trash-bin", t('ctx.trash.empty'), null, () => {
       hideContextMenu();
-      deleteConfirm("Очистить корзину? Всё удалённое будет стёрто безвозвратно.", async () => {
+      deleteConfirm(t('confirm.empty_trash'), async () => {
         await invoke('empty_trash');
         allNodes = await invoke('get_tree');
         allFolders = allNodes.filter(n => n.kind === 'folder');
@@ -1436,40 +1483,40 @@ function showFolderContextMenu(e, folderNode) {
   }
 
   // ── Folder management ──────────────────────────────────────────────────
-  ctxMenuEl.appendChild(ctxItem("new", "Новая папка", null, () => {
+  ctxMenuEl.appendChild(ctxItem("new", t('ctx.folder.new'), null, () => {
     hideContextMenu();
     createFolderAndRename(folderNode.id);
   }));
-  ctxMenuEl.appendChild(ctxItem("edit", "Переименовать", "F2", () => {
+  ctxMenuEl.appendChild(ctxItem("edit", t('ctx.folder.rename'), "F2", () => {
     hideContextMenu();
     startInlineRename(folderNode.id);
   }));
-  ctxMenuEl.appendChild(ctxItem("folder", "Переместить в…", null, () => {
+  ctxMenuEl.appendChild(ctxItem("folder", t('ctx.move_to'), null, () => {
     hideContextMenu();
     openMoveToDialog(folderNode);
   }));
   ctxMenuEl.appendChild(ctxSep());
 
   // ── Transfer ───────────────────────────────────────────────────────────
-  const impEl = addSubTrigger("Импорт в папку", "import");
+  const impEl = addSubTrigger(t('ctx.folder.import'), "import");
   wireMainContextFloat(impEl, () => buildFolderImportSubmenu(folderNode));
   ctxMenuEl.appendChild(impEl);
 
-  const expEl = addSubTrigger("Экспорт папки", "backup");
+  const expEl = addSubTrigger(t('ctx.folder.export'), "backup");
   wireMainContextFloat(expEl, () => buildExportSubmenu(folderNode));
   ctxMenuEl.appendChild(expEl);
   ctxMenuEl.appendChild(ctxSep());
 
   // ── Operations ─────────────────────────────────────────────────────────
-  ctxMenuEl.appendChild(ctxItem("verify", "Проверить ссылки", null, () => {
+  ctxMenuEl.appendChild(ctxItem("verify", t('ctx.folder.check'), null, () => {
     hideContextMenu();
     openCheckerPanel(folderNode);
   }));
-  ctxMenuEl.appendChild(ctxItem("favicon", "Обновить favicon'ы", null, () => {
+  ctxMenuEl.appendChild(ctxItem("favicon", t('ctx.folder.favicons'), null, () => {
     hideContextMenu();
     startFaviconBatch(folderNode, true);
   }));
-  ctxMenuEl.appendChild(ctxItem("refresh", "Обновить рисунки", null, () => {
+  ctxMenuEl.appendChild(ctxItem("refresh", t('ctx.folder.thumbs'), null, () => {
     hideContextMenu();
     startThumbBatch(folderNode);
   }));
@@ -1477,25 +1524,25 @@ function showFolderContextMenu(e, folderNode) {
 
   // ── Открывать через… (только корневая папка) ─────────────────────────────
   if (folderNode.parent === null) {
-    const openerEl = addSubTrigger("Открывать через…", "openwith");
+    const openerEl = addSubTrigger(t('ctx.folder.opener'), "openwith");
     wireMainContextFloat(openerEl, () => buildOpenerSubmenu(folderNode));
     ctxMenuEl.appendChild(openerEl);
     ctxMenuEl.appendChild(ctxSep());
   }
 
   // ── Sort ───────────────────────────────────────────────────────────────
-  const sortEl = addSubTrigger("Сортировка", "sort");
+  const sortEl = addSubTrigger(t('ctx.folder.sort'), "sort");
   wireMainContextFloat(sortEl, () => buildSortSubmenu(folderNode));
   ctxMenuEl.appendChild(sortEl);
   ctxMenuEl.appendChild(ctxSep());
-  ctxMenuEl.appendChild(ctxItem("trash", "Удалить", "Del", () => {
+  ctxMenuEl.appendChild(ctxItem("trash", t('ctx.folder.delete'), "Del", () => {
     hideContextMenu();
     deleteFolder(folderNode);
   }));
 
   // ── Properties ─────────────────────────────────────────────────────────
   ctxMenuEl.appendChild(ctxSep());
-  ctxMenuEl.appendChild(ctxItem("props", "Свойства", "F4", () => {
+  ctxMenuEl.appendChild(ctxItem("props", t('ctx.props'), "F4", () => {
     hideContextMenu();
     openFolderPropsDialog(folderNode);
   }));
@@ -1550,8 +1597,9 @@ async function refreshThumb(node) {
     // жал «Обновить рисунок», overlay гас, и ничего не происходило.
     // В журнал не пишем: do_screenshot уже записал и команду, и итог
     // («файла нет» с длительностью). Наше дело — показать причину.
-    showNotice('Рисунок', typeof err === 'string' ? err
-      : 'Не удалось обновить рисунок: ' + (err?.message ?? String(err)));
+    showNotice(t('notice.thumb'), err === SHOT_BUSY ? SHOT_BUSY_TEXT
+      : typeof err === 'string' ? err
+      : t('notice.thumb_failed', { e: err?.message ?? String(err) }));
   } finally {
     detailLoadingOverlay.classList.remove("visible");
     _isRefreshing = false;
@@ -1591,8 +1639,8 @@ async function clearThumb(node) {
   // Update grid card
   const card = gridEl.querySelector(`.card[data-id="${node.id}"]`);
   if (card) {
-    const t = card.querySelector(".card-thumb");
-    if (t) { t.innerHTML = ""; t.appendChild(makeNoImg(node.title)); }
+    const thumbEl = card.querySelector(".card-thumb");
+    if (thumbEl) { thumbEl.innerHTML = ""; thumbEl.appendChild(makeNoImg(node.title)); }
   }
 
   // Update detail view
@@ -1720,7 +1768,7 @@ function decrementFolderBadge(parentId) {
 }
 
 function deleteBookmark(node) {
-  deleteConfirm(`Удалить «${node.title}»?`, async () => {
+  deleteConfirm(t('confirm.delete_link', { title: node.title }), async () => {
     // Capture next item BEFORE DOM changes
     const nextEl = findNextAfterDelete(node.id);
 
@@ -1789,17 +1837,23 @@ function makeDlgDraggable(dlgEl, handleEl) {
 }
 
 // Дата создания в базе — «ГГГГ-ММ-ДД чч:мм:сс» (db::init переводит и старые
-// даты ua.dat). Показ — «ДД.ММ.ГГГГ чч:мм». Нет даты или не разобрана —
+// даты ua.dat). Показ — по формату словаря (format.datetime: в ru
+// «ДД.ММ.ГГГГ чч:мм», в en «ГГГГ-ММ-ДД чч:мм»). Нет даты или не разобрана —
 // пустая строка: у старых ссылок не показываем ничего, не «01.01.1970».
 function formatCreated(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(s || '');
-  return m ? `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}` : '';
+  return m ? formatDateTime(m[1], m[2], m[3], m[4], m[5]) : '';
 }
 
-// То же «ДД.ММ.ГГГГ чч:мм» для Date (время файла снимка, местное).
+// То же для Date (время файла снимка, местное).
 function formatLocalDate(d) {
   const p = (x) => String(x).padStart(2, '0');
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return formatDateTime(d.getFullYear(), p(d.getMonth() + 1), p(d.getDate()), p(d.getHours()), p(d.getMinutes()));
+}
+
+// Поля — уже строками нужной длины (месяц, день, часы, минуты — две цифры).
+function formatDateTime(yyyy, mm, dd, HH, MM) {
+  return t('format.datetime', { yyyy, mm, dd, HH, MM });
 }
 
 // Середина строки состояния, как в старом URL-Album: «Добавлено» и «Рисунок»
@@ -1813,13 +1867,13 @@ function _showItemStatus(node) {
   const n = node ? (allNodes.find(x => x.id === node.id) ?? node) : null;
   const created = formatCreated(n?.created);
   const thumbEl = document.getElementById('sb-thumb');
-  document.getElementById('sb-created').textContent = created ? `Добавлено: ${created}` : '';
+  document.getElementById('sb-created').textContent = created ? t('status.added', { date: created }) : '';
   thumbEl.textContent = '';
   if (!n?.thumb) return;
   const visited = formatCreated(n.visited);
-  if (visited) { thumbEl.textContent = `Рисунок: ${visited}`; return; }
+  if (visited) { thumbEl.textContent = t('status.thumb_date', { date: visited }); return; }
   invoke('get_thumb_time', { filename: n.thumb }).then(ms => {
-    if (seq === _sbItemSeq && ms != null) thumbEl.textContent = `Рисунок: ${formatLocalDate(new Date(ms))}`;
+    if (seq === _sbItemSeq && ms != null) thumbEl.textContent = t('status.thumb_date', { date: formatLocalDate(new Date(ms)) });
   }).catch(() => {});
 }
 
@@ -1963,7 +2017,7 @@ function openMoveToDialog(node) {
   if (node.parent !== null) {
     const rootOpt = document.createElement('option');
     rootOpt.value = '';
-    rootOpt.textContent = '(Корень)';
+    rootOpt.textContent = t('moveto.root');
     sel.appendChild(rootOpt);
   }
 
@@ -2037,7 +2091,7 @@ function openMoveToDialog(node) {
       const t3 = performance.now();
       nextPaint().then(() => logTiming('«Переместить в…»', t0, t1, t2, t3));
     } catch(e) {
-      alert('Ошибка перемещения: ' + e);
+      showNotice(t('moveto.title'), t('notice.move_failed', { e }));
     } finally {
       okBtn.disabled = false;
     }
@@ -2068,9 +2122,9 @@ function openDbPropertiesDialog() {
 }
 
 function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  if (bytes < 1024) return t('unit.bytes', { n: bytes });
+  if (bytes < 1024 * 1024) return t('unit.kb', { n: (bytes / 1024).toFixed(1) });
+  return t('unit.mb', { n: (bytes / (1024 * 1024)).toFixed(2) });
 }
 
 document.getElementById('dbprops-x').onclick    = () => dbpropsOverlay.classList.add('hidden');
@@ -2114,21 +2168,33 @@ async function noteBrokenConfig(file, err) {
   }
 }
 
-function reportBrokenConfigs() {
-  if (!brokenConfigs.length) return;
-  const many  = brokenConfigs.length > 1;
-  const names = brokenConfigs.join(', ');
-  const bads  = brokenConfigs.map(f => f + '.bad').join(', ');
-  showNotice('Настройки',
-    (many ? 'Не удалось прочитать файлы: ' : 'Не удалось прочитать файл ') + names + '.\n\n' +
-    'Применены значения по умолчанию. ' +
-    (many ? 'Прежние сохранены' : 'Прежний сохранён') + ' рядом с программой как ' + bads +
-    ': оттуда можно достать свои значения или прислать для разбора.');
+// then — после закрытия окна (или сразу, если окна нет): следующее окно
+// запуска не должно затереть это.
+function reportBrokenConfigs(then) {
+  if (!brokenConfigs.length) { then?.(); return; }
+  const names = brokenConfigs.join(t('list.sep'));
+  const bads  = brokenConfigs.map(f => f + '.bad').join(t('list.sep'));
+  showNotice(t('settings.title'), brokenConfigs.length > 1
+    ? t('notice.configs_broken_many', { names, bads })
+    : t('notice.configs_broken_one', { names, bads }), then);
+}
+
+// Файлы lang\, которые не разобрались: Rust их не читал, работает встроенный
+// перевод (строка в журнале — от Rust).
+function reportBrokenLang() {
+  if (!I18N.broken?.length) return;
+  showNotice(t('notice.lang_broken.title'),
+    t('notice.lang_broken.msg', { files: I18N.broken.map(f => 'lang\\' + f).join(', ') }));
 }
 
 // ── Browser list ─────────────────────────────────────────────────────────
-let browsers        = [{ name: "Браузер по умолчанию", path: "default" }];
+let browsers        = [{ name: t('browser.default_label'), path: "default" }];
 let defaultBrowserPath = "default";
+
+// Подпись записи "default" — по path, не по name из browsers.json: имя в файле
+// могло остаться с другого языка; сам файл не трогаем.
+const DEFAULT_BROWSER_LABEL = t('browser.default_label');
+function browserLabel(b) { return b.path === "default" ? DEFAULT_BROWSER_LABEL : b.name; }
 
 // File-based portable storage for browser list
 async function loadBrowsersConfig() {
@@ -2186,7 +2252,7 @@ function openWithBrowser(url, path) {
   // В журнал не пишем: отказ уже записан в Rust — и в `open_url`, и
   // в `open_url_with`, с причиной. Здесь осталось только показать его человеку.
   invoke("open_url_with", { url, browser: path || "default" })
-    .catch(e => showNotice('Открытие ссылки', (e && e.message) ? e.message : String(e)));
+    .catch(e => showNotice(t('notice.open_link'), (e && e.message) ? e.message : String(e)));
 }
 
 function findRootFolder(node) {
@@ -2216,7 +2282,7 @@ function resolveOpenerForNode(node) {
     browsers.forEach((b, i) => {
       const el = document.createElement("div");
       el.className = "dlg-browser-entry" + (i === 0 ? " selected" : "");
-      el.textContent = b.name;
+      el.textContent = browserLabel(b);
       el.addEventListener("click", () => {
         list.querySelectorAll(".dlg-browser-entry").forEach(e => e.classList.remove("selected"));
         el.classList.add("selected"); _owPath = b.path;
@@ -2299,12 +2365,12 @@ function openSubFloat(trigger, node) {
   const sub = document.createElement("div");
   sub.className = "ctx-submenu";
   browsers.forEach(b => {
-    const it = ctxItem("openwith", b.name, null,
+    const it = ctxItem("openwith", browserLabel(b), null,
       () => { hideContextMenu(); openWithBrowser(node.url, b.path); });
     sub.appendChild(it);
   });
   sub.appendChild(ctxSep());
-  sub.appendChild(ctxItem("gear", "Список браузеров...", null,
+  sub.appendChild(ctxItem("gear", t('ctx.open_with.browsers'), null,
     () => { hideContextMenu(); openBrowsersDialog(); }));
 
   // Fixed positioning — no parent stacking context issues
@@ -2356,14 +2422,14 @@ function showContextMenu(e, node) {
   const hasThumb = !!node.thumb;
 
   ctxMenuEl.appendChild(
-    ctxItem("link", "Открыть", null,
+    ctxItem("link", t('ctx.link.open'), null,
       // Через резолвер, как и двойной клик по этой же ссылке: иначе два
       // способа открыть одну ссылку дают разные браузеры.
       () => openWithBrowser(node.url, resolveOpenerForNode(node)))
   );
 
   // "Открыть с помощью" — NO submenu child; float created on hover
-  const owEl = ctxItem("openwith", "Открыть с помощью", null, null, false);
+  const owEl = ctxItem("openwith", t('ctx.link.open_with'), null, null, false);
   owEl.classList.add("ctx-has-sub");
   const arrow = document.createElement("span");
   arrow.className = "ctx-arrow";
@@ -2375,44 +2441,44 @@ function showContextMenu(e, node) {
   ctxMenuEl.appendChild(ctxSep());
 
   ctxMenuEl.appendChild(
-    ctxItem("image",   "Открыть рисунок",  "F12",
+    ctxItem("image",   t('ctx.link.open_thumb'),  "F12",
       // Отказ теперь настоящий (ShellExecuteW), и его надо показать: без catch
       // это молчаливый unhandled rejection — файл удалён, а в ответ ничего.
       () => invoke("open_file", { path: thumbFilePath(node.thumb) })
-              .catch(e => showNotice('Рисунок', typeof e === 'string' ? e : String(e))),
+              .catch(e => showNotice(t('notice.thumb'), typeof e === 'string' ? e : String(e))),
       !hasThumb)
   );
   ctxMenuEl.appendChild(
-    ctxItem("refresh", "Обновить рисунок", null,
+    ctxItem("refresh", t('ctx.link.refresh_thumb'), null,
       () => refreshThumb(node), !node.url)
   );
   ctxMenuEl.appendChild(
-    ctxItem("delimg",  "Удалить рисунок",  null,
+    ctxItem("delimg",  t('ctx.link.clear_thumb'),  null,
       () => clearThumb(node), !hasThumb)
   );
   ctxMenuEl.appendChild(ctxSep());
   ctxMenuEl.appendChild(
-    ctxItem("favicon", "Загрузить favicon", null,
+    ctxItem("favicon", t('ctx.link.favicon'), null,
       () => { hideContextMenu(); loadSingleFavicon(node); },
       !node.url)
   );
 
   ctxMenuEl.appendChild(ctxSep());
   ctxMenuEl.appendChild(
-    ctxItem("folder", "Переместить в…", null,
+    ctxItem("folder", t('ctx.move_to'), null,
       () => { hideContextMenu(); openMoveToDialog(node); })
   );
   ctxMenuEl.appendChild(ctxSep());
 
   ctxMenuEl.appendChild(
-    ctxItem("copy", "Копировать URL", "Ctrl+C",
+    ctxItem("copy", t('ctx.link.copy_url'), "Ctrl+C",
       () => navigator.clipboard.writeText(node.url || "").catch(() => {}))
   );
   ctxMenuEl.appendChild(ctxSep());
-  ctxMenuEl.appendChild(ctxItem("trash",  "Удалить ссылку", "Del",
+  ctxMenuEl.appendChild(ctxItem("trash",  t('ctx.link.delete'), "Del",
     () => deleteBookmark(node)));
   ctxMenuEl.appendChild(ctxSep());
-  ctxMenuEl.appendChild(ctxItem("props", "Свойства", "F4",
+  ctxMenuEl.appendChild(ctxItem("props", t('ctx.props'), "F4",
     () => { hideContextMenu(); openPropsDialog(node); }));
 
   // Other items: close float submenu on hover
@@ -2444,9 +2510,9 @@ function hideContextMenu() {
 // (так было в переименовании папки). Поэтому — перехват на document в фазе
 // capture, раньше любых точечных обработчиков, и своё меню.
 const EDIT_INPUT_TYPES = ['text', 'search', 'url', 'email', 'tel', 'password', 'number'];
-function _isTextField(t) {
-  return t instanceof HTMLTextAreaElement
-      || (t instanceof HTMLInputElement && EDIT_INPUT_TYPES.includes(t.type));
+function _isTextField(el) {
+  return el instanceof HTMLTextAreaElement
+      || (el instanceof HTMLInputElement && EDIT_INPUT_TYPES.includes(el.type));
 }
 
 // Есть ли в буфере текст — через Rust (clipboard_text). navigator.clipboard.
@@ -2477,11 +2543,11 @@ async function showEditMenu(field, x, y) {
   closeSubFloat();
   ctxMenuEl.innerHTML = '';
   ctxMenuEl.append(
-    ctxItem(null, 'Отменить', 'Ctrl+Z', run(() => document.execCommand('undo')), ro),
+    ctxItem(null, t('edit.undo'), 'Ctrl+Z', run(() => document.execCommand('undo')), ro),
     ctxSep(),
-    ctxItem(null, 'Вырезать', 'Ctrl+X', run(() => document.execCommand('cut')), ro || pwd || !hasSel),
-    ctxItem('copy', 'Копировать', 'Ctrl+C', run(() => document.execCommand('copy')), pwd || !hasSel),
-    ctxItem(null, 'Вставить', 'Ctrl+V', run(() => {
+    ctxItem(null, t('edit.cut'), 'Ctrl+X', run(() => document.execCommand('cut')), ro || pwd || !hasSel),
+    ctxItem('copy', t('edit.copy'), 'Ctrl+C', run(() => document.execCommand('copy')), pwd || !hasSel),
+    ctxItem(null, t('edit.paste'), 'Ctrl+V', run(() => {
       // insertText, а не присваивание value: остаётся в истории Ctrl+Z
       // и даёт полю обычное событие input
       invoke('clipboard_text')
@@ -2489,12 +2555,12 @@ async function showEditMenu(field, x, y) {
         .catch(err => {
           // Rust отказ не пишет: при проверке для меню он штатный и не нужен
           logUi(`меню «Вставить»: ${err}`);
-          showNotice('Вставить', `Не удалось прочитать буфер обмена: ${err}. Попробуйте ещё раз.`);
+          showNotice(t('edit.paste'), t('notice.paste_failed', { err }));
         });
     }), ro || !canPaste),
-    ctxItem(null, 'Удалить', 'Del', run(() => document.execCommand('delete')), ro || !hasSel),
+    ctxItem(null, t('edit.delete'), 'Del', run(() => document.execCommand('delete')), ro || !hasSel),
     ctxSep(),
-    ctxItem(null, 'Выделить всё', 'Ctrl+A', run(() => field.select()), field.value === ''),
+    ctxItem(null, t('edit.select_all'), 'Ctrl+A', run(() => field.select()), field.value === ''),
   );
   ctxMenuEl.classList.add('ctx-edit');
   ctxMenuEl.classList.remove('hidden');
@@ -2504,12 +2570,12 @@ async function showEditMenu(field, x, y) {
 }
 
 document.addEventListener('contextmenu', (e) => {
-  const t = e.target;
-  if (!_isTextField(t) || t.disabled) return;
+  const field = e.target;
+  if (!_isTextField(field) || field.disabled) return;
   e.preventDefault();
   e.stopPropagation();
   hideContextMenu();
-  showEditMenu(t, e.clientX, e.clientY);
+  showEditMenu(field, e.clientX, e.clientY);
 }, true);
 
 // Щелчок по пункту не должен забирать фокус у поля: переименование и заметка
@@ -2616,7 +2682,7 @@ document.getElementById('bi-pick-folder').addEventListener('click', async () => 
   const found = await invoke('find_bookmarks_in_folder', { folder }).catch(() => null);
   if (!found) {
     biSelPathEl.textContent = '';
-    biStatus.textContent = 'Файл закладок не найден в выбранной папке.';
+    biStatus.textContent = t('bi.not_found');
     return;
   }
   const name = guessNameFromBookmarksPath(folder);
@@ -2652,12 +2718,12 @@ function guessNameFromBookmarksPath(path) {
       return p;
     }
   }
-  return 'Браузер';
+  return t('bi.generic_name');
 }
 
 async function openBrowserImportDialog() {
   biReset();
-  biList.innerHTML = '<div style="padding:8px;color:#888;font-size:11px">Поиск браузеров…</div>';
+  biList.innerHTML = `<div style="padding:8px;color:#888;font-size:11px">${t('bi.searching')}</div>`;
   raiseOverlay(biOverlay);
 
   try { biDetected = await invoke('detect_browsers'); }
@@ -2665,7 +2731,7 @@ async function openBrowserImportDialog() {
 
   biList.innerHTML = '';
   if (!biDetected.length) {
-    biList.innerHTML = '<div style="padding:8px;color:#888;font-size:11px">Установленные браузеры не найдены.<br>Используйте кнопки ниже.</div>';
+    biList.innerHTML = `<div style="padding:8px;color:#888;font-size:11px">${t('bi.none_found')}<br>${t('bi.use_buttons')}</div>`;
     return;
   }
 
@@ -2692,16 +2758,16 @@ async function doBrowserImport() {
 
   if (biManual) {
     // Portable / manual file mode
-    biStatus.textContent = `Импортирую из ${biManual.name}…`;
+    biStatus.textContent = t('bi.importing', { name: biManual.name });
     try {
       const r = await invoke('import_from_bookmarks_file', {
         path: biManual.path, name: biManual.name
       });
-      biStatus.textContent = `Импортировано: ${r.links} ${plural(r.links, 'ссылка', 'ссылки', 'ссылок')}, ${r.folders} ${plural(r.folders, 'папка', 'папки', 'папок')}.`;
+      biStatus.textContent = t('bi.imported', { links: t('count.links', { n: r.links }), folders: t('count.folders', { n: r.folders }) });
       refreshTree();
       setTimeout(() => biOverlay.classList.add('hidden'), 2500);
     } catch(e) {
-      biStatus.textContent = `Ошибка: ${e}`;
+      biStatus.textContent = t('common.error', { e });
       biOkBtn.disabled = false;
     }
     return;
@@ -2709,14 +2775,14 @@ async function doBrowserImport() {
 
   if (biSelIdx < 0 || biSelIdx >= biDetected.length) { biOkBtn.disabled = false; return; }
   const b = biDetected[biSelIdx];
-  biStatus.textContent = `Импортирую из ${b.name}…`;
+  biStatus.textContent = t('bi.importing', { name: b.name });
   try {
     const r = await invoke('import_from_browser', { browserId: b.id });
-    biStatus.textContent = `Импортировано: ${r.links} ${plural(r.links, 'ссылка', 'ссылки', 'ссылок')}, ${r.folders} ${plural(r.folders, 'папка', 'папки', 'папок')}.`;
+    biStatus.textContent = t('bi.imported', { links: t('count.links', { n: r.links }), folders: t('count.folders', { n: r.folders }) });
     refreshTree();
     setTimeout(() => biOverlay.classList.add('hidden'), 2500);
   } catch(e) {
-    biStatus.textContent = `Ошибка: ${e}`;
+    biStatus.textContent = t('common.error', { e });
     biOkBtn.disabled = false;
   }
 }
@@ -2744,7 +2810,7 @@ function renderDlgList() {
   dlgBrowsers.forEach((b, i) => {
     const el = document.createElement("div");
     el.className = "dlg-browser-entry" + (i === dlgSelIdx ? " selected" : "");
-    el.textContent = b.name;
+    el.textContent = browserLabel(b);
     el.addEventListener("click", () => { dlgSelIdx = i; renderDlgList(); updateDlgBtns(); });
     el.addEventListener("dblclick", () => openAddBrowserDialog(i));
     dlgBrowserList.appendChild(el);
@@ -2755,7 +2821,7 @@ function renderDlgDefault() {
   dlgDefaultSel.innerHTML = "";
   dlgBrowsers.forEach(b => {
     const opt = document.createElement("option");
-    opt.value = b.path; opt.textContent = b.name;
+    opt.value = b.path; opt.textContent = browserLabel(b);
     dlgDefaultSel.appendChild(opt);
   });
   dlgDefaultSel.value = getDefaultBrowserPath();
@@ -2789,7 +2855,7 @@ document.getElementById("dlg-portable").addEventListener("click", async () => {
 // ── "Обнаружить" button ──────────────────────────────────────────────────────
 const dlgDetectStatus = document.getElementById("dlg-detect-status");
 document.getElementById("dlg-detect").addEventListener("click", async () => {
-  dlgDetectStatus.textContent = "Поиск…";
+  dlgDetectStatus.textContent = t('browsers.searching');
   let detected = [];
   try { detected = await invoke("detect_browser_exes"); } catch(e) { console.error(e); }
 
@@ -2807,11 +2873,11 @@ document.getElementById("dlg-detect").addEventListener("click", async () => {
   if (added > 0) {
     dlgSelIdx = dlgBrowsers.length - 1;
     renderDlgList(); renderDlgDefault(); updateDlgBtns();
-    dlgDetectStatus.textContent = `Добавлено: ${addedNames.join(", ")}`;
+    dlgDetectStatus.textContent = t('browsers.added', { names: addedNames.join(", ") });
   } else if (detected.length === 0) {
-    dlgDetectStatus.textContent = "Браузеры не обнаружены.";
+    dlgDetectStatus.textContent = t('browsers.none_found');
   } else {
-    dlgDetectStatus.textContent = "Все найденные браузеры уже в списке.";
+    dlgDetectStatus.textContent = t('browsers.all_listed');
   }
   setTimeout(() => { dlgDetectStatus.textContent = ""; }, 3000);
 });
@@ -2839,7 +2905,11 @@ let   editBrowserIdx    = -1;
 
 function openAddBrowserDialog(idx, presetPath = "", presetName = "") {
   editBrowserIdx = idx;
-  addBrowserName.value = idx >= 0 ? dlgBrowsers[idx].name : presetName;
+  // У записи "default" название только для чтения: показывается подпись,
+  // имя в файле при OK не меняется.
+  const isDefault = idx >= 0 && dlgBrowsers[idx].path === "default";
+  addBrowserName.readOnly = isDefault;
+  addBrowserName.value = idx >= 0 ? browserLabel(dlgBrowsers[idx]) : presetName;
   addBrowserPath.value = idx >= 0 ? dlgBrowsers[idx].path : presetPath;
   document.body.appendChild(addBrowserOverlay); // bring to DOM front
   raiseOverlay(addBrowserOverlay);
@@ -2864,8 +2934,8 @@ function closeAddBrowserDialog() { addBrowserOverlay.classList.add("hidden"); }
 document.getElementById("add-browser-x").onclick      = closeAddBrowserDialog;
 document.getElementById("add-browser-cancel").onclick = closeAddBrowserDialog;
 document.getElementById("add-browser-ok").onclick = () => {
-  const name = addBrowserName.value.trim();
   const path = addBrowserPath.value.trim();
+  const name = addBrowserName.readOnly ? dlgBrowsers[editBrowserIdx].name : addBrowserName.value.trim();
   if (!name || !path) return;
   if (editBrowserIdx >= 0) {
     dlgBrowsers[editBrowserIdx] = { name, path };
@@ -2921,89 +2991,90 @@ const ICONS = {
 // todo:true = disabled (not yet implemented)
 const MENU_DATA = [
   {
-    id: 'file', label: 'Файл',
+    id: 'file', label: t('menu.file'),
     items: [
-      { label: 'Создать базу...',  icon: 'db',     action: 'new-db'    },
-      { label: 'Открыть базу...',  icon: 'db',     action: 'open-db'   },
-      { label: 'Последние базы',   icon: 'db',     sub: [], _dynamic: true },
-      { label: 'Закрыть базу',     icon: 'db',     action: 'close-db'  },
+      { label: t('menu.file.new_db'),  icon: 'db',     action: 'new-db'    },
+      { label: t('menu.file.open_db'),  icon: 'db',     action: 'open-db'   },
+      { label: t('menu.file.recent'),   icon: 'db',     sub: [], _dynamic: true },
+      { label: t('menu.file.close_db'),     icon: 'db',     action: 'close-db'  },
       '---',
-      { label: 'Создать резервную копию...',             icon: 'backup', action: 'backup-without' },
-      { label: 'Создать резервную копию с рисунками...', icon: 'backup', action: 'backup-with'    },
+      { label: t('menu.file.backup'),             icon: 'backup', action: 'backup-without' },
+      { label: t('menu.file.backup_with'), icon: 'backup', action: 'backup-with'    },
       '---',
-      { label: 'Свойства базы',  icon: 'props',  action: 'db-properties' },
+      { label: t('menu.file.db_props'),  icon: 'props',  action: 'db-properties' },
       '---',
-      { label: 'Настройки',      icon: 'gear',   action: 'settings'   },
+      { label: t('menu.file.settings'),      icon: 'gear',   action: 'settings'   },
       '---',
-      { label: 'Свернуть в трей', icon: 'tray',  action: 'tray-hide'  },
+      // «Свернуть в трей» — кнопкой у правого края меню и щелчком по значку в трее
+      { label: t('menu.file.quit'),          action: 'quit'   },
     ]
   },
   {
-    id: 'links', label: 'Ссылки',
+    id: 'links', label: t('menu.links'),
     items: [
-      { label: 'Новая ссылка',                   icon: 'new',      action: 'new-link'                },
-      { label: 'Редактировать',                  icon: 'edit',     shortcut: 'F2',  action: 'properties' },
-      { label: 'Удалить ссылку',                 icon: 'trash',    shortcut: 'Del', action: 'delete-link' },
+      { label: t('menu.links.new'),                   icon: 'new',      action: 'new-link'                },
+      { label: t('menu.links.edit'),                  icon: 'edit',     shortcut: 'F2',  action: 'properties' },
+      { label: t('menu.links.delete'),                 icon: 'trash',    shortcut: 'Del', action: 'delete-link' },
       '---',
-      { label: 'Открыть',                        icon: 'open',     shortcut: 'Enter', action: 'open-link' },
-      { label: 'Открыть с помощью...',           icon: 'openwith', action: 'open-with'               },
+      { label: t('menu.links.open'),                        icon: 'open',     shortcut: 'Enter', action: 'open-link' },
+      { label: t('menu.links.open_with'),           icon: 'openwith', action: 'open-with'               },
       '---',
-      { label: 'Проверить ссылки',               icon: 'verify',   action: 'check-all-links'         },
-      { label: 'Найти дубликаты',                icon: 'dupes',    action: 'find-dupes'              },
+      { label: t('menu.links.check'),               icon: 'verify',   action: 'check-all-links'         },
+      { label: t('menu.links.dupes'),                icon: 'dupes',    action: 'find-dupes'              },
       '---',
-      { label: "Обновить favicon'ы",             icon: 'favicon',  action: 'refresh-favicons-folder' },
-      { label: 'Обновить рисунки',               icon: 'refresh',  action: 'refresh-thumbs-folder'  },
+      { label: t('menu.links.favicons'),             icon: 'favicon',  action: 'refresh-favicons-folder' },
+      { label: t('menu.links.thumbs'),               icon: 'refresh',  action: 'refresh-thumbs-folder'  },
       '---',
-      { label: 'Копировать URL',                 icon: 'copy',     shortcut: 'Ctrl+C', action: 'copy-url' },
-      { label: 'Свойства',                       icon: 'props',    shortcut: 'F4',  action: 'properties'  },
+      { label: t('menu.links.copy_url'),                 icon: 'copy',     shortcut: 'Ctrl+C', action: 'copy-url' },
+      { label: t('menu.links.props'),                       icon: 'props',    shortcut: 'F4',  action: 'properties'  },
     ]
   },
   {
-    id: 'transfer', label: 'Перенос',
+    id: 'transfer', label: t('menu.transfer'),
     items: [
-      { label: 'Импорт', icon: 'import', sub: [
-        { label: 'Из браузера...',          icon: 'browser', action: 'import-from-browser' },
-        { label: 'Из другой базы...',       icon: 'db',      action: 'import-from-db'      },
+      { label: t('menu.transfer.import'), icon: 'import', sub: [
+        { label: t('menu.transfer.from_browser'),          icon: 'browser', action: 'import-from-browser' },
+        { label: t('menu.transfer.from_db'),       icon: 'db',      action: 'import-from-db'      },
         '---',
-        { label: 'Из файла HTML',           icon: 'import',  action: 'import-html'         },
-        { label: 'Из файла TXT',            icon: 'import',  action: 'import-txt-lines'    },
+        { label: t('menu.transfer.from_html'),           icon: 'import',  action: 'import-html'         },
+        { label: t('menu.transfer.from_txt'),            icon: 'import',  action: 'import-txt-lines'    },
         '---',
-        { label: 'Из ua.dat...',            icon: 'folder',  action: 'import-folder'        },
+        { label: t('menu.transfer.from_uadat'),            icon: 'folder',  action: 'import-folder'        },
       ]},
-      { label: 'Экспорт', icon: 'backup', sub: [
-        { label: 'HTML файл',                   icon: 'import',  action: 'export-html'          },
-        { label: 'Текстовый файл',              icon: 'import',  action: 'export-txt'           },
+      { label: t('menu.transfer.export'), icon: 'backup', sub: [
+        { label: t('menu.transfer.to_html'),                   icon: 'import',  action: 'export-html'          },
+        { label: t('menu.transfer.to_txt'),              icon: 'import',  action: 'export-txt'           },
       ]},
       '---',
-      { label: 'Браузеры', icon: 'browser', action: 'manage-browsers' },
+      { label: t('menu.transfer.browsers'), icon: 'browser', action: 'manage-browsers' },
     ]
   },
   {
-    id: 'search', label: 'Поиск',
+    id: 'search', label: t('menu.search'),
     items: [
-      { label: 'Найти', icon: 'search', shortcut: 'Ctrl+F', action: 'find' },
+      { label: t('menu.search.find'), icon: 'search', shortcut: 'Ctrl+F', action: 'find' },
     ]
   },
   {
-    id: 'view', label: 'Вид',
+    id: 'view', label: t('menu.view'),
     items: [
-      { label: 'Развернуть все папки', icon: 'expand-all', action: 'toggle-expand-all' },
+      { label: t('menu.view.expand_all'), icon: 'expand-all', action: 'toggle-expand-all' },
       '---',
-      { label: 'Настроить toolbar…',   icon: 'gear',       action: 'customize-toolbar' },
+      { label: t('menu.view.toolbar'),   icon: 'gear',       action: 'customize-toolbar' },
     ]
   },
   {
-    id: 'help', label: 'Справка',
+    id: 'help', label: t('menu.help'),
     items: [
-      { label: 'Справка',               icon: 'props',    action: 'help-topics'  },
+      { label: t('menu.help.topics'),               icon: 'props',    action: 'help-topics'  },
       '---',
-      { label: 'Сайт программы',        icon: 'favicon',  action: 'open-website' },
-      { label: 'Репозиторий на GitHub', icon: 'open',     action: 'open-repo'    },
-      { label: 'Сообщить об ошибке',    icon: 'edit',     action: 'report-issue' },
+      { label: t('menu.help.site'),        icon: 'favicon',  action: 'open-website' },
+      { label: t('menu.help.repo'), icon: 'open',     action: 'open-repo'    },
+      { label: t('menu.help.report'),    icon: 'edit',     action: 'report-issue' },
       '---',
-      { label: 'Проверить обновления',  icon: 'refresh',  action: 'check-updates' },
+      { label: t('menu.help.updates'),  icon: 'refresh',  action: 'check-updates' },
       '---',
-      { label: 'О программе',           icon: 'info',     action: 'about'        },
+      { label: t('menu.help.about'),           icon: 'info',     action: 'about'        },
     ]
   },
 ];
@@ -3013,51 +3084,51 @@ const MENU_DATA = [
 // появится в toolbar customization без других изменений.
 const CMD_REGISTRY = [
   // Создание
-  { id:'new-link',            label:'Новая ссылка',              icon:'link',        group:'Создание',     shortcut:'Ctrl+Shift+N', action:'new-link' },
-  { id:'new-folder',          label:'Новая папка',               icon:'folder',      group:'Создание',     shortcut:'Ctrl+N',       action:'new-folder' },
-  { id:'new-subfolder',       label:'Новая подпапка',            icon:'subfolder',   group:'Создание',                              action:'new-subfolder' },
+  { id:'new-link',            label:t('cmd.new-link'),              icon:'link',        group:t('cmd.group.create'),     shortcut:'Ctrl+Shift+N', action:'new-link' },
+  { id:'new-folder',          label:t('cmd.new-folder'),               icon:'folder',      group:t('cmd.group.create'),     shortcut:'Ctrl+N',       action:'new-folder' },
+  { id:'new-subfolder',       label:t('cmd.new-subfolder'),            icon:'subfolder',   group:t('cmd.group.create'),                              action:'new-subfolder' },
   // Правка
-  { id:'delete-link',         label:'Удалить ссылку',            icon:'trash',       group:'Правка',       shortcut:'Del',          action:'delete-link' },
-  { id:'properties',          label:'Свойства ссылки',           icon:'props',       group:'Правка',       shortcut:'F4',           action:'properties' },
-  { id:'copy-url',            label:'Копировать URL',            icon:'copy',        group:'Правка',       shortcut:'Ctrl+C',       action:'copy-url' },
-  { id:'open-link',           label:'Открыть в браузере',        icon:'open',        group:'Правка',       shortcut:'Enter',        action:'open-link' },
-  { id:'open-with',           label:'Открыть с помощью…',        icon:'openwith',    group:'Правка',                                action:'open-with' },
-  { id:'refresh-thumb',       label:'Обновить рисунок',          icon:'refresh',     group:'Правка',                                action:'refresh-thumb' },
-  { id:'clear-thumb',         label:'Удалить рисунок',           icon:'delimg',      group:'Правка',                                action:'clear-thumb' },
+  { id:'delete-link',         label:t('cmd.delete-link'),            icon:'trash',       group:t('cmd.group.edit'),       shortcut:'Del',          action:'delete-link' },
+  { id:'properties',          label:t('cmd.properties'),           icon:'props',       group:t('cmd.group.edit'),       shortcut:'F4',           action:'properties' },
+  { id:'copy-url',            label:t('cmd.copy-url'),            icon:'copy',        group:t('cmd.group.edit'),       shortcut:'Ctrl+C',       action:'copy-url' },
+  { id:'open-link',           label:t('cmd.open-link'),        icon:'open',        group:t('cmd.group.edit'),       shortcut:'Enter',        action:'open-link' },
+  { id:'open-with',           label:t('cmd.open-with'),        icon:'openwith',    group:t('cmd.group.edit'),                                action:'open-with' },
+  { id:'refresh-thumb',       label:t('cmd.refresh-thumb'),          icon:'refresh',     group:t('cmd.group.edit'),                                action:'refresh-thumb' },
+  { id:'clear-thumb',         label:t('cmd.clear-thumb'),           icon:'delimg',      group:t('cmd.group.edit'),                                action:'clear-thumb' },
   // Навигация
-  { id:'nav-back',            label:'Назад',                     icon:'nav-back',    group:'Навигация',    shortcut:'Alt+←',        action:'nav-back' },
-  { id:'nav-forward',         label:'Вперёд',                    icon:'nav-forward', group:'Навигация',    shortcut:'Alt+→',        action:'nav-forward' },
-  { id:'nav-up',              label:'Вверх',                     icon:'nav-up',      group:'Навигация',    shortcut:'Alt+↑',        action:'nav-up' },
-  { id:'toggle-expand-all',   label:'Развернуть/Свернуть все',   icon:'expand-all',  group:'Навигация',                             action:'toggle-expand-all' },
-  { id:'move-up',             label:'Переместить вверх',         icon:'move-up',     group:'Навигация',                             action:'move-up' },
-  { id:'move-down',           label:'Переместить вниз',          icon:'move-down',   group:'Навигация',                             action:'move-down' },
-  { id:'toggle-menubar',      label:'Переключить меню',          icon:'menu-toggle', group:'Навигация',                             action:'toggle-menubar' },
-  { id:'tray-hide',           label:'Свернуть в трей',           icon:'tray',        group:'Навигация',                             action:'tray-hide' },
+  { id:'nav-back',            label:t('cmd.nav-back'),                     icon:'nav-back',    group:t('cmd.group.nav'),    shortcut:'Alt+←',        action:'nav-back' },
+  { id:'nav-forward',         label:t('cmd.nav-forward'),                    icon:'nav-forward', group:t('cmd.group.nav'),    shortcut:'Alt+→',        action:'nav-forward' },
+  { id:'nav-up',              label:t('cmd.nav-up'),                     icon:'nav-up',      group:t('cmd.group.nav'),    shortcut:'Alt+↑',        action:'nav-up' },
+  { id:'toggle-expand-all',   label:t('cmd.toggle-expand-all'),   icon:'expand-all',  group:t('cmd.group.nav'),                             action:'toggle-expand-all' },
+  { id:'move-up',             label:t('cmd.move-up'),         icon:'move-up',     group:t('cmd.group.nav'),                             action:'move-up' },
+  { id:'move-down',           label:t('cmd.move-down'),          icon:'move-down',   group:t('cmd.group.nav'),                             action:'move-down' },
+  { id:'toggle-menubar',      label:t('cmd.toggle-menubar'),          icon:'menu-toggle', group:t('cmd.group.nav'),                             action:'toggle-menubar' },
+  { id:'tray-hide',           label:t('cmd.tray-hide'),           icon:'tray',        group:t('cmd.group.nav'),                             action:'tray-hide' },
   // Поиск
-  { id:'find',                label:'Поиск',                     icon:'search',      group:'Поиск',        shortcut:'Ctrl+F',       action:'find' },
-  { id:'find-dupes',          label:'Поиск дубликатов',          icon:'dupes',       group:'Поиск',                                 action:'find-dupes' },
+  { id:'find',                label:t('cmd.find'),                     icon:'search',      group:t('cmd.group.search'),        shortcut:'Ctrl+F',       action:'find' },
+  { id:'find-dupes',          label:t('cmd.find-dupes'),          icon:'dupes',       group:t('cmd.group.search'),                                 action:'find-dupes' },
   // Проверка
-  { id:'check-all-links',     label:'Проверить все ссылки',      icon:'verify',      group:'Проверка',                              action:'check-all-links' },
+  { id:'check-all-links',     label:t('cmd.check-all-links'),      icon:'verify',      group:t('cmd.group.check'),                              action:'check-all-links' },
   // Импорт
-  { id:'import-from-browser', label:'Импорт из браузера',        icon:'import',      group:'Импорт',                                action:'import-from-browser' },
-  { id:'import-html',         label:'Импорт из HTML',            icon:'import',      group:'Импорт',                                action:'import-html' },
+  { id:'import-from-browser', label:t('cmd.import-from-browser'),        icon:'import',      group:t('cmd.group.import'),                                action:'import-from-browser' },
+  { id:'import-html',         label:t('cmd.import-html'),            icon:'import',      group:t('cmd.group.import'),                                action:'import-html' },
   // Id намеренно остаётся `import-txt-lines`, хотя формат теперь определяется
   // сам: он может стоять в пользовательском `toolbar.json`, а переименование
   // молча убрало бы кнопку с панели.
-  { id:'import-txt-lines',    label:'Импорт из TXT',             icon:'import',      group:'Импорт',                                action:'import-txt-lines' },
+  { id:'import-txt-lines',    label:t('cmd.import-txt-lines'),             icon:'import',      group:t('cmd.group.import'),                                action:'import-txt-lines' },
   // Экспорт
-  { id:'export-html',         label:'Экспорт в HTML',            icon:'backup',      group:'Экспорт',                               action:'export-html' },
-  { id:'export-txt',          label:'Экспорт в TXT',             icon:'backup',      group:'Экспорт',                               action:'export-txt' },
+  { id:'export-html',         label:t('cmd.export-html'),            icon:'backup',      group:t('cmd.group.export'),                               action:'export-html' },
+  { id:'export-txt',          label:t('cmd.export-txt'),             icon:'backup',      group:t('cmd.group.export'),                               action:'export-txt' },
   // Backup
-  { id:'backup-without',      label:'Backup (без рисунков)',      icon:'backup',      group:'Backup',                                action:'backup-without' },
-  { id:'backup-with',         label:'Backup (с рисунками)',       icon:'backup',      group:'Backup',                                action:'backup-with' },
+  { id:'backup-without',      label:t('cmd.backup-without'),      icon:'backup',      group:t('cmd.group.backup'),                                action:'backup-without' },
+  { id:'backup-with',         label:t('cmd.backup-with'),       icon:'backup',      group:t('cmd.group.backup'),                                action:'backup-with' },
   // Сортировка
-  { id:'sort-title-asc',      label:'По имени ↑',                icon:'sort',        group:'Сортировка',                            action:'sort-all-title-asc' },
-  { id:'sort-title-desc',     label:'По имени ↓',                icon:'sort',        group:'Сортировка',                            action:'sort-all-title-desc' },
-  { id:'sort-url-asc',        label:'По URL ↑',                  icon:'sort',        group:'Сортировка',                            action:'sort-all-url-asc' },
-  { id:'sort-url-desc',       label:'По URL ↓',                  icon:'sort',        group:'Сортировка',                            action:'sort-all-url-desc' },
-  { id:'sort-created-asc',    label:'По дате ↑',                 icon:'sort',        group:'Сортировка',                            action:'sort-all-created-asc' },
-  { id:'sort-created-desc',   label:'По дате ↓',                 icon:'sort',        group:'Сортировка',                            action:'sort-all-created-desc' },
+  { id:'sort-title-asc',      label:t('cmd.sort-title-asc'),                icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-title-asc' },
+  { id:'sort-title-desc',     label:t('cmd.sort-title-desc'),                icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-title-desc' },
+  { id:'sort-url-asc',        label:t('cmd.sort-url-asc'),                  icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-url-asc' },
+  { id:'sort-url-desc',       label:t('cmd.sort-url-desc'),                  icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-url-desc' },
+  { id:'sort-created-asc',    label:t('cmd.sort-created-asc'),                 icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-created-asc' },
+  { id:'sort-created-desc',   label:t('cmd.sort-created-desc'),                 icon:'sort',        group:t('cmd.group.sort'),                            action:'sort-all-created-desc' },
 ];
 
 // Alias for backward-compat
@@ -3070,8 +3141,7 @@ const DEFAULT_TOOLBAR = [
   'delete-link', 'properties', '|',
   'find', '|',
   'check-all-links', '|',
-  'toggle-expand-all', '|',
-  'tray-hide',
+  'toggle-expand-all',
 ];
 
 let toolbarConfig = [...DEFAULT_TOOLBAR];
@@ -3118,7 +3188,7 @@ function buildToolbar() {
     btn.dataset.tbCmd = cmd.id;
     const hint = cmd.shortcut ? `${cmd.label} (${cmd.shortcut})` : cmd.label;
     btn.title = cmd.id === 'toggle-menubar'
-      ? (appSettings.compactMode ? 'Показать меню' : 'Скрыть меню')
+      ? (appSettings.compactMode ? t('toolbar.show_menu') : t('toolbar.hide_menu'))
       : hint;
     btn.innerHTML = tbIconHtml(cmd.icon);
     btn.addEventListener('click', () => handleToolbarAction(cmd.id));
@@ -3188,11 +3258,10 @@ function tbMoveItem(dir) {
     if (errEl) errEl.textContent = '';
     try {
       await flushNoteEdit();
-      await invoke('open_db');
+      if (!(await invoke('open_db'))) return;   // окно выбора закрыли — наше остаётся
       close();
       await showApp();
     } catch(e) {
-      if (e === 'Отменено') return;
       if (errEl) errEl.textContent = e;
       else console.error('open_db:', e);
     }
@@ -3240,12 +3309,12 @@ function tbMoveItem(dir) {
       close();
       if (count > 0) {
         await refreshTree();
-        setStatus(`Импортировано ${count} ${plural(count, 'ссылка', 'ссылки', 'ссылок')}`);
+        setStatus(t('status.imported', { links: t('count.links', { n: count }) }));
       } else {
-        setStatus('Нет новых ссылок для импорта');
+        setStatus(t('status.nothing_new'));
       }
     } catch(e) {
-      if (e !== 'Отменено') alert('Ошибка импорта: ' + e);
+      showNotice(t('importdb.title'), t('notice.import_failed', { e }));
     } finally {
       okBtn.disabled = false;
     }
@@ -3265,10 +3334,10 @@ function tbMoveItem(dir) {
       o.value = val; o.textContent = label;
       destSelect.appendChild(o);
     };
-    addOpt('root', 'Корень');
+    addOpt('root', t('importdb.root'));
     allNodes.filter(n => n.kind === 'folder' && n.parent === null)
             .forEach(f => addOpt(String(f.id), f.title));
-    addOpt('new', '— Создать новую папку...');
+    addOpt('new', t('importdb.new_folder'));
 
     newFolderRow.classList.add('hidden');
     newFolderName.value = '';
@@ -3309,7 +3378,7 @@ function tbMoveItem(dir) {
 
   function openNewItemDlg(mode, prefill = {}) {
     _mode = mode;
-    titleEl.textContent = 'Новая ссылка';
+    titleEl.textContent = t('newitem.title_link');
     nameInput.value = prefill.title || '';
     urlInput.value  = prefill.url   || '';
     noteInput.value = '';
@@ -3338,7 +3407,7 @@ function tbMoveItem(dir) {
   async function submit() {
     const url = urlInput.value.trim();
     if (!url) {
-      _warn('Введите адрес');
+      _warn(t('newitem.enter_url'));
       urlInput.focus();
       return;
     }
@@ -3347,7 +3416,7 @@ function tbMoveItem(dir) {
     if (appSettings.noDuplicateUrls) {
       const dup = allNodes.find(n => n.kind === 'bookmark' && n.url === url);
       if (dup) {
-        _warn(`Уже существует: «${dup.title}»`);
+        _warn(t('newitem.exists', { title: dup.title }));
         urlInput.focus();
         return;
       }
@@ -3365,7 +3434,7 @@ function tbMoveItem(dir) {
         pid = await invoke('inbox_folder');
       } catch (e) {
         logUi(`Новая ссылка: папка «Новые ссылки» не заведена: ${e}`);
-        _warn(`Не удалось завести папку «Новые ссылки»: ${e}`);
+        _warn(t('newitem.inbox_failed', { e }));
         return;
       } finally {
         _inboxPending = false;
@@ -3460,7 +3529,7 @@ function tbMoveItem(dir) {
     const groups = {};
     for (const cmd of CMD_REGISTRY) {
       if (used.has(cmd.id)) continue;
-      const g = cmd.group || 'Другое';
+      const g = cmd.group || t('cmd.group.other');
       (groups[g] = groups[g] || []).push(cmd);
     }
     availEl.innerHTML = '';
@@ -3645,7 +3714,7 @@ function _populateRecentDbs(drop) {
     if (paths.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'menu-entry disabled';
-      empty.innerHTML = '<span class="entry-icon"></span><span class="entry-label">(пусто)</span>';
+      empty.innerHTML = `<span class="entry-icon"></span><span class="entry-label">${t('menu.file.recent_empty')}</span>`;
       subEl.appendChild(empty);
       return;
     }
@@ -3660,7 +3729,7 @@ function _populateRecentDbs(drop) {
         flushNoteEdit()   // заметка — в ту базу, где её правили, до переключения
           .then(() => invoke('switch_db', { newPath: p }))
           .then(() => showApp())
-          .catch(e => showNotice('Не удалось открыть базу', String(e)));
+          .catch(e => showNotice(t('notice.open_db_failed'), String(e)));
       });
       subEl.appendChild(el);
     }
@@ -3692,6 +3761,9 @@ function buildMenubar() {
       const entry = document.createElement('div');
       const hasSub = Array.isArray(item.sub);
       entry.className = 'menu-entry' + (item.todo ? ' disabled' : '') + (hasSub ? ' has-sub' : '');
+      // По действию пункт находят, не по тексту: подпись бывает переведённой
+      // и меняется на ходу (_syncExpandToggleUI).
+      if (item.action) entry.dataset.action = item.action;
 
       const icon = document.createElement('span');
       icon.className = 'entry-icon';
@@ -3721,6 +3793,7 @@ function buildMenubar() {
           }
           const se = document.createElement('div');
           se.className = 'menu-entry' + (si.todo ? ' disabled' : '');
+          if (si.action) se.dataset.action = si.action;
           const ic = document.createElement('span'); ic.className = 'entry-icon';
           ic.innerHTML = ICONS[si.icon] || '';
           const lb = document.createElement('span'); lb.className = 'entry-label';
@@ -3754,6 +3827,7 @@ function buildMenubar() {
         group.classList.add('open');
         if (menu.id === 'view') _syncExpandToggleUI();
         if (menu.id === 'file') _populateRecentDbs(drop);
+        _fitMenuDropdown(drop);
       }
     });
 
@@ -3762,6 +3836,7 @@ function buildMenubar() {
         closeAllMenus();
         group.classList.add('open');
         if (menu.id === 'file') _populateRecentDbs(drop);
+        _fitMenuDropdown(drop);
       }
     });
   }
@@ -3770,7 +3845,7 @@ function buildMenubar() {
   // margin-left:auto в CSS; группы меню остаются шириной по контенту.
   const trayBtn = document.createElement('button');
   trayBtn.className = 'menu-tray-btn';
-  trayBtn.title = 'Свернуть в трей';
+  trayBtn.title = t('menu.file.tray');
   trayBtn.innerHTML = ICONS['tray'];
   trayBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -3792,17 +3867,24 @@ function closeAllMenus() {
   document.querySelectorAll('.menu-group.open').forEach(g => g.classList.remove('open'));
 }
 
+// Выпадающее меню у правого края узкого окна (длинный перевод, крупный
+// шрифт) не уходит за край: сдвиг влево ровно на выступ.
+function _fitMenuDropdown(drop) {
+  drop.style.left = '';
+  const over = drop.getBoundingClientRect().right - window.innerWidth;
+  if (over > 0) drop.style.left = `${-over}px`;
+}
+
 function _syncExpandToggleUI() {
   const anyOpen = !!treeEl.querySelector('.tree-children.open');
-  const label = anyOpen ? 'Свернуть все папки' : 'Развернуть все папки';
+  const label = anyOpen ? t('menu.view.collapse_all') : t('menu.view.expand_all');
   const icon  = anyOpen ? 'collapse-all' : 'expand-all';
   // Menu label + icon
-  document.querySelectorAll('.menu-entry .entry-label').forEach(el => {
-    if (el.textContent === 'Развернуть все папки' || el.textContent === 'Свернуть все папки') {
-      el.textContent = label;
-      const iconEl = el.closest('.menu-entry')?.querySelector('.entry-icon');
-      if (iconEl) iconEl.innerHTML = ICONS[icon] || '';
-    }
+  document.querySelectorAll('.menu-entry[data-action="toggle-expand-all"]').forEach(entry => {
+    const labelEl = entry.querySelector('.entry-label');
+    if (labelEl) labelEl.textContent = label;
+    const iconEl = entry.querySelector('.entry-icon');
+    if (iconEl) iconEl.innerHTML = ICONS[icon] || '';
   });
   // Toolbar button
   const btn = toolbarEl.querySelector('[data-tb-cmd="toggle-expand-all"]');
@@ -3820,27 +3902,27 @@ function handleMenuAction(action) {
     case 'export-html': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
       if (fid != null) invoke("export_folder_html", { folderId: fid })
-        .then(() => setStatus('Экспорт в HTML завершён'))
-        .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
+        .then(saved => { if (saved) setStatus(t('status.export_html_done')); })   // false — окно закрыли
+        .catch(e => { logUi('экспорт не удался: ' + e); setStatus(t('status.export_failed')); });
       break;
     }
     case 'export-txt': {
       const fid = allFolders.find(f => f.parent == null)?.id ?? activeFolderId;
       if (fid != null) invoke("export_folder_txt", { folderId: fid })
-        .then(() => setStatus('Экспорт в текст завершён'))
-        .catch(e => { logUi('экспорт не удался: ' + e); setStatus('Ошибка экспорта'); });
+        .then(saved => { if (saved) setStatus(t('status.export_txt_done')); })
+        .catch(e => { logUi('экспорт не удался: ' + e); setStatus(t('status.export_failed')); });
       break;
     }
     // ── Backup ──
     case 'backup-without':
       invoke("backup_db")
-        .then(path => showNotice('Резервная копия', 'Резервная копия базы создана:\n' + path))
-        .catch(e => { if (e !== 'Отменено') { console.error(e); showNotice('Ошибка', 'Не удалось создать резервную копию:\n' + e); } });
+        .then(path => { if (path != null) showNotice(t('notice.backup'), t('notice.backup_done', { path })); })
+        .catch(e => { console.error(e); showNotice(t('notice.error'), t('notice.backup_failed', { e })); });
       break;
     case 'backup-with':
       invoke("backup_db_with_data")
-        .then(path => showNotice('Резервная копия', 'Резервная копия базы с рисунками создана:\n' + path))
-        .catch(e => { if (e !== 'Отменено') { console.error(e); showNotice('Ошибка', e); } });
+        .then(path => { if (path != null) showNotice(t('notice.backup'), t('notice.backup_with_done', { path })); })
+        .catch(e => { console.error(e); showNotice(t('notice.error'), e); });
       break;
     // ── Sort all ──
     case 'sort-all-title-asc':    invoke("sort_all_bookmarks", { by: "title",   desc: false }).then(refreshTree).catch(console.error); break;
@@ -3866,36 +3948,39 @@ function handleMenuAction(action) {
       break;
     case 'import-txt-lines':
       invoke("import_txt_file")
-        .then(res => { reportTxtImport(res); if (res.links + res.folders > 0) refreshTree(); })
-        .catch(e => { if (e !== 'Отменено') showNotice('Импорт из TXT', String(e)); });
+        .then(res => { if (!res) return; reportTxtImport(res); if (res.links + res.folders > 0) refreshTree(); })
+        .catch(e => showNotice(t('notice.txt_import'), String(e)));
       break;
     case 'import-html':
       invoke("import_html")
-        .then(n => { if (n > 0) { refreshTree(); } })
-        .catch(e => { if (e !== 'Отменено') console.error('import_html:', e); });
+        .then(n => { if (n > 0) { refreshTree(); } })   // null — окно закрыли
+        .catch(e => console.error('import_html:', e));
       break;
     case 'import-folder':
       invoke("import_uadat_pick")
         .then(n => {
-          if (n > 0) { refreshTree(); setStatus(`Импортировано ${n} ${plural(n, 'ссылка', 'ссылки', 'ссылок')}`); }
-          else setStatus('Нет новых ссылок для импорта');
+          // null — окно закрыли: проверка ДО «Нет новых ссылок», иначе отмена
+          // показывала бы это сообщение.
+          if (n == null) return;
+          if (n > 0) { refreshTree(); setStatus(t('status.imported', { links: t('count.links', { n }) })); }
+          else setStatus(t('status.nothing_new'));
         })
-        .catch(e => { if (e !== 'Отменено') console.error('import_folder:', e); });
+        .catch(e => console.error('import_folder:', e));
       break;
 
     case 'open-link': {
-      const t = getActiveLink();
-      if (t?.url) openWithBrowser(t.url, resolveOpenerForNode(t));
+      const link = getActiveLink();
+      if (link?.url) openWithBrowser(link.url, resolveOpenerForNode(link));
       break;
     }
     case 'open-with': {
-      const t = getActiveLink();
-      if (t?.url) showOpenWithDialog(t.url);
+      const link = getActiveLink();
+      if (link?.url) showOpenWithDialog(link.url);
       break;
     }
     case 'properties': {
-      const t = getActiveLink();
-      if (t) openPropsDialog(t);
+      const link = getActiveLink();
+      if (link) openPropsDialog(link);
       break;
     }
     case 'copy-url': {
@@ -3904,9 +3989,9 @@ function handleMenuAction(action) {
       break;
     }
     case 'delete-link': {
-      const t = activeBookmarkNode
+      const link = activeBookmarkNode
         || allNodes.find(n => String(n.id) === gridEl.querySelector(".card.selected")?.dataset.id);
-      if (t) deleteBookmark(t);
+      if (link) deleteBookmark(link);
       break;
     }
     case 'find':
@@ -3930,6 +4015,9 @@ function handleMenuAction(action) {
     case 'tray-hide':
       invoke('hide_window').catch(console.error);
       break;
+    case 'quit':
+      quitApp();
+      break;
 
     // ── Database ──
     case 'open-db':
@@ -3938,11 +4026,11 @@ function handleMenuAction(action) {
     case 'new-db':
       flushNoteEdit()
         .then(() => invoke('create_new_db'))
-        .then(() => showApp())
-        .catch(e => { if (e !== 'Отменено') console.error('create_new_db:', e); });
+        .then(created => { if (created) return showApp(); })   // false — окно закрыли
+        .catch(e => console.error('create_new_db:', e));
       break;
     case 'clear-db':
-      deleteConfirm('Очистить базу данных?\nВсе закладки, папки и скриншоты будут удалены.', async () => {
+      deleteConfirm(t('confirm.clear_db'), async () => {
         await flushNoteEdit();
         await Promise.all([invoke('clear_db'), invoke('clear_screenshots')]).catch(console.error);
         // В очищенной базе Rust заводит «Новые ссылки» — дерево перечитать.
@@ -3965,7 +4053,7 @@ function handleMenuAction(action) {
 
     // ── Справка ──
     case 'help-topics':
-      showNotice('Справка', 'Появится в следующих версиях');
+      showNotice(t('menu.help.topics'), t('notice.coming_soon'));
       break;
     case 'open-website':
       openWithBrowser('https://joomfan.com/katalog/ad/programmy-dlya-windows/url-album', 'default');
@@ -3977,7 +4065,7 @@ function handleMenuAction(action) {
       openWithBrowser('https://github.com/mucronix/url-album-tauri/issues/new', 'default');
       break;
     case 'check-updates':
-      showNotice('Проверить обновления', 'Появится в следующих версиях');
+      showNotice(t('menu.help.updates'), t('notice.coming_soon'));
       break;
     case 'about':
       openAboutDialog();
@@ -4000,8 +4088,8 @@ function handleMenuAction(action) {
 
     case 'import-from-db':
       invoke('analyze_import_db')
-        .then(a => openImportDbDialog(a))
-        .catch(e => { if (e !== 'Отменено') alert('Ошибка: ' + e); });
+        .then(a => { if (a) openImportDbDialog(a); })   // null — окно закрыли
+        .catch(e => showNotice(t('importdb.title'), t('common.error', { e })));
       break;
 
     case 'refresh-favicons-folder': {
@@ -4176,8 +4264,10 @@ let _thumbFailed    = 0;     // для сводки пакета
 let _thumbSkipped   = 0;     // уже снимались другим путём (SHOT_BUSY) — не неудача
 let _thumbStarted   = 0;
 // Отказ refresh_thumb, когда эта ссылка уже снимается (пакет, «Обновить
-// рисунок», новая ссылка, расширение). Тот же текст — SHOT_BUSY в main.rs.
-const SHOT_BUSY = 'Рисунок этой ссылки уже снимается';
+// рисунок», новая ссылка, расширение). Код, тот же — SHOT_BUSY в main.rs;
+// текст для человека — SHOT_BUSY_TEXT.
+const SHOT_BUSY = 'shot_busy';
+const SHOT_BUSY_TEXT = t('notice.shot_busy');
 let _thumbBrowsers  = new Map();  // браузер → снято им, для сводки пакета
 let _thumbFallback  = null;       // причина запасного браузера, если был
 
@@ -4185,7 +4275,7 @@ let _thumbFallback  = null;       // причина запасного брау�
 // человеку, чем снято и почему. Обычный снимок молчит: так решено, чтобы
 // строка состояния не говорила очевидного на каждую ссылку.
 function _noteShotFallback(shot) {
-  if (shot?.fallback) setStatus(`Рисунок снят в ${shot.browser}: ${shot.fallback}`);
+  if (shot?.fallback) setStatus(t('status.shot_fallback', { browser: shot.browser, reason: shot.fallback }));
 }
 
 // ── App settings ──────────────────────────────────────────────────────────────
@@ -4217,7 +4307,8 @@ let appSettings = {
   extensionToken:    '',
   compactMode:       false,
   extensionAddMode:  'quick',  // 'quick' | 'dialog'
-  hotkey:            '',       // доп. глоб. хоткей "Ctrl+Shift+A"; пусто = только F8
+  hotkey:            '',       // доп. глоб. хоткей "Ctrl+Shift+A"; пусто — нет
+  f8Enabled:         true,     // F8 — «Добавить из буфера» (снять — F8 свободна для других программ)
 };
 
 async function loadAppSettings() {
@@ -4258,7 +4349,7 @@ function applySettings(save = true) {
   const mbBtn = toolbarEl.querySelector('[data-tb-cmd="toggle-menubar"]');
   if (mbBtn) {
     mbBtn.classList.toggle('active', !!appSettings.compactMode);
-    mbBtn.title = appSettings.compactMode ? 'Показать меню' : 'Скрыть меню';
+    mbBtn.title = appSettings.compactMode ? t('toolbar.show_menu') : t('toolbar.hide_menu');
   }
   applyColWidth(appSettings.listColWidth ?? 42, false);
   applySidebarWidth(appSettings.sidebarWidth ?? 230, false);
@@ -4267,7 +4358,9 @@ function applySettings(save = true) {
   document.documentElement.style.setProperty('--ui-font', (appSettings.uiFontSize || 13) + 'px');
   invoke('set_extension_add_mode', { mode: appSettings.extensionAddMode || 'quick' }).catch(() => {});
   invoke('set_hotkey', { combo: appSettings.hotkey || null })
-    .catch(e => showNotice('Горячая клавиша', typeof e === 'string' ? e : 'Не удалось назначить горячую клавишу'));
+    .catch(e => showNotice(t('settings.group.hotkey'), typeof e === 'string' ? e : t('notice.hotkey_failed')));
+  invoke('set_f8', { enabled: appSettings.f8Enabled !== false })
+    .catch(e => showNotice(t('settings.group.hotkey'), typeof e === 'string' ? e : t('notice.hotkey_failed')));
   if (save) saveAppSettings();
 }
 
@@ -4294,10 +4387,10 @@ function parseHotkeyString(s) {
         alt = document.getElementById('s-hk-alt'), keySel = document.getElementById('s-hk-key');
   ctrl.checked = shift.checked = alt.checked = false; keySel.value = '';
   if (!s) return;
-  const tokens = s.split('+').map(t => t.trim());
+  const tokens = s.split('+').map(tok => tok.trim());
   const key = (tokens.pop() || '').toUpperCase();
-  for (const t of tokens) {
-    const lt = t.toLowerCase();
+  for (const tok of tokens) {
+    const lt = tok.toLowerCase();
     if (lt === 'ctrl') ctrl.checked = true;
     else if (lt === 'shift') shift.checked = true;
     else if (lt === 'alt') alt.checked = true;
@@ -4306,8 +4399,13 @@ function parseHotkeyString(s) {
 }
 function updateHotkeyPreview() {
   const combo = buildHotkeyString();
+  const f8 = document.getElementById('s-hk-f8').checked;
   const el = document.getElementById('s-hk-preview');
-  if (el) el.textContent = combo ? ('Текущая: ' + combo) : 'Только F8';
+  if (!el) return;
+  if (f8 && combo)  el.textContent = t('settings.hotkey_both', { combo });
+  else if (combo)   el.textContent = t('settings.hotkey_current', { combo });
+  else if (f8)      el.textContent = t('settings.hotkey_only_f8');
+  else              el.textContent = t('settings.hotkey_off');
 }
 
 function applySidebarWidth(px, persist = true) {
@@ -4455,7 +4553,7 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
   const tabs   = document.querySelectorAll('#settings-tabs .stab');
   const panels = document.querySelectorAll('.stab-panel');
   tabs.forEach(tab => tab.addEventListener('click', () => {
-    tabs.forEach(t => t.classList.remove('active'));
+    tabs.forEach(tab => tab.classList.remove('active'));
     panels.forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('stab-' + tab.dataset.tab)?.classList.add('active');
@@ -4477,7 +4575,7 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
     try {
       const p = await invoke('get_log_path');
       if (!p) {
-        showNotice('Журнал', 'Журнал пуст — включите запись и повторите действие, которое даёт сбой.');
+        showNotice(t('notice.log'), t('notice.log_empty'));
         return;
       }
       // Файл есть, но запись выключена: в нём только прошлые сеансы. Без этого
@@ -4485,19 +4583,15 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
       if (!appSettings.logEnabled) {
         // Блокнот открываем только ПОСЛЕ закрытия окна: showNotice не блокирует,
         // и без колбэка предупреждение мелькнуло бы под окном блокнота.
-        showNotice('Журнал',
-          'Запись журнала сейчас выключена — в файле только записи прошлых сеансов, ' +
-          'сегодняшней ошибки в нём не будет.\n\n' +
-          'Чтобы её записать: включите «Вести журнал», сохраните настройки ' +
-          'и повторите действие, которое даёт сбой.',
+        showNotice(t('notice.log'), t('notice.log_disabled'),
           () => invoke('open_file', { path: p })
-                  .catch(e => showNotice('Журнал',
-                    typeof e === 'string' ? e : 'Не удалось открыть журнал')));
+                  .catch(e => showNotice(t('notice.log'),
+                    typeof e === 'string' ? e : t('notice.log_open_failed'))));
         return;
       }
       await invoke('open_file', { path: p });
     } catch (e) {
-      showNotice('Журнал', typeof e === 'string' ? e : 'Не удалось открыть журнал');
+      showNotice(t('notice.log'), typeof e === 'string' ? e : t('notice.log_open_failed'));
     }
   });
 
@@ -4535,33 +4629,61 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
     const port = parseInt(document.getElementById('s-proxy-port').value, 10);
     const user = document.getElementById('s-proxy-user').value.trim();
     const pass = document.getElementById('s-proxy-pass').value;
-    if (!host) { setProxyStatus('Укажите адрес прокси', 'err'); return; }
+    if (!host) { setProxyStatus(t('settings.proxy.no_host'), 'err'); return; }
     // Tauri не десериализует u16 > 65535 и вернул бы сырую ошибку — режем здесь.
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      setProxyStatus('Неверный порт', 'err');
+      setProxyStatus(t('settings.proxy.bad_port'), 'err');
       return;
     }
     proxyTestBtn.disabled = true;
-    setProxyStatus('Проверка...', null);
+    setProxyStatus(t('settings.proxy.testing'), null);
     try {
       setProxyStatus(await invoke('test_proxy', { host, port, user, pass }), 'ok');
     } catch (e) {
-      setProxyStatus(typeof e === 'string' ? e : 'Не удалось проверить прокси', 'err');
+      setProxyStatus(typeof e === 'string' ? e : t('settings.proxy.test_failed'), 'err');
     } finally {
       // Не просто false: при снятой галке кнопка обязана остаться погашенной.
       proxyTestBtn.disabled = !proxyEnEl.checked;
     }
   });
 
+  // ── Язык ──
+  // «Авто» — ключа language в settings.json нет: язык системы, если для него
+  // есть словарь, иначе английский. Список — у Rust при каждом открытии окна
+  // (вшитые и lang\). Записанный код без словаря — отдельным пунктом: иначе
+  // сохранение «Настроек» молча стёрло бы выбор человека.
+  const langSel = document.getElementById('s-language');
+  let _langAuto  = I18N.lang;   // язык пункта «Авто»
+  let _langCodes = new Set();
+  const _langNorm = (c) => String(c).split(/[-_]/)[0].toLowerCase();
+  function _fillLanguageSelect(list) {
+    const names = new Map(list.languages.map(l => [l.code, l.name]));
+    _langAuto  = list.auto;
+    _langCodes = new Set(names.keys());
+    const opt = (value, text) => { const o = document.createElement('option'); o.value = value; o.textContent = text; return o; };
+    langSel.replaceChildren(opt('', t('settings.language.auto', { name: names.get(list.auto) ?? list.auto })));
+    for (const l of list.languages) langSel.append(opt(l.code, l.name));
+    // «en-US» в файле — тот же en: загрузчик берёт основной подтег
+    let cur = appSettings.language ? _langNorm(appSettings.language) : '';
+    if (cur && !names.has(cur)) {
+      cur = String(appSettings.language);
+      langSel.append(opt(cur, t('settings.language.missing', { code: cur })));
+    }
+    langSel.value = cur;
+  }
+
   // ── Open dialog: populate fields ──
   window.openSettingsDialog = function() {
+    langSel.replaceChildren();
+    invoke('list_languages').then(_fillLanguageSelect)
+      .catch(e => logUi(`Настройки: список языков не получен: ${e}`));
     // Show actual DB path
     invoke('get_db_path').then(p => {
       const el = document.getElementById('s-db-path');
       if (el) el.textContent = p;
     }).catch(() => {});
     // Reset to first tab
-    tabs.forEach(t => t.classList.remove('active'));
+    tabs.forEach(tab => tab.classList.remove('active'));
     panels.forEach(p => p.classList.remove('active'));
     tabs[0]?.classList.add('active');
     document.getElementById('stab-general')?.classList.add('active');
@@ -4574,8 +4696,9 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
     document.getElementById('s-ext-dialog').checked   = appSettings.extensionAddMode === 'dialog';
     _populateHotkeyKeys();
     parseHotkeyString(appSettings.hotkey || '');
+    document.getElementById('s-hk-f8').checked = appSettings.f8Enabled !== false;
     updateHotkeyPreview();
-    ['s-hk-ctrl','s-hk-shift','s-hk-alt','s-hk-key'].forEach(id =>
+    ['s-hk-f8','s-hk-ctrl','s-hk-shift','s-hk-alt','s-hk-key'].forEach(id =>
       document.getElementById(id).onchange = updateHotkeyPreview);
     fontSlider.value = appSettings.uiFontSize || 13;
     fontVal.textContent = fontSlider.value;
@@ -4610,12 +4733,21 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
                    || document.getElementById('s-hk-shift').checked
                    || document.getElementById('s-hk-alt').checked;
     if (document.getElementById('s-hk-key').value && !_hkHasMod) {
-      showNotice('Горячая клавиша', 'Выберите хотя бы один модификатор: Ctrl, Shift или Alt');
+      showNotice(t('settings.group.hotkey'), t('notice.hotkey_need_mod'));
       return;
     }
     if (_hkHasMod && !document.getElementById('s-hk-key').value) {
-      showNotice('Горячая клавиша', 'Выберите клавишу для горячей комбинации');
+      showNotice(t('settings.group.hotkey'), t('notice.hotkey_need_key'));
       return;
+    }
+    // Язык — действует после перезапуска. Список ещё не пришёл — не трогать.
+    let langChanged = false;
+    if (langSel.options.length) {
+      const code = langSel.value;
+      if (code) appSettings.language = code; else delete appSettings.language;
+      // Код без словаря при запуске не найдётся — выберется то же, что «Авто»
+      const next = code && _langCodes.has(code) ? code : _langAuto;
+      langChanged = next !== I18N.lang;
     }
     // Общие
     appSettings.showToolbar     = document.getElementById('s-show-toolbar').checked;
@@ -4624,6 +4756,7 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
     appSettings.noDuplicateUrls  = document.getElementById('s-no-dupes').checked;
     appSettings.extensionAddMode = document.getElementById('s-ext-dialog').checked ? 'dialog' : 'quick';
     appSettings.hotkey           = buildHotkeyString();
+    appSettings.f8Enabled        = document.getElementById('s-hk-f8').checked;
     appSettings.uiFontSize       = parseInt(fontSlider.value) || 13;
     // Журнал: применяем сразу, чтобы галочка действовала без перезапуска.
     appSettings.logEnabled       = document.getElementById('s-log-enabled').checked;
@@ -4641,6 +4774,7 @@ initNoteSplitter('detail-note-splitter', 'detail-note', 'detailNoteHeight',
 
     applySettings(true);
     overlay.classList.add('hidden');
+    if (langChanged) showNotice(t('settings.group.language'), t('settings.language.restart'));
   };
 })();
 
@@ -4674,7 +4808,7 @@ async function init() {
     invoke('get_data_dir').then(d => { dataDir = d; }).catch(() => {}),
   ]);
   // Одно окно на все испорченные файлы — после того, как отчитались все трое.
-  reportBrokenConfigs();
+  reportBrokenConfigs(reportBrokenLang);
   buildToolbar();
   _refreshNavButtons();
   await showApp();
@@ -4683,7 +4817,7 @@ async function init() {
   invoke('get_pending_url').then(pending => {
     if (!pending) return;
     if (activeFolderId == null) {
-      alert('Сначала откройте или создайте базу данных (Файл → Создать базу).');
+      showNotice(t('newitem.title_link'), t('notice.open_db_first'));
       return;
     }
     openNewItemDlg('link', { url: pending.url, title: pending.title });
@@ -4696,9 +4830,9 @@ async function init() {
   // своё меню редактирования (showEditMenu, перехват в фазе capture); проверка
   // полей ниже осталась для прочих редактируемых элементов.
   document.addEventListener('contextmenu', (e) => {
-    const t = e.target;
-    if (t && (((t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') && !t.readOnly && !t.disabled)
-              || t.isContentEditable)) return;
+    const el = e.target;
+    if (el && (((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && !el.readOnly && !el.disabled)
+              || el.isContentEditable)) return;
     e.preventDefault();
   });
 }
@@ -4720,20 +4854,20 @@ async function showImportScreen() {
 // "Создать новую базу" — save dialog then open empty app
 document.getElementById("wb-new").addEventListener("click", async () => {
   try {
-    await invoke("create_new_db");
+    if (!(await invoke("create_new_db"))) return;   // окно закрыли — остаёмся на стартовом экране
     await showApp();
   } catch(e) {
-    if (e !== "Отменено") console.error("create_new_db:", e);
+    console.error("create_new_db:", e);
   }
 });
 
 // "Открыть существующую базу" — file picker then reload
 document.getElementById("wb-open").addEventListener("click", async () => {
   try {
-    await invoke("open_db");
+    if (!(await invoke("open_db"))) return;
     await showApp();
   } catch(e) {
-    if (e !== "Отменено") console.error("open_db:", e);
+    console.error("open_db:", e);
   }
 });
 
@@ -4741,10 +4875,11 @@ document.getElementById("wb-open").addEventListener("click", async () => {
 document.getElementById("wb-import").addEventListener("click", async () => {
   try {
     const n = await invoke("import_uadat_pick");
+    if (n == null) return;   // окно закрыли
     await showApp();
-    setStatus(`Импортировано ${n} ${plural(n, 'ссылка', 'ссылки', 'ссылок')}`);
+    setStatus(t('status.imported', { links: t('count.links', { n }) }));
   } catch(e) {
-    if (e !== "Отменено") console.error("import_uadat_pick:", e);
+    console.error("import_uadat_pick:", e);
   }
 });
 
@@ -4767,21 +4902,13 @@ async function updateWindowTitle() {
     const title = `URL Album ${APP_VERSION}`;
     document.title = title;
     await invoke('set_window_title', { title });
-    rootZone.textContent = currentDbName || '↑ Корень';
+    rootZone.textContent = currentDbName || t('tree.root');
   } catch(_) { currentDbName = ''; currentDbPath = ''; }
 }
 
 // ── Statusbar API ─────────────────────────────────────────────────────────
 
 // sticky=false → auto-clears after 3s; sticky=true → stays until replaced/cleared
-// Склонение: 1 ссылка, 2 ссылки, 5 ссылок. Раньше писалось «Импортировано
-// 1 ссылок» — мелочь, но она первое, что человек видит после импорта.
-function plural(n, one, few, many) {
-  const m10 = n % 10, m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-  return many;
-}
 
 // Итог импорта TXT. При K = 0 — одна строка в статусбаре и ничего больше:
 // сообщение не должно превращаться в шум на обычном импорте. При K > 0
@@ -4789,31 +4916,28 @@ function plural(n, one, few, many) {
 // пропала, и человеку нужно объяснить, что делать.
 function reportTxtImport(res) {
   const parts = [];
-  if (res.links)   parts.push(`${res.links} ${plural(res.links, 'ссылка', 'ссылки', 'ссылок')}`);
+  if (res.links)   parts.push(t('count.links', { n: res.links }));
   // Папку-контейнер в счёт не берём — вместо числа говорим, КУДА легло:
   // размещение теперь зависит от того, пуста ли целевая папка.
   if (res.folders && !res.folder)
-    parts.push(`${res.folders} ${plural(res.folders, 'папка', 'папки', 'папок')}`);
+    parts.push(t('count.folders', { n: res.folders }));
 
-  const imported = parts.length ? `Импортировано: ${parts.join(', ')}` : 'Импортировано: ничего';
-  const where    = res.folder ? ` в папку «${res.folder}»` : '';
+  // Целыми фразами: «что» и «куда» в разных языках стоят по-разному.
+  const items    = parts.join(t('list.sep'));
+  const folder   = res.folder;
+  const imported = items
+    ? (folder ? t('txt.imported_into', { items, folder }) : t('txt.imported', { items }))
+    : (folder ? t('txt.imported_nothing_into', { folder }) : t('txt.imported_nothing'));
 
-  let line = imported + where;
-  if (res.skipped) line += `; не разобрано строк: ${res.skipped}`;
-  setStatus(line);
+  setStatus(res.skipped ? t('txt.status_skipped', { status: imported, n: res.skipped }) : imported);
 
   if (res.skipped) {
     // Текст окна собирается отдельно, а не переделкой строки статуса: окно
     // начинается с того, чего в статусе нет, — с потери, — и не зависит от
     // формулировки статуса, которую мы уже однажды меняли. Прежний вариант
     // правил статус через `replace` и ломался бы от любой правки его текста.
-    const lost = `${res.skipped} ${plural(res.skipped, 'строка', 'строки', 'строк')}`;
-    showNotice('Импорт из TXT',
-      `Часть файла не разобрана: ${lost}.\n` +
-      `${imported}${where}.\n\n` +
-      'Если ожидали больше — возможно, файл в другом формате. Программа читает ' +
-      'либо свой экспорт (строки «[Папка]», «Название - URL», «Заметка: …»), ' +
-      'либо простой список ссылок — по одной в строке.');
+    showNotice(t('notice.txt_import'),
+      t('txt.notice_skipped', { lost: t('count.lines', { n: res.skipped }), imported, note: t('txt.note_label') }));
   }
 }
 
@@ -4875,9 +4999,9 @@ function clearStatus() {
 function updateStatusLeft() {
   const nFolders = allFolders.length;
   const nLinks   = allNodes.filter(n => n.kind === 'bookmark').length;
-  const parts    = [`Папок: ${nFolders}`, `Ссылок: ${nLinks}`];
-  if      (_sbSearchCount   !== null) parts.push(`Найдено: ${_sbSearchCount}`);
-  else if (_sbInFolderCount !== null) parts.push(`В папке: ${_sbInFolderCount}`);
+  const parts    = [t('status.folders', { n: nFolders }), t('status.links', { n: nLinks })];
+  if      (_sbSearchCount   !== null) parts.push(t('search.found', { n: _sbSearchCount }));
+  else if (_sbInFolderCount !== null) parts.push(t('status.in_folder', { n: _sbInFolderCount }));
   document.getElementById('sb-left').textContent = parts.join(' · ');
 }
 
@@ -5231,7 +5355,7 @@ function appendTrashNode() {
 
   const label = document.createElement('span');
   label.className = 'label';
-  label.textContent = 'Корзина';
+  label.textContent = t('tree.trash');
 
   item.append(arrow, ico, label);
 
@@ -5245,7 +5369,7 @@ function appendTrashNode() {
     e.stopPropagation();
     document.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
     item.classList.add('active');
-    showFolderContextMenu(e, { id: -1, kind: 'folder', title: 'Корзина' });
+    showFolderContextMenu(e, { id: -1, kind: 'folder', title: t('tree.trash') });
   });
 
   wrap.appendChild(item);
@@ -5312,13 +5436,13 @@ function createTreeNode(node, depth) {
     e.dataTransfer.setData('text/plain', String(node.id));
     item.classList.add('dragging');
     document.body.classList.add('is-dragging');
-    rootZone.textContent = '↑ Корень';
+    rootZone.textContent = t('tree.root');
   });
   item.addEventListener('dragend', () => {
     _dragNode = null;
     item.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
-    rootZone.textContent = currentDbName || '↑ Корень';
+    rootZone.textContent = currentDbName || t('tree.root');
     _clearDragOver();
     _stopAutoScroll();
   });
@@ -5693,14 +5817,14 @@ function renderSearchResults(q) {
   if (searchResults.length === 0) {
     const el = document.createElement("div");
     el.className = "search-empty";
-    el.textContent = "Ничего не найдено.";
+    el.textContent = t('search.nothing');
     searchResultsEl.appendChild(el);
     return;
   }
 
   const cnt = document.createElement("div");
   cnt.className = "result-count";
-  cnt.textContent = `Найдено: ${searchResults.length}`;
+  cnt.textContent = t('search.found', { n: searchResults.length });
   searchResultsEl.appendChild(cnt);
 
   searchResults.forEach((r, i) => {
@@ -5871,7 +5995,7 @@ function hideInfoBar() {
 // Запись привязана к базе, где правку начали (`dbPath`): Rust отклонит её,
 // если открыта другая. Смена и закрытие базы, закрытие окна сначала ждут
 // flushNoteEdit(), поэтому до отказа в обычной жизни не доходит.
-const NOTE_PLACEHOLDER = 'Добавить описание…';
+const NOTE_PLACEHOLDER = t('note.placeholder');
 let _noteEdit   = null;               // { box, id, dbPath, orig, saved, ta }
 let _noteSaving = Promise.resolve();  // цепочка записей — строго по очереди
 
@@ -5883,7 +6007,7 @@ function _renderNoteBox(box, node) {
   box.dataset.id = node.id;
   box.classList.toggle('empty', !node.note);
   box.textContent = node.note || NOTE_PLACEHOLDER;
-  box.title = 'Щёлкните, чтобы изменить заметку';
+  box.title = t('note.click_to_edit');
 }
 
 // Точечное обновление везде, где заметка видна. Окно «Свойства» берёт
@@ -5987,7 +6111,7 @@ function _queueNoteSave(ed, text) {
       .catch((err) => {
         // Отказ записан в журнал в Rust (update_note) — здесь только окно.
         ed.saved = allNodes.find(x => x.id === ed.id)?.note ?? ed.orig;
-        showNotice('Заметка не сохранена', String(err));
+        showNotice(t('notice.note_not_saved'), String(err));
         const box = ed.box;
         if (ed.dbPath === currentDbPath && Number(box.dataset.id) === ed.id && !_noteEdit &&
             !box.closest('.hidden')) {
@@ -6026,6 +6150,17 @@ try {
 } catch (e) {
   logUi(`закрытие окна: обработчик не подключён: ${e}`);
 }
+
+// «Файл → Выход» и «Выход» в трее (Rust шлёт quit-requested и через 3 с
+// выходит сам, если окно не ответило): сначала дописать заметку, потом
+// завершить процесс — потолок 2 с, как у крестика.
+async function quitApp() {
+  try {
+    await Promise.race([flushNoteEdit(), new Promise(r => setTimeout(r, 2000))]);
+  } catch (_) {}
+  invoke('quit_app').catch(e => logUi(`выход: quit_app не удался: ${e}`));
+}
+window.__TAURI__.event.listen('quit-requested', quitApp);
 
 // Full viewer (double-click): hides grid, shows detail panel
 function openDetailView(node) {
@@ -6176,8 +6311,8 @@ function _typeAheadFind(cur, buf, rows) {
   const same = [...buf].every(ch => ch === buf[0]);
   const want = same ? buf[0] : buf;
   const hits = (el) => {
-    const t = _taTitles.get(parseInt(el.dataset.id, 10));
-    return t != null && t.slice(0, want.length).toLowerCase() === want;
+    const title = _taTitles.get(parseInt(el.dataset.id, 10));
+    return title != null && title.slice(0, want.length).toLowerCase() === want;
   };
   if (rows) {
     if (!rows.length) return null;
@@ -6210,8 +6345,8 @@ document.addEventListener('keydown', (e) => {
     else _typeAheadFlush();
     return;
   }
-  const t = e.target;
-  if (t.matches?.('input,textarea,select') || t.isContentEditable) return;
+  const target = e.target;
+  if (target.matches?.('input,textarea,select') || target.isContentEditable) return;
   if (document.querySelector('.dlg-overlay:not(.hidden), .menu-group.open')
       || !ctxMenuEl.classList.contains('hidden')) return;
 
@@ -6232,7 +6367,7 @@ document.addEventListener('keydown', (e) => {
   if (!_taTitles || _taBuf.length === 1) {
     _taTitles = new Map();
     for (const n of allNodes) _taTitles.set(n.id, n.title || '');
-    _taTitles.set(-1, 'Корзина');
+    _taTitles.set(-1, t('tree.trash'));
   }
 
   if (inTree) {
@@ -6298,7 +6433,7 @@ function selectFolder(folderId, expand = true, noTreeExpand = false) {
 
   // Breadcrumb
   if (folderId === -1) {
-    breadcrumb.textContent = 'Корзина';
+    breadcrumb.textContent = t('tree.trash');
   } else {
     const folder = allFolders.find(f => f.id === folderId);
     breadcrumb.textContent = folder ? buildBreadcrumbText(folderId) : "";
@@ -6422,7 +6557,7 @@ function createTrashRow(node, depth, ancestors, hasChildren) {
   addr.className = isFolder ? 'row-addr row-addr-folder' : 'row-addr';
   if (isFolder) {
     addr.textContent = node.count > 0
-      ? `${node.count} ${plural(node.count, 'ссылка', 'ссылки', 'ссылок')}` : '';
+      ? t('count.links', { n: node.count }) : '';
   } else {
     addr.textContent = node.url || '';
     if (node.url) addr.title = node.url;
@@ -6435,7 +6570,7 @@ function createTrashRow(node, depth, ancestors, hasChildren) {
     e.stopPropagation();
     closeSubFloat();
     ctxMenuEl.innerHTML = '';
-    ctxMenuEl.appendChild(ctxItem('import', 'Восстановить', null, async () => {
+    ctxMenuEl.appendChild(ctxItem('import', t('ctx.trash.restore'), null, async () => {
       hideContextMenu();
       await invoke('restore_node', { id: node.id });
       allNodes = await invoke('get_tree');
@@ -6445,9 +6580,9 @@ function createTrashRow(node, depth, ancestors, hasChildren) {
       restoreOpenState(openIds);
       loadTrashContents();
     }));
-    ctxMenuEl.appendChild(ctxItem('trash-bin', 'Удалить навсегда', null, () => {
+    ctxMenuEl.appendChild(ctxItem('trash-bin', t('ctx.trash.purge'), null, () => {
       hideContextMenu();
-      deleteConfirm('Удалить навсегда? Объект будет стёрт безвозвратно.', async () => {
+      deleteConfirm(t('confirm.purge'), async () => {
         await invoke('purge_node', { id: node.id });
         loadTrashContents();
       });
@@ -6522,13 +6657,13 @@ function createFolderRow(node) {
     e.dataTransfer.setData('text/plain', String(node.id));
     row.classList.add('dragging');
     document.body.classList.add('is-dragging');
-    rootZone.textContent = '↑ Корень';
+    rootZone.textContent = t('tree.root');
   });
   row.addEventListener('dragend', () => {
     _dragNode = null;
     row.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
-    rootZone.textContent = currentDbName || '↑ Корень';
+    rootZone.textContent = currentDbName || t('tree.root');
     _clearDragOver();
     _stopAutoScroll();
   });
@@ -6550,7 +6685,7 @@ function createFolderRow(node) {
   const addr = document.createElement("span");
   addr.className = "row-addr row-addr-folder";
   addr.textContent = node.count > 0
-    ? `${node.count} ${plural(node.count, 'ссылка', 'ссылки', 'ссылок')}` : '';
+    ? t('count.links', { n: node.count }) : '';
 
   row.append(dot, name, sep, addr);
   return row;
@@ -6572,13 +6707,13 @@ function createCard(b) {
     e.dataTransfer.setData('text/plain', String(b.id));
     card.classList.add('dragging');
     document.body.classList.add('is-dragging');
-    rootZone.textContent = '↑ Корень';
+    rootZone.textContent = t('tree.root');
   });
   card.addEventListener('dragend', () => {
     _dragNode = null;
     card.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
-    rootZone.textContent = currentDbName || '↑ Корень';
+    rootZone.textContent = currentDbName || t('tree.root');
     _clearDragOver();
     _stopAutoScroll();
   });
@@ -7002,7 +7137,7 @@ window.__TAURI__.event.listen('tray-add-from-clipboard', async () => {
         text = (await invoke('clipboard_text') ?? '').trim();
     } catch (err) {
         logUi(`Добавить из буфера: ${err}`);
-        setStatus('Буфер занят другой программой — вставьте адрес вручную (Ctrl+V)');
+        setStatus(t('status.clipboard_busy'));
     }
     openNewItemDlg('link', { url: text });
 });

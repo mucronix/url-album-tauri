@@ -1,11 +1,16 @@
 #![windows_subsystem = "windows"]
 
+#[macro_use]
+mod i18n;
+#[cfg(test)]
+mod i18n_audit;
 mod clipboard;
 mod db;
 mod importer;
 mod logger;
 mod relay;
 mod shot_browser;
+mod window_state;
 
 use std::sync::Mutex;
 use rusqlite::Connection;
@@ -20,10 +25,10 @@ struct AppState {
     db_path:            Mutex<std::path::PathBuf>,
     pending_open:       Mutex<Option<(String, String)>>, // (url, title) from urlalbum:// scheme
     extension_add_mode: Mutex<String>,                   // "quick" | "dialog"
-    user_hotkey:        Mutex<Option<String>>,           // пользовательский хоткей (помимо встроенного F8)
+    user_hotkey:        Mutex<Option<String>>,           // пользовательский хоткей (помимо F8)
+    f8_enabled:         Mutex<bool>,                     // F8 включена в настройках (set_f8)
 }
 
-const INBOX_FOLDER_NAME: &str = "Новые ссылки";
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
@@ -572,38 +577,38 @@ fn is_proxy_auth_error(e: &reqwest::Error) -> bool {
 async fn test_proxy(host: String, port: u16, user: String, pass: String) -> Result<String, String> {
     let host = host.trim();
     if host.is_empty() {
-        return Err("Укажите адрес прокси".to_string());
+        return Err(t!("settings.proxy.no_host"));
     }
     if port == 0 {
-        return Err("Неверный порт".to_string());
+        return Err(t!("settings.proxy.bad_port"));
     }
     let user = user.trim();
 
     let proxy = build_proxy(host, port, user, &pass)
-        .map_err(|_| "Неверный адрес прокси".to_string())?;
+        .map_err(|_| t!("proxy.bad_address"))?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .user_agent("Mozilla/5.0 URL-Album-Checker/1.0")
         .proxy(proxy)
         .build()
-        .map_err(|_| "Неверный адрес прокси".to_string())?;
+        .map_err(|_| t!("proxy.bad_address"))?;
 
     match client.get(PROXY_TEST_URL).send().await {
         Ok(r) if r.status().as_u16() == 407 =>
-            Err("Прокси требует авторизацию: проверьте логин и пароль".to_string()),
+            Err(t!("proxy.auth")),
         Ok(r) if r.status().is_success() =>
-            Ok(format!("Прокси работает (HTTP {})", r.status().as_u16())),
-        Ok(r) => Err(format!("Ошибка: сервер ответил HTTP {}", r.status().as_u16())),
+            Ok(t!("proxy.works", code = r.status().as_u16())),
+        Ok(r) => Err(t!("proxy.http_error", code = r.status().as_u16())),
         Err(e) if e.is_timeout() =>
-            Err("Превышено время ожидания (8 сек)".to_string()),
+            Err(t!("proxy.timeout")),
         // Обязательно ВЫШЕ is_connect: у отказа авторизации connect=true,
         // и нижняя ветка перехватила бы случай раньше (проверено, сессия 20).
         Err(e) if is_proxy_auth_error(&e) =>
-            Err("Прокси требует авторизацию: проверьте логин и пароль".to_string()),
+            Err(t!("proxy.auth")),
         Err(e) if e.is_connect() =>
-            Err("Прокси не отвечает: проверьте адрес и порт".to_string()),
-        Err(e) => Err(format!("Ошибка: {}", short_err(&e))),
+            Err(t!("proxy.no_answer")),
+        Err(e) => Err(t!("common.error", e = short_err(&e))),
     }
 }
 
@@ -874,9 +879,10 @@ pub(crate) struct Shot {
 /// Срок проверки адреса до запуска браузера (DNS + TCP вместе).
 const PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Ответ на второй снимок той же ссылки. Тот же текст — `SHOT_BUSY` в app.js:
-/// по нему пакет считает ссылку «пропущено», а не «не удалось».
-pub(crate) const SHOT_BUSY: &str = "Рисунок этой ссылки уже снимается";
+/// Ответ на второй снимок той же ссылки — код, не текст: текст для человека
+/// держит app.js. Тот же код — `SHOT_BUSY` в app.js: по нему пакет считает
+/// ссылку «пропущено», а не «не удалось».
+pub(crate) const SHOT_BUSY: &str = "shot_busy";
 
 /// Файлы снимков, которые сейчас снимаются. Вектор, а не `HashSet`: снимков
 /// разом единицы, а `Vec::new` годится для `static` без ленивой инициализации.
@@ -931,7 +937,7 @@ fn pick_shot_browser(id: i64, opener: Option<&str>) -> Result<shot_browser::Choi
                 shot_browser::system_default_browser().unwrap_or_else(|| "не определён".into()),
                 cfg.as_ref().map_or(0, |c| c.list.len()),
                 builtin.len()));
-            "Нет браузера для снимков (нужен Chrome, Edge, Opera или Яндекс)".to_string()
+            t!("shot.no_browser")
         })
 }
 
@@ -1065,8 +1071,8 @@ async fn do_screenshot(
                 shot_browser::probe_host(&host, port, PROBE_BUDGET)
             }).await.map_err(|e| e.to_string())?;
             if let Err(why) = probe {
-                logger::log(&format!("скриншот id={id}: адрес недоступен ({why}) — браузер не запускался"));
-                return Err(format!("Адрес недоступен: {why}"));
+                logger::log(&format!("скриншот id={id}: адрес недоступен ({}) — браузер не запускался", why.log));
+                return Err(t!("shot.unreachable", why = why.ui));
             }
         }
     }
@@ -1127,14 +1133,14 @@ async fn do_screenshot(
     // 19.10.2026): по журналу видно, каким браузером и за сколько снята каждая
     // ссылка и был ли браузер запасным. Строки перед запуском нет: у ожидания
     // жёсткий предел (t+8 на попытку), зависший снимок всё равно дойдёт сюда.
-    let fallback_note = choice.fallback.as_deref().map(|r| format!("; запасной: {r}")).unwrap_or_default();
+    let fallback_note = choice.fallback.as_ref().map(|r| format!("; запасной: {}", r.log)).unwrap_or_default();   // i18n: не переводится — журнал
     if visible {
         let flag = run.as_ref().ok().and_then(|(v, _)| v.last().copied()).unwrap_or("");
         logger::log(&format!(
             "скриншот id={id}: снят за {}мс ({}, {flag}{fallback_note})",
             t_start.elapsed().as_millis(), choice.name));
     } else {
-        let tried = run.as_ref().map(|(v, _)| v.join(", ")).unwrap_or_else(|e| format!("отказ запуска: {e}"));
+        let tried = run.as_ref().map(|(v, _)| v.join(", ")).unwrap_or_else(|e| format!("отказ запуска: {e}"));   // i18n: не переводится — журнал
         logger::log(&format!(
             "скриншот id={id}: файла нет за {}мс ({}, {}; попытки: {tried}{}; {w}x{h}, ожидание {t}с, прокси: {}{fallback_note})",
             t_start.elapsed().as_millis(),
@@ -1145,16 +1151,16 @@ async fn do_screenshot(
     }
 
     if visible {
-        Ok(Shot { filename, browser: choice.name, fallback: choice.fallback })
+        Ok(Shot { filename, browser: choice.name, fallback: choice.fallback.map(|m| m.ui) })
     } else {
         // Выбранный браузер снимать умеет, но файла нет — честная ошибка,
         // запасной не пробуем (решение пользователя): иначе каждая мёртвая
         // ссылка в пакете снималась бы всеми браузерами по очереди.
-        let base = run.err().unwrap_or_else(|| format!("Не удалось создать скриншот ({})", choice.name));
+        let base = run.err().unwrap_or_else(|| t!("shot.failed", name = choice.name));
         if proxy_used {
             // Приписка только когда флаг реально передан: при прокси с логином
             // мы идём напрямую, и упоминание прокси было бы ложным следом.
-            Err(format!("{base} (включён прокси — проверьте его доступность)"))
+            Err(t!("shot.failed_proxy", base))
         } else {
             Err(base)
         }
@@ -1470,27 +1476,30 @@ fn clear_db(state: tauri::State<AppState>) -> Result<(), String> {
 #[tauri::command]
 /// Switch the active connection to a file chosen by the user.
 /// Opens in-place — no copying. The chosen file becomes the active DB.
-async fn open_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> Result<(), String> {
+/// `false` — окно закрыли без выбора: это не ошибка, JS просто ничего не делает.
+async fn open_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> Result<bool, String> {
     let start_dir = state.db_path.lock()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let file = rfd::AsyncFileDialog::new()
-        .set_title("Открыть базу данных")
-        .add_filter("База данных URL Album", &["db"])
+    let Some(file) = rfd::AsyncFileDialog::new()
+        .set_title(t!("rfd.open_db"))
+        .add_filter(t!("rfd.filter.app_db"), &["db"])
         .set_directory(&start_dir)
-        .pick_file().await.ok_or("Отменено")?;
+        .pick_file().await
+    else { return Ok(false) };
     let src = file.path().to_path_buf();
 
     // Guard against opening the already-active database
     let current = state.db_path.lock().map_err(|e| e.to_string())?.clone();
     if std::fs::canonicalize(&src).ok() == std::fs::canonicalize(&current).ok() {
-        return Err("Выбранный файл уже является активной базой данных.".into());
+        return Err(t!("db.already_open"));
     }
 
-    switch_db(state, src)
+    switch_db(state, src)?;
+    Ok(true)
 }
 
 /// Схема новой базы и служебная «Новые ссылки» в ней: окну «Новая ссылка»
@@ -1506,19 +1515,20 @@ fn init_new_db(conn: &Connection) -> Result<(), String> {
 fn open_startup_db(path: &std::path::Path) -> Result<Connection, String> {
     let is_new = !path.exists();
     let conn = Connection::open(path)
-        .map_err(|e| format!("не удалось открыть базу {}: {e}", path.display()))?;
+        .map_err(|e| format!("не удалось открыть базу {}: {e}", path.display()))?;   // i18n: не переводится — журнал (окна ещё нет)
     if is_new {
         init_new_db(&conn)
     } else {
         db::init(&conn).map_err(|e| e.to_string())
     }
-    .map_err(|e| format!("не удалось подготовить базу {}: {e}", path.display()))?;
+    .map_err(|e| format!("не удалось подготовить базу {}: {e}", path.display()))?;   // i18n: не переводится — журнал (окна ещё нет)
     Ok(conn)
 }
 
 /// Create a new empty database at a user-chosen path, then open it.
+/// `false` — окно закрыли без выбора.
 #[tauri::command]
-async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> Result<(), String> {
+async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window) -> Result<bool, String> {
     // Default directory: folder of the current active DB, or exe folder as fallback
     let start_dir = state.db_path.lock()
         .ok()
@@ -1526,12 +1536,13 @@ async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window
         .or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let file = rfd::AsyncFileDialog::new()
-        .set_title("Создать новую базу данных")
-        .add_filter("База данных URL Album", &["db"])
+    let Some(file) = rfd::AsyncFileDialog::new()
+        .set_title(t!("rfd.new_db"))
+        .add_filter(t!("rfd.filter.app_db"), &["db"])
         .set_file_name("album.db")
         .set_directory(&start_dir)
-        .save_file().await.ok_or("Отменено")?;
+        .save_file().await
+    else { return Ok(false) };
     let path = file.path().to_path_buf();
 
     // Create and initialise the new empty file
@@ -1540,7 +1551,8 @@ async fn create_new_db(state: tauri::State<'_, AppState>, _window: tauri::Window
     // Close it so switch_db can reopen cleanly
     drop(new_conn);
 
-    switch_db(state, path)
+    switch_db(state, path)?;
+    Ok(true)
 }
 
 // ── Last-used DB persistence (portable: last_db.txt next to exe) ─────────────
@@ -1617,7 +1629,7 @@ fn switch_db(state: tauri::State<'_, AppState>, new_path: std::path::PathBuf) ->
 fn checkpoint_before_copy(state: &tauri::State<'_, AppState>) -> Option<String> {
     let conn = match state.db.lock() {
         Ok(c)  => c,
-        Err(e) => return Some(format!("база занята ({e})")),
+        Err(e) => return Some(t!("backup.db_busy", e)),
     };
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
         .err()
@@ -1629,34 +1641,33 @@ fn checkpoint_before_copy(state: &tauri::State<'_, AppState>) -> Option<String> 
 fn backup_result(path: &std::path::Path, wal_warn: Option<String>) -> String {
     let mut s = path.to_string_lossy().to_string();
     if let Some(w) = wal_warn {
-        s.push_str(&format!(
-            "\n\n⚠ WAL-checkpoint не выполнен ({w}).\n\
-             Копия создана, но в неё могли не попасть самые последние изменения."
-        ));
+        s.push_str(&t!("backup.wal_warning", w));
     }
     s
 }
 
+/// `None` — окно закрыли без выбора.
 #[tauri::command]
-async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<String, String> {
+async fn backup_db(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<Option<String>, String> {
     let (src, src_dir, src_name) = {
         let p = state.db_path.lock().map_err(|e| e.to_string())?.clone();
         let dir = p.parent().ok_or("no parent")?.to_path_buf();
         let name = p.file_name().ok_or("no filename")?.to_string_lossy().into_owned();
         (p, dir, name)
     };
-    let file = rfd::AsyncFileDialog::new()
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Сохранить резервную копию базы")
-        .add_filter("База данных", &["db"])
+        .set_title(t!("rfd.backup"))
+        .add_filter(t!("rfd.filter.db"), &["db"])
         .set_file_name(&src_name)
         .set_directory(&src_dir)
-        .save_file().await.ok_or("Отменено")?;
+        .save_file().await
+    else { return Ok(None) };
 
     // Диалог уже закрыт — дальше ни одного .await, guard внутри хелпера безопасен.
     let wal_warn = checkpoint_before_copy(&state);
     std::fs::copy(&src, file.path()).map_err(|e| e.to_string())?;
-    Ok(backup_result(file.path(), wal_warn))
+    Ok(Some(backup_result(file.path(), wal_warn)))
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
@@ -1674,26 +1685,28 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     Ok(())
 }
 
+/// `None` — окно закрыли без выбора.
 #[tauri::command]
-async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<String, String> {
+async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::Window) -> Result<Option<String>, String> {
     let (db_src, db_dir, db_name) = {
         let p = state.db_path.lock().map_err(|e| e.to_string())?.clone();
         let dir = p.parent().ok_or("no parent")?.to_path_buf();
         let name = p.file_name().ok_or("no filename")?.to_string_lossy().into_owned();
         (p, dir, name)
     };
-    let dest_folder = rfd::AsyncFileDialog::new()
+    let Some(dest_folder) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Выбрать папку для резервной копии")
+        .set_title(t!("rfd.backup_dir"))
         .set_directory(&db_dir)
-        .pick_folder().await.ok_or("Отменено")?;
+        .pick_folder().await
+    else { return Ok(None) };
     let dest = dest_folder.path().to_path_buf();
 
     // Bug 2 fix: prevent dest == db_dir which would overwrite the source DB
     let canon_dest = std::fs::canonicalize(&dest).unwrap_or_else(|_| dest.clone());
     let canon_src  = std::fs::canonicalize(&db_dir).unwrap_or_else(|_| db_dir.clone());
     if canon_dest == canon_src {
-        return Err("Выберите папку, отличную от текущей базы".to_string());
+        return Err(t!("backup.same_dir"));
     }
 
     // Copy the DB file itself
@@ -1706,7 +1719,7 @@ async fn backup_db_with_data(state: tauri::State<'_, AppState>, window: tauri::W
     if data_src.exists() {
         copy_dir_recursive(&data_src, &dest.join("Data"))?;
     }
-    Ok(backup_result(&dest.join(&db_name), wal_warn))
+    Ok(Some(backup_result(&dest.join(&db_name), wal_warn)))
 }
 
 #[tauri::command]
@@ -1738,34 +1751,40 @@ fn sort_folder(
     Ok(ids)
 }
 
+/// `false` — окно закрыли без выбора.
 #[tauri::command]
-async fn export_folder_html(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64) -> Result<(), String> {
-    let file = rfd::AsyncFileDialog::new()
+async fn export_folder_html(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64) -> Result<bool, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Экспорт в HTML")
-        .add_filter("HTML файл", &["html", "htm"])
-        .save_file().await.ok_or("Отменено")?;
+        .set_title(t!("rfd.export_html"))
+        .add_filter(t!("rfd.filter.html"), &["html", "htm"])
+        .save_file().await
+    else { return Ok(false) };
     let content = { let c = state.db.lock().map_err(|e| e.to_string())?; db::export_html(&c, folder_id).map_err(|e| e.to_string())? };
-    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())
+    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
+/// `false` — окно закрыли без выбора.
 #[tauri::command]
-async fn export_folder_txt(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64) -> Result<(), String> {
-    let file = rfd::AsyncFileDialog::new()
+async fn export_folder_txt(state: tauri::State<'_, AppState>, window: tauri::Window, folder_id: i64) -> Result<bool, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Экспорт в TXT")
-        .add_filter("Текстовый файл", &["txt"])
-        .save_file().await.ok_or("Отменено")?;
-    let content = { let c = state.db.lock().map_err(|e| e.to_string())?; db::export_txt(&c, folder_id).map_err(|e| e.to_string())? };
-    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())
+        .set_title(t!("rfd.export_txt"))
+        .add_filter(t!("rfd.filter.txt"), &["txt"])
+        .save_file().await
+    else { return Ok(false) };
+    let content = { let c = state.db.lock().map_err(|e| e.to_string())?; db::export_txt(&c, folder_id, &t!("txt.note_label")).map_err(|e| e.to_string())? };
+    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 #[tauri::command]
 async fn pick_browser_file(window: tauri::Window) -> Option<String> {
     rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .add_filter("Программы", &["exe"])
-        .set_title("Выберите браузер")
+        .add_filter(t!("rfd.filter.exe"), &["exe"])
+        .set_title(t!("rfd.pick_browser"))
         .pick_file().await
         .map(|f| f.path().to_string_lossy().into_owned())
 }
@@ -1782,12 +1801,12 @@ fn update_note(state: tauri::State<AppState>, id: i64, note: String, db_path: St
         .unwrap_or(false);
     if !same_db {
         logger::log(&format!("заметка id={id}: база сменилась во время правки, не сохранена"));
-        return Err("Открыта другая база — заметка не сохранена.".into());
+        return Err(t!("note.other_db"));
     }
     match db::update_note(&conn, id, &note) {
         Ok(0) => {
             logger::log(&format!("заметка id={id}: ссылки больше нет, не сохранена"));
-            Err("Ссылка удалена — заметка не сохранена.".into())
+            Err(t!("note.link_deleted"))
         }
         Ok(_) => Ok(()),
         Err(e) => {
@@ -2002,7 +2021,7 @@ fn wide(s: &str) -> Vec<u16> {
 /// доходят целыми — ровно то, ради чего когда-то взяли rundll32 вместо
 /// `cmd /c start`. В этом отношении ничего не потеряно.
 #[cfg(windows)]
-fn shell_open(target: &str) -> Result<(), String> {
+fn shell_open(target: &str) -> Result<(), i18n::Msg> {
     const SW_SHOWNORMAL: i32 = 1;
     let op   = wide("open");
     let file = wide(target);
@@ -2020,14 +2039,14 @@ fn shell_open(target: &str) -> Result<(), String> {
         return Ok(());
     }
     Err(match code {
-        2  => "не найдена программа-обработчик".to_string(),
-        3  => "не найден путь".to_string(),
-        5  => "доступ запрещён".to_string(),
-        8  => "не хватило памяти".to_string(),
-        26 => "файл занят другой программой".to_string(),
-        27 => "связь с программой прописана в системе не до конца".to_string(),
-        31 => "в системе не назначена программа для ссылок этого вида".to_string(),
-        _  => format!("код отказа {code}"),
+        2  => t_msg!("open.reason.no_handler"),
+        3  => t_msg!("open.reason.no_path"),
+        5  => t_msg!("open.reason.access_denied"),
+        8  => t_msg!("open.reason.no_memory"),
+        26 => t_msg!("open.reason.busy"),
+        27 => t_msg!("open.reason.assoc_incomplete"),
+        31 => t_msg!("open.reason.no_assoc"),
+        _  => t_msg!("open.reason.code", code),
     })
 }
 
@@ -2050,8 +2069,8 @@ async fn open_url(url: String) -> Result<(), String> {
             // Отказы пишем всегда: без этого «кликнул, ничего не произошло»
             // не оставляет следов вовсе. Успехи не пишем — иначе журнал
             // раздувается на каждой ссылке (то же правило, что у check_url).
-            logger::log(&format!("не удалось открыть ссылку {url}: {reason}"));
-            return Err(format!("Не удалось открыть ссылку: {reason}."));
+            logger::log(&format!("не удалось открыть ссылку {url}: {}", reason.log));
+            return Err(t!("open.url_failed", reason = reason.ui));
         }
     }
     #[cfg(target_os = "macos")]
@@ -2075,8 +2094,8 @@ async fn open_file(path: String) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())?;
         if let Err(reason) = res {
-            logger::log(&format!("не удалось открыть файл {path}: {reason}"));
-            return Err(format!("Не удалось открыть файл:\n{path}\n\n{reason}."));
+            logger::log(&format!("не удалось открыть файл {path}: {}", reason.log));
+            return Err(t!("open.file_failed", path, reason = reason.ui));
         }
     }
     #[cfg(target_os = "macos")]
@@ -2099,11 +2118,7 @@ async fn open_url_with(url: String, browser: String) -> Result<(), String> {
     // где не сказано ни какой файл, ни при чём тут вообще браузер.
     if !std::path::Path::new(&browser).exists() {
         logger::log(&format!("браузер не найден: {browser}"));
-        return Err(format!(
-            "Браузер не найден:\n{browser}\n\n\
-             Возможно, программа удалена или съёмный диск не подключён. \
-             Проверьте список браузеров или откройте ссылку другим."
-        ));
+        return Err(t!("open.browser_missing", browser));
     }
 
     std::process::Command::new(&browser)
@@ -2111,22 +2126,25 @@ async fn open_url_with(url: String, browser: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| {
             logger::log(&format!("не удалось запустить {browser}: {e}"));
-            format!("Не удалось запустить браузер:\n{browser}\n\n{e}")
+            t!("open.browser_failed", browser, e)
         })?;
     Ok(())
 }
 
 // ── Generic file save ────────────────────────────────────────────────────────
 
+/// `false` — окно закрыли без выбора.
 #[tauri::command]
-async fn save_text_file(window: tauri::Window, content: String, default_name: Option<String>) -> Result<(), String> {
-    let file = rfd::AsyncFileDialog::new()
+async fn save_text_file(window: tauri::Window, content: String, default_name: Option<String>) -> Result<bool, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Сохранить файл")
-        .add_filter("Текстовый файл", &["txt"])
+        .set_title(t!("rfd.save_file"))
+        .add_filter(t!("rfd.filter.txt"), &["txt"])
         .set_file_name(default_name.as_deref().unwrap_or("export.txt"))
-        .save_file().await.ok_or("Отменено")?;
-    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())
+        .save_file().await
+    else { return Ok(false) };
+    std::fs::write(file.path(), content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 // ── Settings (portable) ──────────────────────────────────────────────────────
@@ -2171,6 +2189,12 @@ fn read_config_raw(name: &str) -> String {
 #[tauri::command]
 fn load_settings() -> String {
     read_settings_raw()
+}
+
+/// Языки для «Настроек»: вшитые и `lang\`, и язык пункта «Авто».
+#[tauri::command]
+fn list_languages() -> i18n::LangList {
+    i18n::list_languages()
 }
 
 #[tauri::command]
@@ -2252,18 +2276,59 @@ fn create_folder(state: tauri::State<AppState>, parent_id: Option<i64>, title: S
     db::insert_folder(&conn, parent_id, &title).map_err(|e| e.to_string())
 }
 
+/// Служебная папка — по признаку `role`, не по названию: переименованная
+/// остаётся служебной, папка человека с тем же названием ею не становится.
+/// Перенесённая внутрь другой папки или удалённая в корзину служебной быть
+/// перестаёт: заводится новая, признак переходит к ней.
 fn find_or_create_inbox_folder(conn: &Connection) -> Result<i64, String> {
     use rusqlite::OptionalExtension;
     if let Some(id) = conn.query_row(
         // deleted: папка в корзине тоже с parent = NULL — с виду корневая.
-        "SELECT id FROM nodes WHERE kind='folder' AND title=?1 AND parent IS NULL \
-         AND COALESCE(deleted, 0) = 0 ORDER BY id LIMIT 1",
-        rusqlite::params![INBOX_FOLDER_NAME],
+        "SELECT id FROM nodes WHERE role = ?1 AND kind = 'folder' AND parent IS NULL \
+         AND COALESCE(deleted, 0) = 0",
+        rusqlite::params![db::ROLE_INBOX],
         |r| r.get::<_, i64>(0),
     ).optional().map_err(|e| e.to_string())? {
         return Ok(id);
     }
-    db::insert_folder(conn, None, INBOX_FOLDER_NAME).map_err(|e| e.to_string())
+    // SAVEPOINT, а не BEGIN: зовётся и внутри транзакции clear_nodes.
+    // Признак снимается со старой и ставится новой вместе — или никак.
+    conn.execute_batch("SAVEPOINT inbox").map_err(|e| e.to_string())?;
+    let res = (|| -> rusqlite::Result<i64> {
+        conn.execute("UPDATE nodes SET role = NULL WHERE role = ?1", [db::ROLE_INBOX])?;
+        let id = db::insert_folder(conn, None, &t!("folder.inbox"))?;
+        conn.execute("UPDATE nodes SET role = ?1 WHERE id = ?2", rusqlite::params![db::ROLE_INBOX, id])?;
+        Ok(id)
+    })();
+    match res {
+        Ok(id) => {
+            conn.execute_batch("RELEASE inbox").map_err(|e| e.to_string())?;
+            Ok(id)
+        }
+        Err(e) => {
+            conn.execute_batch("ROLLBACK TO inbox; RELEASE inbox").ok();
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Ответ `GET /api/v1/folders`: корневые живые папки в порядке дерева.
+/// `inbox: true` — служебная: расширение выбирает её по признаку, а не по
+/// названию (название переводится и переименовывается).
+fn extension_folders(conn: &Connection) -> rusqlite::Result<serde_json::Value> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, role IS ?1 FROM nodes \
+         WHERE kind='folder' AND parent IS NULL \
+         AND (deleted IS NULL OR deleted=0) ORDER BY sort_idx"
+    )?;
+    let rows = stmt.query_map([db::ROLE_INBOX], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?))
+    })?;
+    Ok(serde_json::Value::Array(
+        rows.filter_map(|r| r.ok())
+            .map(|(id, title, inbox)| serde_json::json!({"id": id, "title": title, "inbox": inbox}))
+            .collect()
+    ))
 }
 
 /// Папка для окна «Новая ссылка», когда в нём не выбрано ни одной (в базе нет
@@ -2307,6 +2372,96 @@ fn set_window_title(window: tauri::Window, title: String) {
 #[tauri::command]
 fn hide_window(window: tauri::Window) {
     window.hide().ok();
+}
+
+/// Последнее положение окна: запоминается на каждом Moved/Resized (окно уже
+/// может быть уничтожено к моменту выхода, а из трея выходят при спрятанном),
+/// в settings.json пишется один раз — в `RunEvent::Exit`.
+static LAST_PLACEMENT: Mutex<Option<window_state::Saved>> = Mutex::new(None);
+
+/// Мониторы (рабочие области и масштаб) и основной из них; `None` — ОС не ответила.
+fn screens(app: &tauri::AppHandle) -> Option<(Vec<window_state::Screen>, window_state::Screen)> {
+    let to = |m: &tauri::Monitor| window_state::Screen {
+        work: window_state::Rect { x: m.work_area().position.x, y: m.work_area().position.y,
+                                   w: m.work_area().size.width as i32, h: m.work_area().size.height as i32 },
+        scale: m.scale_factor(),
+    };
+    let primary = app.primary_monitor().ok()??;
+    let all = app.available_monitors().ok()?;
+    Some((all.iter().map(to).collect(), to(&primary)))
+}
+
+/// Сдвиг координат GetWindowPlacement (от рабочей области основного монитора)
+/// к экранным.
+fn ws_offset(app: &tauri::AppHandle) -> Option<(i32, i32)> {
+    let p = app.primary_monitor().ok()??;
+    Some((p.work_area().position.x, p.work_area().position.y))
+}
+
+/// Окно создаётся скрытым (`tauri.conf.json`): ставим на сохранённое место
+/// (или по умолчанию — `window_state::placement`) и только потом показываем,
+/// иначе оно мигнуло бы в старом месте. Любой отказ — просто показать.
+fn place_main_window(app: &tauri::AppHandle) {
+    let Some(win) = app.get_webview_window("main") else { return };
+    #[cfg(windows)]
+    if let (Some((all, primary)), Some(off), Ok(h)) = (screens(app), ws_offset(app), win.hwnd()) {
+        let saved = window_state::saved_from_settings(&read_settings_raw());
+        let (rect, maximized) = window_state::placement(saved, &all, &primary);
+        if window_state::apply(h.0 as isize, rect, off) {
+            if maximized { window_state::show_maximized(h.0 as isize); } else { win.show().ok(); }
+            remember_placement(h.0 as isize, app);
+            return;
+        }
+        logger::log("окно: SetWindowPlacement не удался — положение по умолчанию");
+    }
+    win.show().ok();
+}
+
+#[cfg(windows)]
+fn remember_placement(hwnd: isize, app: &tauri::AppHandle) {
+    if let Some(p) = ws_offset(app).and_then(|off| window_state::read(hwnd, off)) {
+        if let Ok(mut g) = LAST_PLACEMENT.lock() { *g = Some(p); }
+    }
+}
+
+/// Записать положение окна в settings.json, не трогая остальное. Файл не
+/// разобрался — не пишем: его разбор и окно об испорченном — дело JS.
+fn save_window_placement(p: &window_state::Saved) {
+    let raw = read_settings_raw();
+    let mut v = if raw.trim().is_empty() { serde_json::json!({}) } else {
+        match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(v) if v.is_object() => v,
+            _ => { logger::log("выход: settings.json не разобран — положение окна не записано"); return; }
+        }
+    };
+    v["window"] = serde_json::json!(p);
+    if let Err(e) = save_settings(v.to_string()) {
+        logger::log(&format!("выход: положение окна не записано: {e}"));
+    }
+}
+
+/// Выход из программы — «Файл → Выход» и «Выход» в трее, после того как JS
+/// дописал открытую заметку. `app.exit` завершает процесс (WAL-checkpoint —
+/// в `RunEvent::Exit`); `window.close()` здесь не годится — он уводит окно
+/// на `about:blank`, а процесс остаётся.
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// «Выход» из трея: сначала окно дописывает заметку (событие `quit-requested`
+/// → `flushNoteEdit` → `quit_app`). Окно не ответило за 3 с (не загрузилось,
+/// скрипт упал) — выходим сами: выход из трея обязан работать всегда.
+fn request_quit(app: &tauri::AppHandle) {
+    if app.emit("quit-requested", ()).is_err() {
+        app.exit(0);
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        app.exit(0);
+    });
 }
 
 /// Включить/выключить журнал без перезапуска — зовётся при сохранении настроек.
@@ -2355,12 +2510,12 @@ const CONFIG_FILES: [&str; 3] = ["settings.json", "toolbar.json", "browsers.json
 /// руками — восстановить такое неоткуда, только глазами из `.bad`.
 fn backup_bad_config_file(name: &str) -> Result<std::path::PathBuf, String> {
     if !CONFIG_FILES.contains(&name) {
-        return Err(format!("неизвестный файл настроек: {name}"));
+        return Err(format!("неизвестный файл настроек: {name}"));   // i18n: не переводится — журнал (JS пишет отказ в журнал)
     }
     let src = std::env::current_exe().map_err(|e| e.to_string())?
         .parent().ok_or("no parent")?.join(name);
     if !src.exists() {
-        return Err(format!("{name} не найден"));
+        return Err(format!("{name} не найден"));   // i18n: не переводится — журнал (JS пишет отказ в журнал)
     }
     let dst = src.with_extension("json.bad");
 
@@ -2604,6 +2759,45 @@ fn set_extension_add_mode(state: tauri::State<'_, AppState>, mode: String) {
     }
 }
 
+/// Включена ли F8 по тексту settings.json (галочка «F8 — добавить из
+/// буфера»). Выключена только явным `"f8Enabled": false`; всё прочее —
+/// включена, как было до галочки.
+fn f8_enabled_in(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw).ok()
+        .and_then(|v| v.get("f8Enabled").and_then(|x| x.as_bool()))
+        .unwrap_or(true)
+}
+
+/// Зарегистрировать F8 — «Добавить из буфера». Один обработчик для запуска
+/// и для галочки в «Настройках».
+fn register_f8(app: &tauri::AppHandle) -> Result<(), String> {
+    app.global_shortcut().on_shortcut("F8", |app, _shortcut, event| {
+        if event.state() == ShortcutState::Pressed {   // ТОЛЬКО нажатие, не отпускание — иначе сработает дважды
+            add_from_clipboard(app);
+        }
+    }).map_err(|e| e.to_string())
+}
+
+/// Галочка «F8 — добавить из буфера»: включить или снять F8 без перезапуска.
+/// Состояние — «включена в настройках», а не «зарегистрирована»: если при
+/// запуске F8 заняла другая программа (отказ — в журнале), повторное
+/// применение тех же настроек не показывает окно на каждом старте.
+#[tauri::command]
+fn set_f8(state: tauri::State<AppState>, app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let was = *state.f8_enabled.lock().map_err(|e| e.to_string())?;
+    if was == enabled { return Ok(()); }
+    if enabled {
+        register_f8(&app).map_err(|e| {
+            logger::log(&format!("F8 не зарегистрирован: {e}"));
+            t!("hotkey.register_failed")
+        })?;
+    } else if let Err(e) = app.global_shortcut().unregister("F8") {
+        logger::log(&format!("F8 не снят: {e}"));
+    }
+    *state.f8_enabled.lock().map_err(|e| e.to_string())? = enabled;
+    Ok(())
+}
+
 // Чёрный список: точные строки, которые успешно регистрируются, но ломают копирование/вставку и т.п.
 fn is_blacklisted(combo: &str) -> bool {
     matches!(combo.to_lowercase().as_str(),
@@ -2640,14 +2834,14 @@ fn set_hotkey(state: tauri::State<AppState>, app: tauri::AppHandle, combo: Optio
 
     // Валидация (тексты для showNotice)
     if new.eq_ignore_ascii_case("F8") {
-        return Err("Клавиша F8 зарезервирована (работает всегда)".into());
+        return Err(t!("hotkey.f8_reserved"));
     }
     let low = new.to_lowercase();
     if !(low.contains("ctrl") || low.contains("shift") || low.contains("alt")) {
-        return Err("Нужен хотя бы один модификатор: Ctrl, Shift или Alt".into());
+        return Err(t!("hotkey.need_mod"));
     }
     if is_blacklisted(&new) {
-        return Err("Эта комбинация занята системой (копирование/вставка и т.п.)".into());
+        return Err(t!("hotkey.system"));
     }
 
     // Атомарно (lock НЕ держим): СНАЧАЛА регистрируем новый — старый трогаем только при успехе
@@ -2657,7 +2851,7 @@ fn set_hotkey(state: tauri::State<AppState>, app: tauri::AppHandle, combo: Optio
         }
     }).map_err(|e| {
         logger::log(&format!("хоткей {new} не зарегистрирован: {e}"));
-        "Не удалось зарегистрировать комбинацию.\nВозможно, она уже используется другой программой.".to_string()
+        t!("hotkey.register_failed")
     })?;
 
     // Успех → снять старый и записать новый (берём lock заново)
@@ -2824,8 +3018,8 @@ fn find_gecko_places(browser_base: &str) -> Option<String> {
 async fn pick_bookmarks_file(window: tauri::Window) -> Option<String> {
     rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Выбрать файл закладок")
-        .add_filter("Файлы закладок", &["json", "sqlite"])
+        .set_title(t!("rfd.pick_bookmarks"))
+        .add_filter(t!("rfd.filter.bookmarks"), &["json", "sqlite"])
         .pick_file().await
         .map(|f| f.path().to_string_lossy().into_owned())
 }
@@ -2834,7 +3028,7 @@ async fn pick_bookmarks_file(window: tauri::Window) -> Option<String> {
 async fn pick_profile_folder(window: tauri::Window) -> Option<String> {
     rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Выбрать папку профиля браузера")
+        .set_title(t!("rfd.pick_profile"))
         .pick_folder().await
         .map(|f| f.path().to_string_lossy().into_owned())
 }
@@ -3061,7 +3255,7 @@ fn load_browsers_config() -> String {
 
 #[tauri::command]
 fn save_browsers_config(json: String) -> Result<(), String> {
-    let path = browsers_config_path().ok_or("Не удалось получить путь")?;
+    let path = browsers_config_path().ok_or_else(|| t!("browsers.no_path"))?;
     std::fs::write(path, json.as_bytes()).map_err(|e| e.to_string())
 }
 
@@ -3074,7 +3268,7 @@ fn import_from_browser(state: tauri::State<AppState>, browser_id: String) -> Res
     logger::log(&format!("импорт из браузера: найдено профилей {}, запрошен «{browser_id}»", browsers.len()));
     let b = browsers.iter().find(|b| b.id == browser_id).ok_or_else(|| {
         logger::log(&format!("импорт: профиль «{browser_id}» не найден среди обнаруженных"));
-        "Браузер не найден".to_string()
+        t!("import.browser_not_found")
     })?;
     let kind = b.kind.clone();
     let name = b.name.clone();
@@ -3121,12 +3315,14 @@ async fn import_txt_file(
     state: tauri::State<'_, AppState>,
     window: tauri::Window,
     parent_id: Option<i64>,
-) -> Result<db::TxtImportResult, String> {
-    let file = rfd::AsyncFileDialog::new()
+) -> Result<Option<db::TxtImportResult>, String> {
+    // `None` — окно закрыли без выбора.
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Импорт из текстового файла")
-        .add_filter("Текстовый файл", &["txt"])
-        .pick_file().await.ok_or("Отменено")?;
+        .set_title(t!("rfd.import_txt"))
+        .add_filter(t!("rfd.filter.txt"), &["txt"])
+        .pick_file().await
+    else { return Ok(None) };
     let path = file.path().to_path_buf();
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
 
@@ -3136,13 +3332,13 @@ async fn import_txt_file(
     if db::looks_like_our_txt(&content) {
         // Наш экспорт: имя корневой папки записано в самом файле, и дерево
         // воссоздаётся вместе с ним — размещать иначе было бы неверно.
-        return db::import_txt(&conn, &content, parent_id).map_err(|e| e.to_string());
+        return db::import_txt(&conn, &content, parent_id).map(Some).map_err(|e| e.to_string());
     }
 
     // Простой список: имя первой строки папкой быть не должно, поэтому имя
     // берётся из имени файла.
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Импорт".to_string());
+        .unwrap_or_else(|| t!("folder.import"));
     // Пустая целевая папка — кладём прямо в неё, заворачивать содержимое
     // в подпапку там незачем. Непустая папка или импорт из меню, где папка
     // не выбрана, — создаём свою папку.
@@ -3150,59 +3346,65 @@ async fn import_txt_file(
         Some(id) if db::folder_is_empty(&conn, id) => None,
         _ => Some(
             db::unique_folder_title(&conn, parent_id, &stem)
-                .ok_or("Слишком много папок с таким именем — переименуйте файл")?,
+                .ok_or_else(|| t!("import.too_many_folders"))?,
         ),
     };
-    db::import_txt_urls(&conn, &content, folder.as_deref(), parent_id).map_err(|e| e.to_string())
+    db::import_txt_urls(&conn, &content, folder.as_deref(), parent_id).map(Some).map_err(|e| e.to_string())
 }
 
 // ── Import commands ──────────────────────────────────────────────────────────
 
+/// `None` — окно закрыли без выбора; `Some(0)` — файл выбран, нового нет.
 #[tauri::command]
-async fn import_html(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<usize, String> {
-    let file = rfd::AsyncFileDialog::new()
+async fn import_html(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<Option<usize>, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Импорт закладок из HTML")
-        .add_filter("HTML файл", &["html", "htm"])
-        .pick_file().await.ok_or("Отменено")?;
+        .set_title(t!("rfd.import_html"))
+        .add_filter(t!("rfd.filter.html"), &["html", "htm"])
+        .pick_file().await
+    else { return Ok(None) };
     let content = std::fs::read_to_string(file.path()).map_err(|e| e.to_string())?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::import_html(&conn, &content, parent_id).map_err(|e| e.to_string())
+    db::import_html(&conn, &content, parent_id).map(Some).map_err(|e| e.to_string())
 }
 
+/// `None` — окно закрыли без выбора; `Some(0)` — файл выбран, нового нет.
 #[tauri::command]
-async fn import_uadat_pick(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<usize, String> {
-    let file = rfd::AsyncFileDialog::new()
+async fn import_uadat_pick(state: tauri::State<'_, AppState>, window: tauri::Window, parent_id: Option<i64>) -> Result<Option<usize>, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Открыть файл данных UA")
-        .add_filter("Файл данных", &["dat", "bak"])
-        .pick_file().await.ok_or("Отменено")?;
+        .set_title(t!("rfd.import_uadat"))
+        .add_filter(t!("rfd.filter.uadat"), &["dat", "bak"])
+        .pick_file().await
+    else { return Ok(None) };
     let path = file.path().to_path_buf();
     let raw = std::fs::read(&path).map_err(|e| e.to_string())?;
     let (text, _, _) = encoding_rs::WINDOWS_1251.decode(&raw);
     let nodes = importer::parse(&text);
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::import(&conn, &nodes, parent_id).map_err(|e| e.to_string())
+    db::import(&conn, &nodes, parent_id).map(Some).map_err(|e| e.to_string())
 }
 
 // ── Import from another DB ───────────────────────────────────────────────────
 
+/// `None` — окно закрыли без выбора.
 #[tauri::command]
 async fn analyze_import_db(
     state: tauri::State<'_, AppState>,
     window: tauri::Window,
-) -> Result<db::ImportAnalysis, String> {
-    let file = rfd::AsyncFileDialog::new()
+) -> Result<Option<db::ImportAnalysis>, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
         .set_parent(&window)
-        .set_title("Выбрать базу для импорта")
-        .add_filter("База данных", &["db"])
-        .pick_file().await.ok_or("Отменено")?;
+        .set_title(t!("rfd.import_db"))
+        .add_filter(t!("rfd.filter.db"), &["db"])
+        .pick_file().await
+    else { return Ok(None) };
     let src_path = file.path().to_path_buf();
     let src_path_str = src_path.to_string_lossy().to_string();
 
     let current_path = state.db_path.lock().map_err(|e| e.to_string())?.clone();
     if src_path == current_path {
-        return Err("Выбранный файл является текущей базой данных".to_string());
+        return Err(t!("import.same_db"));
     }
 
     let current_urls = {
@@ -3218,7 +3420,7 @@ async fn analyze_import_db(
         db::read_src_nodes(&src).map_err(|e| e.to_string())
     }).await.map_err(|e| e.to_string())??;
 
-    Ok(db::analyze_import_db(&nodes, &current_urls, src_path_str))
+    Ok(Some(db::analyze_import_db(&nodes, &current_urls, src_path_str)))
 }
 
 #[tauri::command]
@@ -3231,7 +3433,7 @@ async fn execute_import_db(
 
     let current_path = state.db_path.lock().map_err(|e| e.to_string())?.clone();
     if src_path == current_path {
-        return Err("Выбранный файл является текущей базой данных".to_string());
+        return Err(t!("import.same_db"));
     }
 
     let nodes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<db::SrcNode>, String> {
@@ -3395,12 +3597,8 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                     continue;
                 }
             };
-            let mut stmt = match conn.prepare(
-                "SELECT id, title FROM nodes \
-                 WHERE kind='folder' AND parent IS NULL \
-                 AND (deleted IS NULL OR deleted=0) ORDER BY sort_idx"
-            ) {
-                Ok(s)  => s,
+            let arr = match extension_folders(&conn) {
+                Ok(a)  => a,
                 Err(e) => {
                     logger::log(&format!("расширение: 500 /folders, ошибка базы: {e}"));
                     respond_json(req, 500,
@@ -3408,22 +3606,6 @@ fn run_http_server(handle: tauri::AppHandle, token: String, port: u16) {
                     continue;
                 }
             };
-            let rows = match stmt.query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            }) {
-                Ok(r)  => r,
-                Err(e) => {
-                    logger::log(&format!("расширение: 500 /folders, ошибка базы: {e}"));
-                    respond_json(req, 500,
-                        &format!(r#"{{"error":"{}"}}"#, e.to_string().replace('"', "\\\"")), Some(ALLOWED_ORIGIN));
-                    continue;
-                }
-            };
-            let arr: serde_json::Value = serde_json::Value::Array(
-                rows.filter_map(|r| r.ok())
-                    .map(|(id, title)| serde_json::json!({"id": id, "title": title}))
-                    .collect()
-            );
             respond_json(req, 200, &arr.to_string(), Some(ALLOWED_ORIGIN));
             continue;
         }
@@ -3664,13 +3846,17 @@ fn main() {
     std::panic::set_hook(Box::new(move |info| {
         let place = info.location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
-            .unwrap_or_else(|| "место неизвестно".to_string());
+            .unwrap_or_else(|| "место неизвестно".to_string());   // i18n: не переводится — журнал
         let msg = info.payload().downcast_ref::<&str>().map(|s| (*s).to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "причина неизвестна".to_string());
+            .unwrap_or_else(|| "причина неизвестна".to_string());   // i18n: не переводится — журнал
         logger::log(&format!("ПАНИКА в {place}: {msg}"));
         prev_hook(info);   // прежнее поведение не теряем
     }));
+
+    // Язык — до Builder: меню трея строится в setup, а словарь для окна
+    // уходит в скрипт инициализации плагином ниже.
+    i18n::init();
 
     tauri::Builder::default()
         // Единственный экземпляр. Плагин ОБЯЗАН идти первым: его setup-хук
@@ -3709,6 +3895,9 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Словарь — в window.__UA_I18N__ до загрузки app.js (см. i18n::init_script).
+        .plugin(tauri::plugin::Builder::<tauri::Wry>::new("ua-i18n")
+            .js_init_script(i18n::init_script()).build())
         .setup(|app| {
             // Флаг журнала уже прочитан в main() — здесь только шапка.
             logger::log(&format!("=== запуск URL Album {} ===", env!("CARGO_PKG_VERSION")));
@@ -3735,6 +3924,7 @@ fn main() {
                 Ok(v)  => logger::log(&format!("WebView2: {v}")),
                 Err(e) => logger::log(&format!("WebView2: не определён ({e})")),
             }
+            for note in &i18n::current().notes { logger::log(note); }
 
             // Профили прошлых снимков, оставшиеся в %TEMP% (упавший снимок,
             // убитая программа). В своём потоке: окно ждать не должно. Час —
@@ -3786,6 +3976,7 @@ fn main() {
                 pending_open:       Mutex::new(pending),
                 extension_add_mode: Mutex::new("quick".to_string()),
                 user_hotkey:        Mutex::new(None),
+                f8_enabled:         Mutex::new(f8_enabled_in(&read_settings_raw())),
             });
 
             // urlalbum:// при запуске больше не регистрируется (2.3.3):
@@ -3804,9 +3995,9 @@ fn main() {
             // РИСК 2: иконку вшиваем (include_bytes), НЕ полагаемся на default_window_icon.
             let tray_icon = Image::from_bytes(include_bytes!("../icons/icon.ico"))?;
 
-            let show_i = MenuItem::with_id(app, "show",     "Показать URL-Album", true, None::<&str>)?;
-            let add_i  = MenuItem::with_id(app, "add_clip", "Добавить из буфера", true, None::<&str>)?;
-            let quit_i = MenuItem::with_id(app, "quit",     "Выход",              true, None::<&str>)?;
+            let show_i = MenuItem::with_id(app, "show",     t!("tray.show"),     true, None::<&str>)?;
+            let add_i  = MenuItem::with_id(app, "add_clip", t!("tray.add_clip"), true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit",     t!("tray.quit"),     true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[
                 &show_i, &PredefinedMenuItem::separator(app)?,
                 &add_i,  &PredefinedMenuItem::separator(app)?,
@@ -3865,7 +4056,7 @@ fn main() {
                         // крейт arboard и эмитить app.emit("tray-add-from-clipboard", text)
                         // с уже готовым текстом (JS примет payload, без navigator.clipboard).
                         "add_clip" => add_from_clipboard(app),
-                        "quit" => app.exit(0),
+                        "quit" => request_quit(app),
                         _ => {}
                     }
                 })
@@ -3875,16 +4066,18 @@ fn main() {
             // через секунду после старта. Держим его в managed-состоянии на всё время работы.
             app.manage(tray);
 
-            // Глобальный хоткей. "F8" — единственное место смены комбинации (например на "Ctrl+Alt+A").
+            // Глобальный хоткей F8 — если не снята галочка в «Настройках»
+            // (`f8Enabled`; maK: F8 нужна Total Commander для удаления).
             // Хоткей не критичен для запуска: комбинацию мог занять чужой процесс.
             // Раньше здесь стоял `?`, и такой отказ ронял setup целиком — окно
             // не появлялось вовсе, без единого следа.
-            if let Err(e) = app.global_shortcut().on_shortcut("F8", |app, _shortcut, event| {
-                if event.state() == ShortcutState::Pressed {   // ТОЛЬКО нажатие, не отпускание — иначе сработает дважды
-                    add_from_clipboard(app);
+            place_main_window(app.handle());
+
+            let f8_on = app.state::<AppState>().f8_enabled.lock().map(|g| *g).unwrap_or(true);
+            if f8_on {
+                if let Err(e) = register_f8(app.handle()) {
+                    logger::log(&format!("F8 не зарегистрирован (занят другой программой?): {e}"));
                 }
-            }) {
-                logger::log(&format!("F8 не зарегистрирован (занят другой программой?): {e}"));
             }
 
             Ok(())
@@ -3942,6 +4135,7 @@ fn main() {
             set_sort_idx,
             load_settings,
             save_settings,
+            list_languages,
             load_toolbar_config,
             save_toolbar_config,
             create_folder,
@@ -3951,6 +4145,7 @@ fn main() {
             get_db_path,
             set_window_title,
             hide_window,
+            quit_app,
             set_log_enabled,
             get_log_path,
             log_from_ui,
@@ -3969,17 +4164,23 @@ fn main() {
             get_pending_url,
             set_extension_add_mode,
             set_hotkey,
+            set_f8,
             analyze_import_db,
             execute_import_db,
         ])
-        .on_window_event(|_window, event| {
-            // Единственная задача: запомнить момент потери фокуса. Обработчик клика
-            // по трею смотрит на него, потому что к моменту доставки события окно
-            // уже не в фокусе — его отобрал сам клик по значку.
+        .on_window_event(|window, event| {
+            // Момент потери фокуса: обработчик клика по трею смотрит на него,
+            // потому что к моменту доставки события окно уже не в фокусе —
+            // его отобрал сам клик по значку.
             if let tauri::WindowEvent::Focused(false) = event {
                 if let Ok(mut g) = LAST_UNFOCUS.lock() {
                     *g = Some(std::time::Instant::now());
                 }
+            }
+            // Положение окна — для следующего запуска (пишется при выходе).
+            #[cfg(windows)]
+            if let tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) = event {
+                if let Ok(h) = window.hwnd() { remember_placement(h.0 as isize, window.app_handle()); }
             }
         })
         .build(tauri::generate_context!())
@@ -3990,6 +4191,9 @@ fn main() {
             // Connection::drop → sqlite3_close не вызывается и -wal/-shm остаются на диске.
             // app.exit(0) из трея приходит сюда же — отдельный checkpoint там не нужен.
             if let tauri::RunEvent::Exit = event {
+                if let Some(p) = LAST_PLACEMENT.lock().ok().and_then(|g| *g) {
+                    save_window_placement(&p);
+                }
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     if let Ok(conn) = state.db.lock() {
                         // Ошибки игнорируем — выход не блокируем, только пишем в журнал.
@@ -4005,6 +4209,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Служебная папка базового языка: тесты идут на вшитом русском словаре.
+    const INBOX_FOLDER_NAME: &str = "Новые ссылки";
+
+    /// F8 включена, пока в settings.json явно не записано `"f8Enabled": false`:
+    /// нет файла, нет ключа, мусор, не логическое значение — включена, как
+    /// было до появления галочки.
+    #[test]
+    fn f8_enabled_unless_explicitly_false() {
+        assert!(f8_enabled_in(""));
+        assert!(f8_enabled_in("{}"));
+        assert!(f8_enabled_in(r#"{"hotkey": "Ctrl+Shift+A"}"#));
+        assert!(f8_enabled_in(r#"{"f8Enabled": true}"#));
+        assert!(!f8_enabled_in(r#"{"f8Enabled": false, "hotkey": ""}"#));
+        assert!(f8_enabled_in(r#"{"f8Enabled": "no"}"#));
+        assert!(f8_enabled_in("{ \"f8Enabled\": fal"));
+    }
 
     #[test]
     fn shot_lock_rejects_second() {
@@ -4017,6 +4237,16 @@ mod tests {
         drop(first);
         assert!(ShotLock::try_acquire(a).is_some(), "первый закончился — снова можно");
         drop(other);
+    }
+
+    #[test]
+    fn shot_busy_is_code() {
+        // Код, а не текст для человека: текст переводится, код — нет.
+        assert!(!SHOT_BUSY.is_empty() && SHOT_BUSY.is_ascii(), "SHOT_BUSY — код ASCII: {SHOT_BUSY}");
+        // По этому коду пакет в app.js считает ссылку «пропущено» — строки обязаны совпадать.
+        let js = include_str!("../../ui/app.js");
+        let decl = format!("const SHOT_BUSY = '{SHOT_BUSY}';");
+        assert!(js.contains(&decl), "в app.js нет `{decl}`");
     }
 
     fn inbox_ids(conn: &Connection) -> Vec<i64> {
@@ -4070,6 +4300,161 @@ mod tests {
         let id = find_or_create_inbox_folder(&conn).unwrap();
         assert_ne!(id, old, "ссылка не должна уходить в папку из корзины");
         assert_eq!(inbox_ids(&conn), vec![id]);
+    }
+
+    /// id узлов с признаком служебной папки.
+    fn role_ids(conn: &Connection) -> Vec<i64> {
+        let mut st = conn.prepare("SELECT id FROM nodes WHERE role = 'inbox' ORDER BY id").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn inbox_has_role() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        assert_eq!(role_ids(&conn), inbox_ids(&conn), "новая база: признак у её «{INBOX_FOLDER_NAME}»");
+        clear_nodes(&conn).unwrap();
+        assert_eq!(role_ids(&conn).len(), 1, "очищенная база: признак у новой папки");
+        assert_eq!(role_ids(&conn), inbox_ids(&conn));
+    }
+
+    #[test]
+    fn inbox_found_by_role_after_rename() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        let id = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute("UPDATE nodes SET title = 'Входящие' WHERE id = ?1", [id]).unwrap();
+        assert_eq!(find_or_create_inbox_folder(&conn).unwrap(), id, "переименованная — та же служебная");
+        let folders: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE kind = 'folder'", [], |r| r.get(0)).unwrap();
+        assert_eq!(folders, 1, "вторая папка не заведена");
+    }
+
+    #[test]
+    fn user_folder_with_inbox_title_not_used() {
+        // Папка человека с тем же названием служебной не становится.
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        let id = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute("UPDATE nodes SET title = 'Входящие' WHERE id = ?1", [id]).unwrap();
+        db::insert_folder(&conn, None, INBOX_FOLDER_NAME).unwrap();
+        assert_eq!(find_or_create_inbox_folder(&conn).unwrap(), id);
+        db::init(&conn).unwrap();   // повторное открытие базы признак не переносит
+        assert_eq!(role_ids(&conn), vec![id]);
+    }
+
+    #[test]
+    fn inbox_moved_inside_loses_role() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        let old = find_or_create_inbox_folder(&conn).unwrap();
+        let p = db::insert_folder(&conn, None, "Папка").unwrap();
+        conn.execute("UPDATE nodes SET parent = ?1 WHERE id = ?2", [p, old]).unwrap();
+        let new = find_or_create_inbox_folder(&conn).unwrap();
+        assert_ne!(new, old, "перенесённая внутрь другой — уже не служебная");
+        assert_eq!(role_ids(&conn), vec![new], "признак перешёл к новой, у старой снят");
+    }
+
+    #[test]
+    fn inbox_restored_from_trash_not_second_role() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        let old = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute(
+            "UPDATE nodes SET deleted = 1, deleted_parent = parent, parent = NULL WHERE id = ?1",
+            [old],
+        ).unwrap();
+        let new = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute("UPDATE nodes SET deleted = 0 WHERE id = ?1", [old]).unwrap();
+        assert_eq!(find_or_create_inbox_folder(&conn).unwrap(), new, "служебная — новая");
+        assert_eq!(role_ids(&conn), vec![new]);
+    }
+
+    #[test]
+    fn inbox_role_is_unique() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        assert_eq!(role_ids(&conn).len(), 1, "признак у служебной есть");
+        let other = db::insert_folder(&conn, None, "Папка").unwrap();
+        assert!(conn.execute("UPDATE nodes SET role = 'inbox' WHERE id = ?1", [other]).is_err(),
+                "второй служебной папки база не допускает");
+    }
+
+    #[test]
+    fn imported_inbox_is_not_service() {
+        // Сторож на будущее, на прежнем коде не краснеет: импорт перечисляет
+        // колонки в INSERT явно, `role` среди них нет. Ловит правку, которая
+        // начнёт копировать узлы целиком, — тогда «Новые ссылки» источника
+        // стала бы второй служебной (или импорт упал бы на уникальном индексе).
+        let src = Connection::open_in_memory().unwrap();
+        init_new_db(&src).unwrap();
+        let src_inbox = find_or_create_inbox_folder(&src).unwrap();
+        db::insert_bookmark(&src, Some(src_inbox), "из источника", "https://example.org/src", None).unwrap();
+        assert_eq!(role_ids(&src), vec![src_inbox], "в источнике у «Новых ссылок» есть признак");
+
+        let dest = Connection::open_in_memory().unwrap();
+        init_new_db(&dest).unwrap();
+        let own = find_or_create_inbox_folder(&dest).unwrap();
+
+        let nodes = db::read_src_nodes(&src).unwrap();
+        let urls = db::collect_urls(&dest).unwrap();
+        let added = db::execute_import_from_nodes(&dest, &nodes, None, &urls).unwrap();
+        assert_eq!(added, 1, "ссылка источника импортирована");
+        let folders: i64 = dest.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE kind = 'folder' AND title = ?1",
+            [INBOX_FOLDER_NAME], |r| r.get(0)).unwrap();
+        assert_eq!(folders, 2, "папка источника пришла вместе со ссылкой");
+        assert_eq!(role_ids(&dest), vec![own], "признак — только у своей служебной");
+        assert_eq!(find_or_create_inbox_folder(&dest).unwrap(), own);
+    }
+
+    #[test]
+    fn extension_folders_mark_inbox() {
+        // Расширение выбирает служебную по признаку, а не по названию.
+        let conn = Connection::open_in_memory().unwrap();
+        init_new_db(&conn).unwrap();
+        let inbox = find_or_create_inbox_folder(&conn).unwrap();
+        conn.execute("UPDATE nodes SET title = 'Входящие' WHERE id = ?1", [inbox]).unwrap();
+        let other = db::insert_folder(&conn, None, INBOX_FOLDER_NAME).unwrap();
+        let arr = extension_folders(&conn).unwrap();
+        let flag = |id: i64| arr.as_array().unwrap().iter()
+            .find(|f| f["id"] == id).map(|f| f["inbox"].clone());
+        assert_eq!(flag(inbox), Some(serde_json::json!(true)), "служебная — inbox: true");
+        assert_eq!(flag(other), Some(serde_json::json!(false)), "папка с тем же названием — inbox: false");
+    }
+
+    #[test]
+    fn legacy_inbox_marked_on_open() {
+        // База от версии без колонки role: таблица старой схемы.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE nodes (id INTEGER PRIMARY KEY AUTOINCREMENT, parent INTEGER,
+                 kind TEXT NOT NULL DEFAULT 'bookmark', title TEXT NOT NULL, url TEXT,
+                 thumb TEXT, note TEXT, created TEXT, visited TEXT, sort_idx INTEGER DEFAULT 0,
+                 favicon TEXT, deleted INTEGER DEFAULT 0, deleted_parent INTEGER, opener TEXT);
+             INSERT INTO nodes (id, parent, kind, title, deleted) VALUES
+                 (1, NULL, 'folder', 'Новые ссылки', 1),
+                 (2, NULL, 'folder', 'Папка', 0),
+                 (3, 2,    'folder', 'Новые ссылки', 0),
+                 (4, NULL, 'bookmark', 'Новые ссылки', 0),
+                 (5, NULL, 'folder', 'Новые ссылки', NULL),
+                 (6, NULL, 'folder', 'Новые ссылки', 0);",
+        ).unwrap();
+        db::init(&conn).unwrap();
+        assert_eq!(role_ids(&conn), vec![5],
+                   "наименьший id среди живых корневых папок «Новые ссылки» (deleted = NULL — живая)");
+        assert_eq!(find_or_create_inbox_folder(&conn).unwrap(), 5);
+        db::init(&conn).unwrap();
+        assert_eq!(role_ids(&conn), vec![5], "повторное открытие ничего не меняет");
+    }
+
+    #[test]
+    fn legacy_db_without_inbox_not_marked() {
+        let conn = Connection::open_in_memory().unwrap();
+        db::init(&conn).unwrap();
+        db::insert_folder(&conn, None, "Папка").unwrap();
+        db::init(&conn).unwrap();
+        assert!(role_ids(&conn).is_empty(), "служебной нет — признак никому не ставится");
     }
 
     /// Путь к ещё не созданному файлу базы во временной папке, свой на тест.

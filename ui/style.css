@@ -32,6 +32,16 @@ body {
   flex-direction: column;
 }
 
+/* Пока app.js не перевёл разметку (метка data-i18n-ready), содержимое скрыто:
+   иначе при запуске не на русском мелькнёт русский текст разметки.
+   Страховка: через 1,5 с показать в любом случае — упавший app.js даст
+   окно с ошибкой, а не пустое. */
+html:not([data-i18n-ready]) body {
+  visibility: hidden;
+  animation: ua-i18n-show 0s 1.5s forwards;
+}
+@keyframes ua-i18n-show { to { visibility: visible; } }
+
 .hidden { display: none !important; }
 
 /* ── Toolbar ──────────────────────────────────────────────────────────────── */
