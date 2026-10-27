@@ -162,6 +162,7 @@
   "menu.file.backup_with":         "Create backup with screenshots...",
   "menu.file.db_props":            "Database properties",
   "menu.file.settings":            "Settings",
+  "menu.file.quit":                "Exit",
   "menu.file.tray":                "Minimize to tray",
   "menu.links":                    "Links",
   "menu.links.new":                "New link",

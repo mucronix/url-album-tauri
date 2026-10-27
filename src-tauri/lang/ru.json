@@ -162,6 +162,7 @@
   "menu.file.backup_with":         "Создать резервную копию с рисунками...",
   "menu.file.db_props":            "Свойства базы",
   "menu.file.settings":            "Настройки",
+  "menu.file.quit":                "Выход",
   "menu.file.tray":                "Свернуть в трей",
   "menu.links":                    "Ссылки",
   "menu.links.new":                "Новая ссылка",

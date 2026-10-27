@@ -2372,6 +2372,30 @@ fn hide_window(window: tauri::Window) {
     window.hide().ok();
 }
 
+/// Выход из программы — «Файл → Выход» и «Выход» в трее, после того как JS
+/// дописал открытую заметку. `app.exit` завершает процесс (WAL-checkpoint —
+/// в `RunEvent::Exit`); `window.close()` здесь не годится — он уводит окно
+/// на `about:blank`, а процесс остаётся.
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// «Выход» из трея: сначала окно дописывает заметку (событие `quit-requested`
+/// → `flushNoteEdit` → `quit_app`). Окно не ответило за 3 с (не загрузилось,
+/// скрипт упал) — выходим сами: выход из трея обязан работать всегда.
+fn request_quit(app: &tauri::AppHandle) {
+    if app.emit("quit-requested", ()).is_err() {
+        app.exit(0);
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        app.exit(0);
+    });
+}
+
 /// Включить/выключить журнал без перезапуска — зовётся при сохранении настроек.
 #[tauri::command]
 fn set_log_enabled(enabled: bool) {
@@ -3924,7 +3948,7 @@ fn main() {
                         // крейт arboard и эмитить app.emit("tray-add-from-clipboard", text)
                         // с уже готовым текстом (JS примет payload, без navigator.clipboard).
                         "add_clip" => add_from_clipboard(app),
-                        "quit" => app.exit(0),
+                        "quit" => request_quit(app),
                         _ => {}
                     }
                 })
@@ -4011,6 +4035,7 @@ fn main() {
             get_db_path,
             set_window_title,
             hide_window,
+            quit_app,
             set_log_enabled,
             get_log_path,
             log_from_ui,

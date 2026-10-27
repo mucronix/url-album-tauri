@@ -162,6 +162,7 @@
   "menu.file.backup_with":         "Створити резервну копію зі скріншотами...",
   "menu.file.db_props":            "Властивості бази",
   "menu.file.settings":            "Налаштування",
+  "menu.file.quit":                "Вихід",
   "menu.file.tray":                "Згорнути в трей",
   "menu.links":                    "Посилання",
   "menu.links.new":                "Нове посилання",

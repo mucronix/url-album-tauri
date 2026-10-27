@@ -3005,7 +3005,8 @@ const MENU_DATA = [
       '---',
       { label: t('menu.file.settings'),      icon: 'gear',   action: 'settings'   },
       '---',
-      { label: t('menu.file.tray'), icon: 'tray',  action: 'tray-hide'  },
+      // «Свернуть в трей» — кнопкой у правого края меню и щелчком по значку в трее
+      { label: t('menu.file.quit'),          action: 'quit'   },
     ]
   },
   {
@@ -3140,8 +3141,7 @@ const DEFAULT_TOOLBAR = [
   'delete-link', 'properties', '|',
   'find', '|',
   'check-all-links', '|',
-  'toggle-expand-all', '|',
-  'tray-hide',
+  'toggle-expand-all',
 ];
 
 let toolbarConfig = [...DEFAULT_TOOLBAR];
@@ -4014,6 +4014,9 @@ function handleMenuAction(action) {
       break;
     case 'tray-hide':
       invoke('hide_window').catch(console.error);
+      break;
+    case 'quit':
+      quitApp();
       break;
 
     // ── Database ──
@@ -6137,6 +6140,17 @@ try {
 } catch (e) {
   logUi(`закрытие окна: обработчик не подключён: ${e}`);
 }
+
+// «Файл → Выход» и «Выход» в трее (Rust шлёт quit-requested и через 3 с
+// выходит сам, если окно не ответило): сначала дописать заметку, потом
+// завершить процесс — потолок 2 с, как у крестика.
+async function quitApp() {
+  try {
+    await Promise.race([flushNoteEdit(), new Promise(r => setTimeout(r, 2000))]);
+  } catch (_) {}
+  invoke('quit_app').catch(e => logUi(`выход: quit_app не удался: ${e}`));
+}
+window.__TAURI__.event.listen('quit-requested', quitApp);
 
 // Full viewer (double-click): hides grid, shows detail panel
 function openDetailView(node) {
