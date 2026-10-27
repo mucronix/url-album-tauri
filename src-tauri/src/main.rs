@@ -10,6 +10,7 @@ mod importer;
 mod logger;
 mod relay;
 mod shot_browser;
+mod window_state;
 
 use std::sync::Mutex;
 use rusqlite::Connection;
@@ -2373,6 +2374,72 @@ fn hide_window(window: tauri::Window) {
     window.hide().ok();
 }
 
+/// Последнее положение окна: запоминается на каждом Moved/Resized (окно уже
+/// может быть уничтожено к моменту выхода, а из трея выходят при спрятанном),
+/// в settings.json пишется один раз — в `RunEvent::Exit`.
+static LAST_PLACEMENT: Mutex<Option<window_state::Saved>> = Mutex::new(None);
+
+/// Мониторы (рабочие области и масштаб) и основной из них; `None` — ОС не ответила.
+fn screens(app: &tauri::AppHandle) -> Option<(Vec<window_state::Screen>, window_state::Screen)> {
+    let to = |m: &tauri::Monitor| window_state::Screen {
+        work: window_state::Rect { x: m.work_area().position.x, y: m.work_area().position.y,
+                                   w: m.work_area().size.width as i32, h: m.work_area().size.height as i32 },
+        scale: m.scale_factor(),
+    };
+    let primary = app.primary_monitor().ok()??;
+    let all = app.available_monitors().ok()?;
+    Some((all.iter().map(to).collect(), to(&primary)))
+}
+
+/// Сдвиг координат GetWindowPlacement (от рабочей области основного монитора)
+/// к экранным.
+fn ws_offset(app: &tauri::AppHandle) -> Option<(i32, i32)> {
+    let p = app.primary_monitor().ok()??;
+    Some((p.work_area().position.x, p.work_area().position.y))
+}
+
+/// Окно создаётся скрытым (`tauri.conf.json`): ставим на сохранённое место
+/// (или по умолчанию — `window_state::placement`) и только потом показываем,
+/// иначе оно мигнуло бы в старом месте. Любой отказ — просто показать.
+fn place_main_window(app: &tauri::AppHandle) {
+    let Some(win) = app.get_webview_window("main") else { return };
+    #[cfg(windows)]
+    if let (Some((all, primary)), Some(off), Ok(h)) = (screens(app), ws_offset(app), win.hwnd()) {
+        let saved = window_state::saved_from_settings(&read_settings_raw());
+        let (rect, maximized) = window_state::placement(saved, &all, &primary);
+        if window_state::apply(h.0 as isize, rect, off) {
+            if maximized { window_state::show_maximized(h.0 as isize); } else { win.show().ok(); }
+            remember_placement(h.0 as isize, app);
+            return;
+        }
+        logger::log("окно: SetWindowPlacement не удался — положение по умолчанию");
+    }
+    win.show().ok();
+}
+
+#[cfg(windows)]
+fn remember_placement(hwnd: isize, app: &tauri::AppHandle) {
+    if let Some(p) = ws_offset(app).and_then(|off| window_state::read(hwnd, off)) {
+        if let Ok(mut g) = LAST_PLACEMENT.lock() { *g = Some(p); }
+    }
+}
+
+/// Записать положение окна в settings.json, не трогая остальное. Файл не
+/// разобрался — не пишем: его разбор и окно об испорченном — дело JS.
+fn save_window_placement(p: &window_state::Saved) {
+    let raw = read_settings_raw();
+    let mut v = if raw.trim().is_empty() { serde_json::json!({}) } else {
+        match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(v) if v.is_object() => v,
+            _ => { logger::log("выход: settings.json не разобран — положение окна не записано"); return; }
+        }
+    };
+    v["window"] = serde_json::json!(p);
+    if let Err(e) = save_settings(v.to_string()) {
+        logger::log(&format!("выход: положение окна не записано: {e}"));
+    }
+}
+
 /// Выход из программы — «Файл → Выход» и «Выход» в трее, после того как JS
 /// дописал открытую заметку. `app.exit` завершает процесс (WAL-checkpoint —
 /// в `RunEvent::Exit`); `window.close()` здесь не годится — он уводит окно
@@ -4004,6 +4071,8 @@ fn main() {
             // Хоткей не критичен для запуска: комбинацию мог занять чужой процесс.
             // Раньше здесь стоял `?`, и такой отказ ронял setup целиком — окно
             // не появлялось вовсе, без единого следа.
+            place_main_window(app.handle());
+
             let f8_on = app.state::<AppState>().f8_enabled.lock().map(|g| *g).unwrap_or(true);
             if f8_on {
                 if let Err(e) = register_f8(app.handle()) {
@@ -4099,14 +4168,19 @@ fn main() {
             analyze_import_db,
             execute_import_db,
         ])
-        .on_window_event(|_window, event| {
-            // Единственная задача: запомнить момент потери фокуса. Обработчик клика
-            // по трею смотрит на него, потому что к моменту доставки события окно
-            // уже не в фокусе — его отобрал сам клик по значку.
+        .on_window_event(|window, event| {
+            // Момент потери фокуса: обработчик клика по трею смотрит на него,
+            // потому что к моменту доставки события окно уже не в фокусе —
+            // его отобрал сам клик по значку.
             if let tauri::WindowEvent::Focused(false) = event {
                 if let Ok(mut g) = LAST_UNFOCUS.lock() {
                     *g = Some(std::time::Instant::now());
                 }
+            }
+            // Положение окна — для следующего запуска (пишется при выходе).
+            #[cfg(windows)]
+            if let tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) = event {
+                if let Ok(h) = window.hwnd() { remember_placement(h.0 as isize, window.app_handle()); }
             }
         })
         .build(tauri::generate_context!())
@@ -4117,6 +4191,9 @@ fn main() {
             // Connection::drop → sqlite3_close не вызывается и -wal/-shm остаются на диске.
             // app.exit(0) из трея приходит сюда же — отдельный checkpoint там не нужен.
             if let tauri::RunEvent::Exit = event {
+                if let Some(p) = LAST_PLACEMENT.lock().ok().and_then(|g| *g) {
+                    save_window_placement(&p);
+                }
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     if let Ok(conn) = state.db.lock() {
                         // Ошибки игнорируем — выход не блокируем, только пишем в журнал.
