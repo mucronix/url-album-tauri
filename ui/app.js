@@ -32,6 +32,8 @@ function applyI18nDom(root = document) {
 }
 document.documentElement.lang = I18N.lang;
 applyI18nDom();
+// Разметка переведена — показать окно (style.css скрывает его до этой метки)
+document.documentElement.dataset.i18nReady = '1';
 
 // Записать строку в журнал программы. console.error в release-сборке
 // недоступен (DevTools отключены), поэтому причины отказов уходят сюда.
