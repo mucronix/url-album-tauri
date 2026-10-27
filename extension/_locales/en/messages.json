@@ -1,0 +1,50 @@
+{
+  "ext_description": {
+    "message": "Save current tab to URL Album"
+  },
+  "action_title": {
+    "message": "Save to URL Album"
+  },
+  "btn_add": {
+    "message": "Add to URL Album"
+  },
+  "st_no_app": {
+    "message": "URL Album is not running"
+  },
+  "st_reconnected": {
+    "message": "The program was restarted, connection renewed — click “Add”"
+  },
+  "st_no_folders": {
+    "message": "Folder list unavailable — the bookmark will go to “New links”"
+  },
+  "st_no_auth": {
+    "message": "Bookmark not saved. Close and reopen this window"
+  },
+  "st_saving": {
+    "message": "Saving…"
+  },
+  "st_error": {
+    "message": "Error $CODE$",
+    "placeholders": {
+      "code": {
+        "content": "$1",
+        "example": "500"
+      }
+    }
+  },
+  "st_exists_in": {
+    "message": "Already in folder “$FOLDER$”",
+    "placeholders": {
+      "folder": {
+        "content": "$1",
+        "example": "Новые ссылки"
+      }
+    }
+  },
+  "st_exists_root": {
+    "message": "Already in the root"
+  },
+  "st_added": {
+    "message": "Added ✓"
+  }
+}

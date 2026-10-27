@@ -1,11 +1,22 @@
 const BASE = 'http://127.0.0.1:27124';
 
+// Тексты — в _locales/<язык>/messages.json; язык — язык браузера (chrome.i18n),
+// не программы: окно должно говорить и тогда, когда программа не запущена.
+// Ключ getMessage — всегда литерал: по нему тест сверяет код с messages.json
+// (обёртка с ключом-переменной спрятала бы его от теста).
+
+// Разметка: data-i18n — текст элемента.
+document.documentElement.lang = chrome.i18n.getUILanguage();
+document.querySelectorAll('[data-i18n]').forEach(el => {
+  el.textContent = chrome.i18n.getMessage(el.dataset.i18n);   // i18n: ключ из разметки
+});
+
 // Тексты статуса собраны в одном месте: одни и те же строки показывают и
 // загрузка списка папок, и отправка закладки.
-const MSG_NO_APP      = 'URL Album не запущен';
-const MSG_RECONNECTED = 'Программа перезапущена, подключение обновлено — нажмите «Добавить»';
-const MSG_NO_FOLDERS  = 'Список папок недоступен — закладка уйдёт в «Новые ссылки»';
-const MSG_NO_AUTH     = 'Закладка не сохранена. Закройте и откройте это окно';
+const MSG_NO_APP      = chrome.i18n.getMessage('st_no_app');
+const MSG_RECONNECTED = chrome.i18n.getMessage('st_reconnected');
+const MSG_NO_FOLDERS  = chrome.i18n.getMessage('st_no_folders');
+const MSG_NO_AUTH     = chrome.i18n.getMessage('st_no_auth');
 
 function setStatus(text, type) {
   const el = document.getElementById('status');
@@ -65,7 +76,7 @@ async function loadFolders(token) {
   // Служебная — по признаку `inbox`; по названию — для прежних версий
   // программы, которые признака не присылают.
   const inbox = folders.find(f => f.inbox)
-             || folders.find(f => f.inbox === undefined && f.title === 'Новые ссылки');
+             || folders.find(f => f.inbox === undefined && f.title === 'Новые ссылки');   // i18n: не переводится — название служебной папки в программах до 2.3.4 (без признака inbox)
   select.value = inbox ? inbox.id : folders[0].id;
   row.style.display = '';
   return 'ok';
@@ -147,7 +158,7 @@ async function init() {
 
   btn.addEventListener('click', async () => {
     btn.disabled = true;
-    setStatus('Сохраняю…');
+    setStatus(chrome.i18n.getMessage('st_saving'));
     try {
       const folderRow = document.getElementById('folder-row');
       const sel       = document.getElementById('folder-select');
@@ -167,15 +178,16 @@ async function init() {
         if (res === 'gone') return;
         if (res === 'skipped') setStatus(MSG_NO_AUTH, 'error');
       } else if (!r.ok) {
-        setStatus(`Ошибка ${r.status}`, 'error');
+        setStatus(chrome.i18n.getMessage('st_error', [String(r.status)]), 'error');
       } else {
         // При «не допускать дублей» программа не добавляет уже известный адрес
         // и отвечает status: "exists" с названием папки (null — корень).
         const res = await r.json().catch(() => ({}));
         if (res.status === 'exists') {
-          setStatus(res.folder ? `Уже есть в папке «${res.folder}»` : 'Уже есть в корне');
+          setStatus(res.folder ? chrome.i18n.getMessage('st_exists_in', [res.folder])
+                               : chrome.i18n.getMessage('st_exists_root'));
         } else {
-          setStatus('Добавлено ✓', 'ok');
+          setStatus(chrome.i18n.getMessage('st_added'), 'ok');
         }
       }
     } catch {

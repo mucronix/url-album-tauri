@@ -454,6 +454,120 @@ fn no_unused_keys() {
     assert!(unused.is_empty(), "ключи ru.json без использования:\n{}", unused.join("\n"));
 }
 
+// ── Расширение: _locales + chrome.i18n ──────────────────────────────────────
+
+/// Языки расширения. Язык окна — язык браузера (`chrome.i18n`), не программы.
+const EXT_LANGS: [&str; 3] = ["ru", "en", "uk"];
+
+/// Ключи расширения с местом: `chrome.i18n.getMessage('…')` в popup.js (только
+/// литералом), `data-i18n` в popup.html, `__MSG_…__` в manifest.json.
+fn ext_keys() -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    let js = read("../extension/popup.js");
+    let toks = js_tokens(&js);
+    let from_markup = marked_lines(&js, "ключ из разметки");
+    for w in 0..toks.len() {
+        let (line, Tok::Ident(name)) = &toks[w] else { continue };
+        if name != "getMessage" || from_markup.contains(line) { continue; }
+        match (toks.get(w + 1).map(|t| &t.1), toks.get(w + 2).map(|t| &t.1)) {
+            (Some(Tok::Punct('(')), Some(Tok::Str(k))) => out.push((format!("popup.js:{line}"), k.clone())),
+            _ => return Err(format!("popup.js:{line}: ключ getMessage не литерал")),
+        }
+    }
+    for (k, _) in html_keys(&read("../extension/popup.html")).0 { out.push(("popup.html".into(), k)); }
+    let manifest = read("../extension/manifest.json");
+    let mut rest = manifest.as_str();
+    while let Some(p) = rest.find("__MSG_") {
+        rest = &rest[p + 6..];
+        let end = rest.find("__").ok_or("manifest.json: незакрытый __MSG_")?;
+        out.push(("manifest.json".into(), rest[..end].to_string()));
+        rest = &rest[end + 2..];
+    }
+    Ok(out)
+}
+
+fn ext_messages(lang: &str) -> Result<Map<String, Value>, String> {
+    let p = root().join(format!("../extension/_locales/{lang}/messages.json"));
+    let text = std::fs::read_to_string(&p).map_err(|e| format!("{lang}/messages.json: {e}"))?;
+    serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| format!("{lang}/messages.json: {e}"))
+}
+
+/// Подстановки `$ИМЯ$` в тексте (без `$1`, `$$`) — нижним регистром, как ключи `placeholders`.
+fn ext_subst(msg: &str) -> std::collections::BTreeSet<String> {
+    let parts: Vec<&str> = msg.split('$').collect();
+    (1..parts.len().saturating_sub(1)).step_by(2)
+        .map(|i| parts[i]).filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                                       && !n.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_lowercase).collect()
+}
+
+/// Каждый ключ расширения есть в каждом messages.json, лишних нет; у записи
+/// есть `message`, подстановки `$…$` совпадают с `placeholders` и одинаковы во
+/// всех языках. getMessage для отсутствующего ключа возвращает пустую строку
+/// (не заметную метку, как t() программы) — поэтому сторож здесь главный.
+#[test]
+fn ext_keys_complete_in_every_locale() {
+    let used = ext_keys().unwrap_or_else(|e| panic!("{e}"));
+    let used_set: std::collections::BTreeSet<&str> = used.iter().map(|(_, k)| k.as_str()).collect();
+    let mut bad = Vec::new();
+    let mut subst_by_key: std::collections::HashMap<String, std::collections::BTreeSet<String>> = Default::default();
+    for lang in EXT_LANGS {
+        let m = match ext_messages(lang) { Ok(m) => m, Err(e) => { bad.push(e); continue; } };
+        for (place, k) in &used { if !m.contains_key(k) { bad.push(format!("{lang}: нет {k} ({place})")); } }
+        for (k, v) in &m {
+            if !used_set.contains(k.as_str()) { bad.push(format!("{lang}: лишний {k}")); continue; }
+            let Some(msg) = v.get("message").and_then(Value::as_str) else { bad.push(format!("{lang}: {k} без message")); continue };
+            let s = ext_subst(msg);
+            let ph: std::collections::BTreeSet<String> = v.get("placeholders").and_then(Value::as_object)
+                .map(|o| o.keys().map(|x| x.to_lowercase()).collect()).unwrap_or_default();
+            if s != ph { bad.push(format!("{lang}: {k}: в тексте {s:?}, в placeholders {ph:?}")); }
+            match subst_by_key.get(k) {
+                Some(prev) if *prev != s => bad.push(format!("{lang}: {k}: подстановки {s:?}, в другом языке {prev:?}")),
+                None => { subst_by_key.insert(k.clone(), s); }
+                _ => {}
+            }
+        }
+    }
+    assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+}
+
+#[test]
+fn ext_default_locale_exists() {
+    let m: Value = serde_json::from_str(&read("../extension/manifest.json")).unwrap();
+    let dl = m.get("default_locale").and_then(Value::as_str).expect("нет default_locale");
+    assert!(root().join(format!("../extension/_locales/{dl}/messages.json")).exists(), "нет _locales/{dl}");
+}
+
+/// В popup.js строки с кириллицей — только с пометкой `// i18n: не переводится`.
+#[test]
+fn ext_no_cyrillic_literals_in_popup_js() {
+    let bad: Vec<String> = js_cyrillic(&read("../extension/popup.js")).into_iter()
+        .map(|(l, s)| format!("popup.js:{l}: {s}")).collect();
+    assert!(bad.is_empty(), "кириллица вне messages.json:\n{}", bad.join("\n"));
+}
+
+/// Текст popup.html с кириллицей — только с data-i18n, и равен ru/messages.json.
+#[test]
+fn ext_html_text_is_keyed_and_matches_ru() {
+    let (keys, mut bad) = html_keys(&read("../extension/popup.html"));
+    let ru = ext_messages("ru").unwrap_or_default();
+    for (k, text) in &keys {
+        match ru.get(k).and_then(|v| v.get("message")).and_then(Value::as_str) {
+            Some(v) if norm_ws(v) == *text => {}
+            Some(v) => bad.push(format!("{k}: в разметке «{text}», в ru «{v}»")),
+            None => bad.push(format!("{k}: нет в ru/messages.json")),
+        }
+    }
+    assert!(bad.is_empty(), "popup.html:\n{}", bad.join("\n"));
+}
+
+#[test]
+fn ext_subst_reads_named_placeholders_only() {
+    assert_eq!(ext_subst("Уже есть в папке «$FOLDER$»"), ["folder".to_string()].into());
+    assert_eq!(ext_subst("$CODE$ и $folder$, а $1 и $$ — нет"), ["code".to_string(), "folder".to_string()].into());
+    assert!(ext_subst("без подстановок").is_empty());
+}
+
 #[test]
 fn cyrillic_scanners_skip_log_and_tests() {
     let js = "logUi(`журнал ${x}`); logTiming('замер', 1); console.error('ошибка'); function _verifyState() { a('сверка'); }\n\
