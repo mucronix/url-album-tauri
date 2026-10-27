@@ -5,7 +5,7 @@ const { invoke }         = window.__TAURI__.core;
 const { convertFileSrc } = window.__TAURI__.core;
 
 const MAX_FAVICON_CONCURRENCY = 5; // intentional per-domain rate limiting
-const APP_VERSION = '2.3.4-beta';
+const APP_VERSION = '2.3.5-beta';
 
 // ── Словарь интерфейса ─────────────────────────────────────────────────────
 // Словарь кладёт Rust скриптом инициализации до загрузки app.js
