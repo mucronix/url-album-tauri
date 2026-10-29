@@ -11,6 +11,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "URL Album",
         "width": 1000,
         "height": 650,

@@ -2398,7 +2398,92 @@ fn ws_offset(app: &tauri::AppHandle) -> Option<(i32, i32)> {
     Some((p.work_area().position.x, p.work_area().position.y))
 }
 
-/// Окно создаётся скрытым (`tauri.conf.json`): ставим на сохранённое место
+/// Папка профиля WebView2 — `WebView2\` рядом с exe (портативность: без неё
+/// Tauri кладёт профиль в `%LOCALAPPDATA%\com.urlalbum.app`). `Err` — причина
+/// для журнала, окно тогда строится с профилем по умолчанию Tauri.
+///
+/// Сетевой диск отклоняется: Microsoft не поддерживает профиль WebView2 на
+/// сетевых дисках. Право записи проверяется пробным файлом ДО `build()` —
+/// неудачный `create_dir_all` внутри Tauri роняет `setup`, то есть запуск.
+fn pick_webview_dir(exe_dir: &std::path::Path, is_remote: &dyn Fn(&std::path::Path) -> bool)
+    -> Result<std::path::PathBuf, String>
+{
+    if is_remote(exe_dir) {
+        return Err("сетевой диск".into());   // i18n: не переводится — журнал
+    }
+    // Проверяем `EBWebView` — её WebView2 заводит внутри нашей папки и пишет
+    // именно туда. Испорченная `EBWebView` (файл на её месте, запрет записи)
+    // ошибкой `build()` не становится: WebView2 показывает своё окно, после
+    // OK отвечает успехом, а окно программы пропадает.
+    let dir = exe_dir.join("WebView2");
+    let eb  = dir.join("EBWebView");
+    std::fs::create_dir_all(&eb).map_err(|e| format!("папка не создаётся: {e}"))?;   // i18n: не переводится — журнал
+    let probe = eb.join(format!(".ua-write-test-{}", std::process::id()));
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&probe)
+        .map_err(|e| format!("запись запрещена: {e}"))?;   // i18n: не переводится — журнал
+    let _ = std::fs::remove_file(&probe);
+    Ok(dir)
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetDriveTypeW(lp_root_path_name: *const u16) -> u32;
+}
+
+/// Сетевой путь: UNC (`\\server\share`, `\\?\UNC\…`) или подключённый
+/// сетевой диск (`GetDriveTypeW` = `DRIVE_REMOTE`).
+fn path_is_remote(p: &std::path::Path) -> bool {
+    use std::path::{Component, Prefix};
+    let Some(Component::Prefix(pre)) = p.components().next() else { return false };
+    match pre.kind() {
+        Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+        #[cfg(windows)]
+        Prefix::Disk(d) | Prefix::VerbatimDisk(d) => {
+            const DRIVE_REMOTE: u32 = 4;
+            let root = wide(&format!("{}:\\", d as char));
+            unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+        }
+        _ => false,
+    }
+}
+
+/// Главное окно — по описанию `main` из `tauri.conf.json` (там `create: false`,
+/// иначе Tauri построит его сам, без нашей папки профиля). Строится в конце
+/// `setup`, после трея и сервера расширения, — там же, где окно из конфига
+/// строил Tauri: на испорченном профиле WebView2 показывает своё окно и
+/// `build()` ждёт его OK (так было и в 2.3.5) — значок в трее тогда уже есть.
+///
+/// Окно с папкой рядом с exe не построилось — один повтор с профилем по
+/// умолчанию. Метка `main` при отказе не занята: Tauri регистрирует окно
+/// только после успешного создания (`attach_window`), окно ОС wry при ошибке
+/// webview уничтожает. Отказ повтора — ошибка `setup`, как было до переноса.
+fn build_main_window(app: &tauri::App, exe_dir: &std::path::Path) -> tauri::Result<()> {
+    let cfg = app.config().app.windows.iter().find(|w| w.label == "main")
+        .expect("tauri.conf.json has no window \"main\"").clone();
+    let default_dir = app.path().app_local_data_dir()
+        .map(|d| d.display().to_string()).unwrap_or_else(|_| "?".into());
+    match pick_webview_dir(exe_dir, &path_is_remote) {
+        Ok(dir) => {
+            let shown = dir.display().to_string();
+            match tauri::WebviewWindowBuilder::from_config(app, &cfg)?.data_directory(dir).build() {
+                Ok(_) => {
+                    logger::log(&format!("профиль WebView2: {shown} (рядом с exe)"));
+                    return Ok(());
+                }
+                Err(e) => logger::log(&format!(
+                    "профиль WebView2: окно с {shown} не создалось ({e}) — запасной: {default_dir}")),
+            }
+        }
+        Err(why) => logger::log(&format!(
+            "профиль WebView2: {default_dir} (запасной: {why})")),
+    }
+    tauri::WebviewWindowBuilder::from_config(app, &cfg)?.build()?;
+    Ok(())
+}
+
+/// Окно создаётся скрытым (`visible: false` в `tauri.conf.json`,
+/// `build_main_window`): ставим на сохранённое место
 /// (или по умолчанию — `window_state::placement`) и только потом показываем,
 /// иначе оно мигнуло бы в старом месте. Любой отказ — просто показать.
 fn place_main_window(app: &tauri::AppHandle) {
@@ -4066,13 +4151,14 @@ fn main() {
             // через секунду после старта. Держим его в managed-состоянии на всё время работы.
             app.manage(tray);
 
+            build_main_window(app, &exe_dir)?;
+            place_main_window(app.handle());
+
             // Глобальный хоткей F8 — если не снята галочка в «Настройках»
             // (`f8Enabled`; maK: F8 нужна Total Commander для удаления).
             // Хоткей не критичен для запуска: комбинацию мог занять чужой процесс.
             // Раньше здесь стоял `?`, и такой отказ ронял setup целиком — окно
             // не появлялось вовсе, без единого следа.
-            place_main_window(app.handle());
-
             let f8_on = app.state::<AppState>().f8_enabled.lock().map(|g| *g).unwrap_or(true);
             if f8_on {
                 if let Err(e) = register_f8(app.handle()) {
@@ -4224,6 +4310,65 @@ mod tests {
         assert!(!f8_enabled_in(r#"{"f8Enabled": false, "hotkey": ""}"#));
         assert!(f8_enabled_in(r#"{"f8Enabled": "no"}"#));
         assert!(f8_enabled_in("{ \"f8Enabled\": fal"));
+    }
+
+    fn webview_test_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ua_webview_dir_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Папка exe записываемая и локальная — профиль в `WebView2\` рядом с exe,
+    /// `EBWebView` создана, пробного файла после проверки не остаётся.
+    #[test]
+    fn webview_dir_next_to_exe() {
+        let exe_dir = webview_test_dir("ok");
+        let dir = pick_webview_dir(&exe_dir, &|_| false).expect("записываемая папка подходит");
+        assert_eq!(dir, exe_dir.join("WebView2"));
+        let eb = dir.join("EBWebView");
+        assert!(eb.is_dir(), "папка профиля создана");
+        assert_eq!(std::fs::read_dir(&eb).unwrap().count(), 0, "пробный файл удалён");
+        let _ = std::fs::remove_dir_all(&exe_dir);
+    }
+
+    /// Писать нельзя (на месте папки — файл) — запасной путь с причиной.
+    #[test]
+    fn webview_dir_not_writable_falls_back() {
+        let exe_dir = webview_test_dir("ro");
+        std::fs::write(exe_dir.join("WebView2"), b"").unwrap();
+        assert!(pick_webview_dir(&exe_dir, &|_| false).is_err());
+        let _ = std::fs::remove_dir_all(&exe_dir);
+    }
+
+    /// `WebView2\` записываемая, но на месте `EBWebView` — файл: WebView2
+    /// показывает своё окно «Не удалось создать каталог данных», после OK
+    /// `build()` отвечает успехом, а окно программы пропадает. Повтор этого
+    /// не ловит — только проверка самой `EBWebView` до `build()`.
+    #[test]
+    fn webview_dir_broken_ebwebview_falls_back() {
+        let exe_dir = webview_test_dir("eb");
+        std::fs::create_dir_all(exe_dir.join("WebView2")).unwrap();
+        std::fs::write(exe_dir.join("WebView2").join("EBWebView"), b"").unwrap();
+        assert!(pick_webview_dir(&exe_dir, &|_| false).is_err());
+        let _ = std::fs::remove_dir_all(&exe_dir);
+    }
+
+    /// Сетевой диск — запасной путь, и на диск ничего не пишется.
+    #[test]
+    fn webview_dir_remote_falls_back() {
+        let exe_dir = webview_test_dir("net");
+        assert!(pick_webview_dir(&exe_dir, &|_| true).is_err());
+        assert!(!exe_dir.join("WebView2").exists(), "на сетевом диске папку не заводим");
+        let _ = std::fs::remove_dir_all(&exe_dir);
+    }
+
+    /// UNC — сетевой путь без вопросов к диску; локальный диск C: — нет.
+    #[test]
+    fn unc_path_is_remote() {
+        assert!(path_is_remote(std::path::Path::new(r"\\server\share\url-album")));
+        assert!(path_is_remote(std::path::Path::new(r"\\?\UNC\server\share\url-album")));
+        assert!(!path_is_remote(std::path::Path::new(r"C:\Windows")));
     }
 
     #[test]
